@@ -178,6 +178,21 @@ test("a group moved while a save is in flight is still moved when it lands", asy
   assert.strictEqual(PS.slots().find((s) => s.id === "gen").group, "Mine");
 });
 
+test("a bypass switched while a save is in flight still holds when it lands, and travels with the saved pipeline", async () => {
+  const PS = load([], { delay: 30 });
+  await PS.ensureLoaded();
+  const inflight = PS.save({ inputs: { model: { file: "z" } } });
+  await new Promise((r) => setTimeout(r, 5));
+  await PS.setBypass("gen", true);
+  await inflight;
+  assert.strictEqual(PS.slots().find((s) => s.id === "gen").bypassed, true);
+  const again = load([]);
+  await again.adopt(JSON.parse(JSON.stringify(PS.slots())), [], {});
+  assert.strictEqual(again.slots().find((s) => s.id === "gen").bypassed, true);
+  await PS.setBypass("gen", false);
+  assert.strictEqual("bypassed" in PS.slots().find((s) => s.id === "gen"), false, "off leaves no flag behind");
+});
+
 test("a default slot swapped for the same node, or removed and added back, does not get its links back on reopen", async () => {
   const PS = load([]);
   await PS.ensureLoaded();

@@ -88,7 +88,8 @@ export const models = (app) => function mount() {
   const groups = () => [...new Set(slotsNow().map((s) => s.group || "Other"))];
   const structure = (slot) => {
     const here = slot.group || "Other";
-    return c.field.default({ label: "Group", hint: "Which tab this node sits under. Any node can live in any group.", control: c.toolbar.default({
+    const bypass = c.toggle.default({ label: "Bypass", hint: "Skip this node for the run: what it feeds reads what fed it. Its settings stay, switch it back on any time.", checked: Boolean(slot.bypassed), onChange: async (v) => { await ps.setBypass(slot.id, v); draw(); } });
+    return c.region.stack({ gap: "sm", children: [bypass, c.field.default({ label: "Group", hint: "Which tab this node sits under. Any node can live in any group.", control: c.toolbar.default({
       items: [c.select.md({ label: "Group", value: here, options: [...groups().map((g) => ({ value: g, label: g })), { value: NEW_GROUP, label: "New group…" }], onChange: async (v) => {
         let name = v;
         if (v === NEW_GROUP) { name = ((await c.modal.prompt({ title: "New group", label: "Name", confirmLabel: "Create" }).result) || "").trim(); if (!name) return draw(); }
@@ -101,7 +102,7 @@ export const models = (app) => function mount() {
         if (await confirm("Swap node", `Swap ${label(slot)} for ${cls}? Everything set on this node (files, values, connections into it) is cleared, and the new node starts empty.${driven.length ? ` The main window drives this node's ${driven.join(", ")}: those controls keep working only for inputs the new node also has, by the same name.` : ""}`, "danger")) structural({ action: "replace", slot: slot.id, node: cls });
       } }), c.button.sm({ label: "Remove", tone: "danger", title: "Take this node out; what it fed is rewired to what fed it, when that is unambiguous.", onClick: async () => {
         if (await confirm("Remove node", `Remove ${label(slot)} from the pipeline?`, "danger")) structural({ action: "remove", slot: slot.id });
-      } })] }) });
+      } })] }) })] });
   };
 
   // Which pack gives a missing node (from ComfyUI-Manager's map, when it is installed), and a button to clone it.

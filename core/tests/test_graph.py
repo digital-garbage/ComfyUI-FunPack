@@ -822,3 +822,28 @@ def test_a_malformed_optional_table_entry_is_logged_not_swallowed(monkeypatch):
         slot.pop("optional", None)
     graph.build(slots, _without("Rewrite", "Markup"), {"Rewrite": {"pass": "bad"}})
     assert any("Rewrite" in m and "cannot be skipped" in m for m in seen)
+
+
+# --- bypassing ---------------------------------------------------------------
+
+def test_a_bypassed_slot_is_left_out_of_the_run_but_kept_with_its_values():
+    """The point of bypass over remove: switch a node off to compare, switch it back, nothing retyped."""
+    slots = [dict(s, bypassed=True) if s["id"] == "lora" else s for s in pipeline()]
+    prompt, problems = graph.build(slots, SCHEMAS)
+    assert problems == []
+    assert "lora" not in prompt and prompt["sample"]["inputs"]["model"] == ["model", 0]
+    kept = graph.slots_by_id(slots)["lora"]
+    assert kept["bypassed"] is True and kept["inputs"]["strength"] == graph.slots_by_id(pipeline())["lora"]["inputs"]["strength"]
+    back, problems = graph.build([dict(s, bypassed=False) if s["id"] == "lora" else s for s in slots], SCHEMAS)
+    assert problems == [] and "lora" in back
+
+
+def test_bypassing_something_with_nothing_to_pass_through_is_refused_and_said():
+    slots = [dict(s, bypassed=True) if s["id"] == "latent" else s for s in pipeline()]
+    prompt, problems = graph.build(slots, SCHEMAS)
+    assert prompt == {} and any("bypass on 'latent'" in p and "no wired LATENT input" in p for p in problems)
+
+
+def test_bypassed_must_be_true_or_false():
+    slots = [dict(s, bypassed="yes") if s["id"] == "lora" else s for s in pipeline()]
+    assert any("bypassed must be true or false" in p for p in graph.shape_problems(slots))

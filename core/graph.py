@@ -212,6 +212,8 @@ def shape_problems(slots: Any) -> List[str]:
             elif not group.strip():
                 problems.append(f"{where}'s group is blank; leave it out to leave the "
                                 f"slot ungrouped")
+        if slot.get("bypassed") is not None and not isinstance(slot["bypassed"], bool):
+            problems.append(f"{where}'s bypassed must be true or false, not {type(slot['bypassed']).__name__}")
         problems.extend(_role_problems(slot.get("roles"), where))
         problems.extend(_optional_problems(slot.get("optional"), where))
     return problems
@@ -360,6 +362,13 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None,
     if problems:
         return {}, problems
 
+    # A bypassed slot stays in the saved pipeline with all its values; the run is built as if it were removed.
+    # Refused, with the reason, when what it fed has nothing to inherit: never quietly left running.
+    for slot_id in [s["id"] for s in slots if s.get("bypassed") is True]:
+        slots, bad = remove(slots, slot_id, schemas)
+        problems.extend(f"bypass on {slot_id!r}: {why}" for why in bad)
+    if problems:
+        return {}, problems
     slots, _skipped = bypass_missing(slots, schemas, optional)
     known = {s["id"] for s in slots}
     # Built once. Rebuilding it per link made validating a chain of N slots do N

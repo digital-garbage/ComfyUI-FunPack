@@ -480,7 +480,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
           unwired[body.slot] = unwired[body.slot].filter((k) => k !== body.input);
           if (!unwired[body.slot].length) delete unwired[body.slot];
         }
-        if (body.action === "remove") { delete unwired[body.slot]; delete groupEdits[body.slot]; }
+        if (body.action === "remove") { delete unwired[body.slot]; delete groupEdits[body.slot]; delete bypassEdits[body.slot]; }
         // A default slot that was swapped for the same node, or taken out and put back, starts empty:
         // none of the default's links may come back over it when the project is opened again.
         const fresh = body.action === "replace" ? [body.slot] : body.action === "add" ? (res.slots || []).map((s) => s.id) : [];
@@ -536,7 +536,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         removed = new Set([...(snap.removed || []), ...(offered || []).map((s) => s.id).filter((id) => !kept.has(id))]);
         whole = snap.whole !== false;                   // only a snapshot of an edited default says otherwise
         unwired = JSON.parse(JSON.stringify(snap.unwired || {}));
-        groupEdits = {}; pendingValues = {}; pendingBody = null; pending = false;
+        groupEdits = {}; bypassEdits = {}; pendingValues = {}; pendingBody = null; pending = false;
         incomplete = res.incomplete || []; refused = []; queueable = !!res.queueable;
         skipped = skipMap(res);
         saveNotes = res.notes || [];
@@ -557,11 +557,21 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   // Kept until it has landed: a save already in flight answers with the slots as they were when
   // it left, and would otherwise put the old group back.
   let groupEdits = {};
+  let bypassEdits = {};        // same life as a group edit: kept until its save has landed
   function applyGroups() {
     (slots || []).forEach((s) => {
+      if (s.id in bypassEdits) { if (bypassEdits[s.id]) s.bypassed = true; else delete s.bypassed; }
       if (!(s.id in groupEdits)) return;
       if (groupEdits[s.id]) s.group = groupEdits[s.id]; else delete s.group;
     });
+  }
+  /** Switch a node off for the run (what it feeds reads what fed it) without losing a single value on it. */
+  function setBypass(slotId, on) {
+    if (!(slots || []).some((s) => s.id === slotId)) return Promise.resolve();
+    bypassEdits[slotId] = Boolean(on);
+    applyGroups();
+    const mine = bypassEdits[slotId];
+    return save({}).then(() => settled()).then(() => { if (bypassEdits[slotId] === mine) delete bypassEdits[slotId]; });
   }
   function setGroup(slotId, group) {
     if (!(slots || []).some((s) => s.id === slotId)) return Promise.resolve();
@@ -660,7 +670,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     Object.entries(unwiredMap && typeof unwiredMap === "object" ? unwiredMap : {}).forEach(([id, list]) => {
       if (Array.isArray(list)) unwired[id] = list.filter((x) => typeof x === "string");
     });
-    groupEdits = {};
+    groupEdits = {}; bypassEdits = {};
     pendingBody = null; pending = false;
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
     let unreachable = false, reasons = [];
@@ -698,7 +708,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   }
 
   return {
-    ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, settled, readyToRun, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
+    ensureLoaded, save, edit, restore, snapshot, setGroup, setBypass, adopt, settled, readyToRun, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
     setEditGuard: (fn) => { editGuard = fn; }, adoptedOk: () => adoptedOk, unreachable: () => slots === null || unreachableLast, refusal: () => refusalLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
