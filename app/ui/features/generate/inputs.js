@@ -18,7 +18,9 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
   for (const slot of (slots || []).filter((s) => s.node === "FunPackShotCamera")) put(slot, "project", project.id || "");      // what the node keeps per project (the words focus infusion draws on), also for pipelines saved before it was asked for
   const source = rolesAt(slots, "assets.source_image")[0];
   if (source) put(source.slot, "media_id", project.generation_mode === "t2v" ? "" : scene.source_image || "");    // "from a prompt" starts every shot without a picture
-  const like = source && source.role.blank_like;
+  // A project saved before the preset said so still has this shape: a picture-resizing slot is enough to know a stand-in fits.
+  const resizer = (slots || []).find((s) => s.node === "ImageTransformKJ"), enhancer = (slots || []).find((s) => s.node === "FunPackEnhancePrompt");
+  const like = source && (source.role.blank_like || (resizer && { slot: resizer.id, width: "target_width", height: "target_height", ...(enhancer ? { unsend: { slot: enhancer.id, input: "use_image" } } : {}) }));
   if (like && !raw[source.slot.id].media_id) {          // text-only: a plain picture of the size the pipeline asks for stands in
     const target = (slots || []).find((s) => s.id === like.slot) || { inputs: {} };
     const size = (name) => (raw[target.id] || {})[name] ?? (target.inputs || {})[name];

@@ -102,3 +102,11 @@ test("text-only: a slot that can stand in for the picture is told the size of th
   assert.deepEqual((await run({ generation_mode: "i2v" }, { source_image: "m1" })).inputs.src, { media_id: "m1" });
   assert.deepEqual((await run({ generation_mode: "i2v" }, {})).inputs.src, { media_id: "", blank_width: 1344, blank_height: 768 });
 });
+
+test("text-only on a pipeline saved before the preset named a stand-in: the resizer slot is enough, no preset change needed", async () => {
+  const s = [{ id: "src", node: "FunPackLoadMedia", roles: [{ at: "assets.source_image", input: "media_id" }] }, { id: "e", node: "FunPackEnhancePrompt", inputs: { use_image: true } },
+    { id: "t", node: "ImageTransformKJ", inputs: { target_width: 1344, target_height: 768 }, roles: [{ at: "project.video", input: "target_width" }] }];
+  const { inputs } = await buildInputs({ project: { generation_mode: "t2v", video: { target_width: 640 } }, scene: {}, slots: s, expand: async () => null });
+  assert.deepEqual(inputs.src, { media_id: "", blank_width: 640, blank_height: 768 });
+  assert.deepEqual(inputs.e, { use_image: false });
+});
