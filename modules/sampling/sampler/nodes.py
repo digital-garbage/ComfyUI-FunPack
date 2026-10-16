@@ -43,6 +43,51 @@ def scheduler_names():
     return list(comfy.samplers.SCHEDULER_NAMES)
 
 
+def _first_step_clock(model):
+    """-> (model clone carrying the clock, report). One log line saying where the time before step 1 goes:
+    model preparation (loading / patching onto the GPU), the setup after it up to the first forward pass,
+    and the first forward pass itself. ComfyUI's own wrapper hooks, on a clone, so the model is untouched."""
+    import time
+    from comfy.patcher_extension import WrappersMP
+    t = {"start": time.perf_counter()}
+
+    def stamp(name):
+        t.setdefault(name, time.perf_counter())
+
+    def prepare(executor, *a, **k):
+        try:
+            return executor(*a, **k)
+        finally:
+            stamp("prepared")
+
+    def apply_model(executor, *a, **k):
+        if "first" in t:
+            return executor(*a, **k)
+        stamp("first")
+        try:
+            return executor(*a, **k)
+        finally:
+            if comfy.model_management.get_torch_device().type == "cuda":
+                import torch
+                torch.cuda.synchronize()
+            stamp("first_done")
+
+    try:
+        clone = model.clone()
+        clone.add_wrapper_with_key(WrappersMP.PREPARE_SAMPLING, "funpack.clock", prepare)
+        clone.add_wrapper_with_key(WrappersMP.APPLY_MODEL, "funpack.clock", apply_model)
+    except Exception:                      # noqa: BLE001 -- a clock must never stop a run
+        return model, lambda: None
+
+    def report():
+        if not {"prepared", "first", "first_done"} <= t.keys():
+            return
+        log.info("FunPack Timing", f"before step 1: model prepared in {t['prepared'] - t['start']:.1f}s, "
+                 f"then {t['first'] - t['prepared']:.1f}s of setup before the first forward pass, "
+                 f"which took {t['first_done'] - t['first']:.1f}s")
+    return clone, report
+
+
 class FunPackSampler(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -134,6 +179,7 @@ class FunPackSampler(io.ComfyNode):
         if chain:
             sampler = cls._with_chain(sampler, chain, sigmas, run)
 
+        model, report = _first_step_clock(model)
         guider = comfy.samplers.CFGGuider(model)
         guider.set_conds(positive, negative)
         guider.set_cfg(cfg)
@@ -161,6 +207,7 @@ class FunPackSampler(io.ComfyNode):
         # Back to the device every other sampler returns on. Leaving it on the
         # GPU works until something downstream is on the CPU, and then it is a
         # device mismatch a long way from here.
+        report()
         samples = samples.to(comfy.model_management.intermediate_device())
 
         out = latent.copy()
