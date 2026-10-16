@@ -1,0 +1,110 @@
+/* The finishing layer: lighter type, soft fills instead of outlines, rounded cards with hairlines and room to breathe.
+ * Kept in one file so the whole look can be tuned (or switched off) in one place. Last in the cascade on purpose. */
+
+:root {
+  /* system face first: San Francisco on a Mac (the Apple look), Inter everywhere else */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, "Helvetica Neue", Arial, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter Tight", "Inter", system-ui, sans-serif;
+  --fw-medium: 450; --fw-semibold: 560; --fw-bold: 640;
+  --fs-5: 12.5px; --lh-5: 16px;
+  --fs-6: 11.5px; --lh-6: 15px;
+  --ctl-r: var(--r-4);
+  --ctl-h-sm: 24px; --ctl-h-md: 28px; --ctl-h-lg: 32px;
+  --ctl-pad-x-sm: 10px; --ctl-pad-x-md: 12px;
+  --grain-opacity: .018;
+  --card-r: 14px;
+}
+body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
+
+/* panels: a card, not a bordered strip */
+.cx-panel-head { background: transparent; border-bottom: var(--bw) solid var(--line); padding: var(--sp-3) var(--sp-7); }
+.cx-panel-title { font-size: var(--fs-4); font-weight: var(--fw-semibold); color: var(--text); letter-spacing: -.01em; }
+.cx-panel-title::before { display: none; }
+.cx-panel-status { color: var(--muted); }
+.cx-panel-body { padding: var(--sp-7); gap: var(--sp-6); }
+
+/* buttons: soft fill, no outline; the one primary is solid */
+.cx-btn { background: var(--elev-2); border-color: transparent; font-weight: var(--fw-medium); }
+.cx-btn:hover:not(:disabled) { background: var(--hover); border-color: transparent; }
+.cx-btn-primary { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: var(--fw-semibold); box-shadow: none; }
+.cx-btn-primary:hover:not(:disabled) { background: var(--accent-hi); border-color: transparent; }
+.cx-btn-ghost { background: transparent; }
+.cx-btn-ghost:hover:not(:disabled) { background: var(--hover); }
+.cx-btn.cx-on { background: var(--accent-soft); border-color: transparent; color: var(--accent-hi); }
+.cx-btn-danger { border-color: transparent; background: color-mix(in srgb, var(--danger) 12%, var(--elev-2)); }
+.cx-btn-render { border-color: transparent; font-weight: var(--fw-semibold); }
+.cx-btn-menu { background: transparent; }
+.cx-btn-menu:hover:not(:disabled) { background: var(--hover); }
+
+/* fields: filled, borderless until focused */
+.cx-input, .cx-textarea, .cx-select { border-color: transparent; background: var(--elev-2); }
+.cx-input:hover:not(:disabled), .cx-textarea:hover:not(:disabled), .cx-select:hover:not(:disabled) { border-color: var(--line-2); }
+/* a settings row is itself --elev-2: a field on it would vanish, so it sits sunken with an edge */
+.cx-settings-row :is(.cx-input, .cx-textarea, .cx-select) { background: var(--elev-1); border-color: var(--line); }
+.cx-step-btn { border-color: transparent; }
+.cx-filter-list { border-color: var(--line); border-radius: var(--r-4); }
+
+/* hairlines are quieter, rows roomier */
+.cx-segmented { border-color: transparent; background: var(--elev-2); border-radius: var(--r-4); padding: 2px; }
+.cx-segmented .cx-segment { border-radius: var(--r-3); }
+
+/* timeline: quiet clips, the selected one speaks */
+:root { --line-hover: color-mix(in srgb, var(--accent) 14%, var(--line)); }
+.cx-nle-clip { border-color: var(--line); border-radius: var(--r-4); background: var(--elev-2); }
+.cx-nle-clip:hover { border-color: var(--line-hover); }
+.cx-nle-clip.cx-on { border-color: var(--accent); background: linear-gradient(var(--accent-soft), var(--elev-2)); }
+.cx-nle-clip-title { font-weight: var(--fw-medium); }
+
+/* toolbars inside a zone wrap instead of overlapping; readouts never break mid-phrase */
+.cx-zone .cx-toolbar { flex-wrap: wrap; row-gap: var(--sp-2); }
+.cx-zone .cx-toolbar-trailing { flex-wrap: wrap; }
+.cx-zone .cx-toolbar .cx-hint, .cx-zone .cx-toolbar .cx-t { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cx-zone .cx-toolbar .cx-hint { padding-inline: var(--sp-3); }
+
+/* form fields: the label is the quiet half */
+.cx-field { gap: var(--sp-3); }
+.cx-field > .cx-label, .cx-field > label { color: var(--muted); font-size: var(--fs-5); font-weight: var(--fw-regular); }
+.cx-eyebrow { color: var(--muted); font-weight: var(--fw-semibold); }
+.cx-banner { border-radius: var(--r-4); }
+.cx-chip { border-color: transparent; }
+.cx-chip-neutral { background: var(--elev-2); }
+
+/* inside a settings card the buttons are quiet: a tinted fill with accent text, never a row of solid amber */
+.cx-settings-row .cx-btn-primary { background: var(--accent-soft); color: var(--accent-hi); }
+.cx-settings-row .cx-btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+.cx-settings-row .cx-btn { background: var(--elev-3); }
+
+/* windows and dialogs: the same rounded card, a deeper shadow, a calmer title bar */
+.cx-window, .cx-modal { border-radius: var(--card-r); border-color: var(--line); }
+.cx-window-bar, .cx-modal-head { background: transparent; border-bottom-color: var(--line); padding: var(--sp-5) var(--sp-7); }
+.cx-window-title, .cx-modal-title { font-weight: var(--fw-semibold); letter-spacing: -.01em; }
+.cx-modal-title { font-size: var(--fs-3); }
+.cx-modal-body { padding: var(--sp-8); }
+.cx-modal-foot { background: transparent; border-top-color: var(--line); padding: var(--sp-5) var(--sp-7); }
+.cx-tabs-underline .cx-tab { font-weight: var(--fw-medium); }
+
+/* menus and popovers: floating cards with pill-shaped rows, like a macOS menu */
+.cx-popover { border-radius: var(--r-5); padding: var(--sp-3); background: var(--elev-3); }
+.cx-menu-item { padding: var(--sp-3) var(--sp-5); border-radius: var(--r-3); font-size: var(--fs-4); }
+.cx-menu-item:hover:not(:disabled), .cx-menu-item.cx-on { background: var(--accent); color: var(--on-accent); }
+.cx-menu-item:hover:not(:disabled) .cx-menu-icon, .cx-menu-item:hover:not(:disabled) .cx-menu-hint { color: inherit; }
+.cx-menu-sep { margin: var(--sp-3) var(--sp-3); }
+.cx-menu-heading { padding: var(--sp-3) var(--sp-5) var(--sp-2); font-size: var(--fs-7); }
+
+/* media: tiles and the viewer are rounded, with no outline until chosen */
+.cx-cell { border-color: transparent; border-radius: var(--r-4); }
+.cx-cell:hover { border-color: var(--line-hover); }
+.cx-cell-badge, .cx-cell-duration { border-radius: var(--r-2); }
+.cx-viewer-stage { border-radius: var(--r-4); }
+.cx-viewer-media { border-radius: var(--r-3); }
+
+/* inspector: related fields share one rounded card */
+.fp-card { background: var(--elev-2); border-radius: var(--r-5); padding: var(--sp-6); gap: var(--sp-5); }
+.fp-card .cx-input, .fp-card .cx-textarea, .fp-card .cx-select { background: var(--elev-3); }
+.fp-card .cx-segmented { background: var(--elev-3); }
+.cx-panel-body > .cx-eyebrow, .cx-stack > .cx-eyebrow { margin-block-start: var(--sp-4); }
+
+/* list views read as a grouped card, like a settings list */
+.cx-settings-content .cx-media-list { background: var(--elev-2); border-radius: var(--r-5); padding: var(--sp-3); gap: 0; }
+.cx-settings-content .cx-media-row { border-radius: var(--r-3); border-color: transparent; background: transparent; }
+.cx-settings-content .cx-media-row:hover { background: var(--hover); }

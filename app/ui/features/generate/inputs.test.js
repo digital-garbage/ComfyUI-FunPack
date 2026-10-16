@@ -1,0 +1,104 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { buildInputs } from "./inputs.js";
+
+const slots = [
+  { id: "p", roles: [{ at: "generation.prompt", input: "text" }] },
+  { id: "s", roles: [{ at: "assets.source_image" }] },
+  { id: "k", roles: [{ at: "project.video", input: "steps" }, { at: "project.negative", input: "neg" }] },
+];
+
+test("each value lands on the slot whose role asks for it", async () => {
+  const { inputs } = await buildInputs({ project: { video: { steps: 8 }, negative: "blur" }, scene: { text: "a cat", source_image: "m1" }, slots,
+    expand: async ({ text }) => ({ text: `[${text}]` }) });
+  assert.deepEqual(inputs, { p: { text: "[a cat]" }, s: { media_id: "m1" }, k: { steps: 8, neg: "blur" } });
+});
+
+test("a failing expander sends the typed text", async () => {
+  const { inputs } = await buildInputs({ project: {}, scene: { text: "x" }, slots, expand: async () => { throw new Error("down"); } });
+  assert.equal(inputs.p.text, "x");
+});
+
+test("a failing expander is said, not silent", async () => {
+  const r = await buildInputs({ project: {}, scene: { text: "x" }, slots, expand: async () => null });
+  assert.ok(r.notes.some((n) => /could not be expanded/.test(n)));
+  const ok = await buildInputs({ project: {}, scene: { text: "x" }, slots, expand: async () => ({ text: "x" }) });
+  assert.ok(!ok.notes.some((n) => /could not be expanded/.test(n)));
+});
+
+test("a role that drives length is fed from the project number the timeline draws", async () => {
+  const s = [{ id: "k", roles: [{ at: "project.video", input: "length", drives: "frames" }, { at: "project.video", input: "width" }] }];
+  const { inputs } = await buildInputs({ project: { num_frames_per_scene: 49, video: { length: 97, width: 640 } }, scene: {}, slots: s, expand: async () => null });
+  assert.deepEqual(inputs.k, { length: 49, width: 640 });
+});
+
+test("no prompt role is reported, not silently ignored", async () => {
+  const { noPrompt } = await buildInputs({ project: {}, scene: { text: "x" }, slots: [], expand: async () => null });
+  assert.equal(noPrompt, true);
+});
+
+test("each build draws a fresh seed, and a unit's own length overrides the project's", async () => {
+  const s = [{ id: "n", roles: [{ at: "generation.seed", input: "seed" }, { at: "project.video", input: "length", drives: "frames" }] }];
+  const args = { project: { num_frames_per_scene: 97 }, scene: {}, slots: s, expand: async () => null, frames: 49 };
+  const a = await buildInputs({ ...args, seed: () => 1 }), b = await buildInputs({ ...args, seed: () => 2 });
+  assert.deepEqual([a.inputs.n.seed, b.inputs.n.seed, a.inputs.n.length], [1, 2, 49]);
+});
+
+test("starting shots from a prompt sends no picture even when the scene has one", async () => {
+  const { inputs } = await buildInputs({ project: { generation_mode: "t2v" }, scene: { text: "a cat", source_image: "m1" }, slots, expand: async ({ text }) => ({ text }) });
+  assert.equal(inputs.s.media_id, "");
+});
+
+test("a hook's inputs are merged and its notes come back", async () => {
+  const hook = ({ scene }) => ({ inputs: { k: { extra: scene.text } }, notes: ["said"] });
+  const r = await buildInputs({ project: {}, scene: { text: "x" }, slots, hooks: [hook, () => null], expand: async ({ text }) => ({ text }) });
+  assert.equal(r.inputs.k.extra, "x");
+  assert.deepEqual(r.notes, ["said"]);
+});
+
+test("a hook that throws does not stop the run: its problem comes back as a note", async () => {
+  const r = await buildInputs({ project: {}, scene: { text: "x" }, slots, hooks: [() => { throw new Error("boom"); }], expand: async ({ text }) => ({ text }) });
+  assert.equal(r.inputs.p.text, "x");
+  assert.match(r.notes[0], /boom/);
+});
+
+test("a shot with no text and no start picture is said; text from the project's anchor counts as text", async () => {
+  const expand = async ({ text, anchor }) => ({ text: [anchor, text].filter(Boolean).join(" ") });
+  const said = async (project, scene) => (await buildInputs({ project, scene, slots, expand })).notes.some((n) => /no text/.test(n));
+  assert.equal(await said({}, { text: "  " }), true);
+  assert.equal(await said({ anchor: "a cat" }, { text: "" }), false);
+  assert.equal(await said({}, { text: "", source_image: "m1" }), false);
+});
+
+test("the no-text note goes by what is sent: a carried frame counts, a picture t2v blanks does not", async () => {
+  const expand = async ({ text }) => ({ text });
+  const carry = [async () => ({ inputs: { s: { media_id: "frame" } } })];
+  const noted = async (project, scene, hooks = []) => (await buildInputs({ project, scene, slots, expand, hooks })).notes.some((n) => /no text/.test(n));
+  assert.equal(await noted({}, { text: "" }, carry), false);
+  assert.equal(await noted({ generation_mode: "t2v" }, { text: "", source_image: "m1" }), true);
+});
+
+test("a fixed seed (seed: null) sends no seed: the seed node's own number runs", async () => {
+  const s = [{ id: "n", roles: [{ at: "generation.seed", input: "seed" }], inputs: { seed: 7 } }];
+  const { inputs } = await buildInputs({ project: {}, scene: {}, slots: s, expand: async () => null, seed: null });
+  assert.equal((inputs.n || {}).seed, undefined);
+});
+
+test("the shot camera node is told which project this is, whatever roles the saved pipeline carries", async () => {
+  const slots = [{ id: "shot_camera", node: "FunPackShotCamera", roles: [] }];
+  const { inputs } = await buildInputs({ project: { id: "proj1", scenes: [], video: {} }, scene: { id: "s", text: "x", references: [] }, slots, expand: async ({ text }) => ({ text }) });
+  assert.equal(inputs.shot_camera.project, "proj1");
+});
+
+test("text-only: a slot that can stand in for the picture is told the size of the slot that shapes it, and a picked picture is sent as is", async () => {
+  const like = { slot: "t", width: "target_width", height: "target_height", unsend: { slot: "e", input: "use_image" } };
+  const s = [{ id: "src", roles: [{ at: "assets.source_image", input: "media_id", blank_like: like }] }, { id: "e", inputs: { use_image: true } },
+    { id: "t", inputs: { target_width: 1344, target_height: 768 }, roles: [{ at: "project.video", input: "target_width" }] }];
+  const run = (project, scene) => buildInputs({ project, scene, slots: s, expand: async () => null });
+  const t2v = await run({ generation_mode: "t2v", video: { target_width: 640 } }, { source_image: "m1" });
+  assert.deepEqual(t2v.inputs.src, { media_id: "", blank_width: 640, blank_height: 768 });
+  assert.deepEqual(t2v.inputs.e, { use_image: false });                          // the enhancer is not handed the grey stand-in
+  assert.equal((await run({ generation_mode: "i2v" }, { source_image: "m1" })).inputs.e, undefined);
+  assert.deepEqual((await run({ generation_mode: "i2v" }, { source_image: "m1" })).inputs.src, { media_id: "m1" });
+  assert.deepEqual((await run({ generation_mode: "i2v" }, {})).inputs.src, { media_id: "", blank_width: 1344, blank_height: 768 });
+});

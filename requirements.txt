@@ -1,16 +1,14 @@
-# Version floors ONLY where FunPack needs one, and never a bare upgrade of anything the
-# rest of ComfyUI compiles against. `pip install -r` upgrades a package whose floor is not
-# met — on a rental full of native extensions (torch, comfy-kitchen, comfy-aimdo,
-# onnxruntime, opencv) a numpy or transformers bump under them does not raise, it segfaults
-# hours later. The updater now prints exactly which packages moved; check that line first
-# when a machine starts misbehaving after an update.
-transformers>=5.0.0
-huggingface_hub
-safetensors
-numpy
-# Reads .gguf containers in the FunPack loaders. Pure python + numpy; it does not
-# pull CUDA or any model. Without it a .gguf needs the ComfyUI-GGUF node pack instead.
+# Version floors ONLY where FunPack needs one, and never a bare upgrade of
+# anything the rest of ComfyUI compiles against.
+#
+# SLA's sol-attn method needs comfy_kitchen's compiled sol_attn kernel, first in 0.2.32. A lower
+# version is reported on update, never upgraded automatically: it is compiled against torch.
+comfy-kitchen>=0.2.32
+
+# Reads .gguf containers in the FunPack loaders. Pure python + numpy; it does
+# not pull CUDA or any model. Without it a .gguf needs the ComfyUI-GGUF node
+# pack instead.
 gguf
-Pillow
-insightface
-opencv-python-headless
+
+# spaCy (Automatic camera and focus) and nvidia-vfx (NVIDIA RTX Super Resolution) are add-ons:
+# installed on the next start after they are switched on in Settings ▸ Modules (core/addons.py).

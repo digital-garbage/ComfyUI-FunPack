@@ -1,0 +1,91 @@
+"""The default pipeline, as data.
+
+Every slot here can be pointed at a different node or taken out entirely, and
+that is only true because this is a list rather than a function. v4's equivalent
+was a `CORE` dict inside the builder, so "remove this node" had nothing to
+delete and "use a different node" had nothing to change -- the pipeline was code,
+and code is not a thing a user can edit.
+
+The rule for what belongs here: enough to generate with nothing else wired. A
+run with no overrides at all has to produce a picture, because that is what makes
+the UI an override layer rather than a requirement.
+
+Nothing about these slots is privileged. Core does not know this list exists; it
+is handed one and builds it.
+
+`roles` is how a slot puts one of its inputs on the app's own surface: the
+prompt is a slot input like any other, and typing it into a box beside the
+picture rather than digging for the node it belongs to is the whole difference
+between a pipeline and an app. The name is a mount point, so a role naming a
+place this shell does not offer is simply not shown.
+
+`group` is the pipeline's own idea of how it reads to a person -- the cards the
+app shows are these names, in the order they first appear. It travels on the
+slot rather than living in the app, so a pipeline that replaced every slot keeps
+its own arrangement, and a group is created by a slot claiming a name nobody
+used yet rather than by registering it anywhere.
+"""
+
+ID = "pipeline"
+TITLE = "Pipeline"
+STAGE = "load"
+CATEGORY = "system"
+STATUS = "proven"
+
+# Slot ids are stable: they are how an override says which slot it means, and
+# they end up as node ids in the queued prompt.
+DEFAULT = [
+    {"id": "model", "group": "Loaders", "node": "FunPackDiffusionModelLoader", "inputs": {
+        "weight_dtype": "default", "compute_dtype": "default", "attention": "default"}},
+    {"id": "clip", "group": "Loaders", "node": "FunPackCLIPLoader", "inputs": {"type": "stable_diffusion"}},
+    {"id": "vae", "group": "Loaders", "node": "FunPackVAELoader", "inputs": {"dtype": "bfloat16"}},
+
+    {"id": "positive", "group": "Preparation", "node": "CLIPTextEncode",
+     "roles": [{"at": "generation.prompt", "input": "text", "label": "Prompt"}],
+     "inputs": {"clip": ["clip", 0], "text": ""}},
+    {"id": "negative", "group": "Preparation", "node": "CLIPTextEncode",
+     # A project-level field, not a per-run one: most FunPack pipelines run at
+     # CFG 1, where a negative prompt does nothing, so it does not belong beside
+     # the prompt every Generate reads.
+     "roles": [{"at": "project.negative", "input": "text", "label": "Negative prompt"}],
+     "inputs": {"clip": ["clip", 0], "text": ""}},
+
+    {"id": "latent", "group": "Preparation", "node": "FunPackEmptyLatent",
+     "roles": [{"at": "project.video", "input": "width", "label": "Width"},
+               {"at": "project.video", "input": "height", "label": "Height"},
+               {"at": "project.video", "input": "length", "label": "Length", "drives": "frames"}],
+     "inputs": {
+        "model": ["model", 0], "width": 512, "height": 512, "length": 1, "batch_size": 1}},
+
+    {"id": "settings", "group": "Preparation", "node": "FunPackModifierSettings", "inputs": {"settings": "{}"}},
+    {"id": "modifiers", "group": "Preparation", "node": "FunPackLoadModifiers", "inputs": {
+        "model": ["model", 0], "settings": ["settings", 0]}},
+
+    {"id": "sampler", "group": "Sampling", "node": "FunPackSampler",
+     # The three dials that get reached for constantly. v4 buried them several
+     # clicks deep in Engine Settings; here they are on the main window because
+     # the slot says they belong there.
+     "roles": [{"at": "generation.sampling", "input": "steps", "label": "Steps"},
+               {"at": "generation.sampling", "input": "sampler_name", "label": "Sampler"},
+               {"at": "generation.sampling", "input": "scheduler", "label": "Scheduler"},
+               {"at": "generation.seed", "input": "seed", "label": "Seed"}],
+     "inputs": {
+        "model": ["modifiers", 0], "positive": ["positive", 0], "negative": ["negative", 0],
+        "latent": ["latent", 0], "settings": ["settings", 0],
+        "seed": 0, "steps": 20, "cfg": 7.0,
+        "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0}},
+
+    {"id": "decode", "group": "Render", "node": "FunPackDecode", "inputs": {
+        "samples": ["sampler", 0], "vae": ["vae", 0], "model": ["model", 0]}},
+
+    {"id": "save", "group": "Render", "node": "SaveImage", "inputs": {
+        "images": ["decode", 0], "filename_prefix": "FunPack"}},
+]
+
+
+def default():
+    """A fresh copy: a caller that edits the pipeline must not edit everyone's."""
+    return [dict(slot, inputs=dict(slot.get("inputs") or {})) for slot in DEFAULT]
+
+
+PROVIDES = {"default_pipeline": default}

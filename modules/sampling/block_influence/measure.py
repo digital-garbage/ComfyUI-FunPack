@@ -1,0 +1,269 @@
+"""The probe's arithmetic and its stored profile: no model, no routes."""
+
+import contextlib
+
+import torch
+
+from ..._core import config, dit_hooks, registry
+
+KIND = "block_influence"
+MIN_PER_GROUP = 2           # liked AND disliked before a difference is one
+SWITCH = config.ROOT / "block_influence.enabled"   # on disk: a fresh rental resumes recording
+
+
+# Why recording cannot or did not store anything, for the panel (shown only while recording is on).
+problem = None
+
+
+def enabled() -> bool:
+    # On until someone turns it off: with no switch file yet (a fresh rental) recording runs.
+    try:
+        return SWITCH.read_text().strip() != "0"
+    except OSError:
+        return True
+
+
+def set_enabled(on: bool) -> bool:
+    SWITCH.parent.mkdir(parents=True, exist_ok=True)
+    SWITCH.write_text("1" if on else "0")
+    return bool(on)
+
+
+def _aside():
+    """The measurement's own tensors stay out of ComfyUI's memory recorder (aimdo), which assumes every step
+    allocates the same: the running sums grow differently from step to step and broke it ("aimdo memory compile
+    error") whenever no other module had switched the recorder off. The block itself still runs inside it."""
+    try:
+        from comfy.model_prefetch import pause_malloc_graph
+    except ImportError:                          # a ComfyUI without the recorder has nothing to pause
+        return contextlib.nullcontext()
+    return pause_malloc_graph()
+
+
+class Tally:
+    """One run's per-block sums, kept on the device until the run ends.
+
+    No `.item()` per block per step (50 blocks x steps host syncs): sums are 0-dim
+    tensors and are read once, after sampling. Rows are strided down to
+    ~`max_rows` before the norms so the cost does not grow with H3's sequence length.
+    """
+
+    def __init__(self, n, max_rows=512):
+        self.n, self.max_rows = n, max_rows
+        self._sum = {k: [None] * n for k in ("raw", "ratio", "novelty")}
+        self._count = {k: [0] * n for k in ("raw", "ratio", "novelty")}
+        self._prev = (None, -1)         # previous block's push, for the novelty cosine
+        self._spans = {}
+
+    def _span(self, args, src):
+        seq = int(src.shape[0])
+        if seq not in self._spans:
+            self._spans[seq] = dit_hooks.row_span(
+                dit_hooks.target_rows(args.get("mod_segments"), seq, src.device, "video"))
+        return self._spans[seq]
+
+    def _add(self, kind, block, value):
+        s = self._sum[kind][block]
+        self._sum[kind][block] = value if s is None else s + value
+        self._count[kind][block] += 1
+
+    def measure(self, block, args, original):
+        """Run the block and record how far it moved the picture rows."""
+        src = args.get("img")
+        sel = before = None
+        with _aside():
+            if torch.is_tensor(src) and src.dim() == 2:
+                span = self._span(args, src)
+                if span is not None:
+                    sel = slice(span[0], span[1], max(1, (span[1] - span[0]) // self.max_rows))
+                    # A COPY, read before the block runs: a block that writes its residual in
+                    # place leaves `src` already holding the result, and every delta is zero.
+                    before = src[sel].detach().to(torch.float32, copy=True)
+        out = original(args)
+        with _aside():
+            if before is not None and torch.is_tensor(out.get("img")) \
+                    and out["img"].shape[0] == src.shape[0]:
+                delta = out["img"][sel].detach().float() - before
+                push = delta.norm()
+                self._add("raw", block, push)
+                self._add("ratio", block, push / before.norm().clamp(min=1e-8))
+                last, last_block = self._prev
+                # A block index that does not exceed the last one means a new step began:
+                # pairing across it would compare the end of one step to the start of the next.
+                if last is not None and block > last_block and last.shape == delta.shape:
+                    self._add("novelty", block, torch.nn.functional.cosine_similarity(
+                        delta.flatten(), last.flatten(), dim=0))
+                self._prev = (delta, block)
+        return out
+
+    def blocks_seen(self) -> int:
+        return sum(1 for c in self._count["raw"] if c)
+
+    def rows(self):
+        """{name: [n_blocks] tensor} (NaN where a block saw nothing), or None when
+        nothing was measured -- which must be said, not stored as a flat profile."""
+        if not self.blocks_seen():
+            return None
+        rows = {}
+        for name in ("ratio", "raw", "novelty"):
+            have = [i for i, c in enumerate(self._count[name]) if c]
+            vec = torch.full((self.n,), float("nan"))
+            if have:
+                means = torch.stack([self._sum[name][i].float() / self._count[name][i] for i in have])
+                vec[have] = means.cpu()                      # the one host sync
+            rows[name] = vec
+        return rows
+
+
+def profile(rows) -> dict:
+    """Depth profile from a key's rated rows.
+
+    `overall` is where the model does its work regardless of ratings; `share` is
+    each block's RAW push as a fraction of all blocks' (rank by this: the ratio
+    shrinks with depth by construction, since the stream grows); `difference` is
+    liked minus disliked; `flatness` is the spread of RAW push as a fraction of
+    its mean -- near 0 means every block moves the stream equally and there is
+    nothing to aim at. `novelty` ~1: a block amplifies its predecessor, ~0 it
+    adds something new, negative it partly undoes it.
+    """
+    rows = [r for r in rows if {"ratio", "raw", "novelty"} <= set(r["rows"])]
+    empty = {"used": 0, "overall": {}, "difference": None, "share": {}, "novelty": {}, "mean_novelty": None,
+             "flatness": None, "n_liked": 0, "n_disliked": 0}
+    if not rows:
+        return empty
+    n = len(rows[-1]["rows"]["ratio"])
+    rows = [r for r in rows if len(r["rows"]["ratio"]) == n]     # a different model's rows
+    reward = torch.tensor([float(r["reward"]) for r in rows])
+    stack = {k: torch.stack([r["rows"][k].float() for r in rows]) for k in ("ratio", "raw", "novelty")}
+
+    def mean(name, mask=None):
+        m = stack[name] if mask is None else stack[name][mask]
+        return torch.nanmean(m, dim=0) if len(m) else torch.full((n,), float("nan"))
+
+    def table(vec):
+        return {str(i): float(v) for i, v in enumerate(vec) if torch.isfinite(v)}
+
+    overall, raw, novelty = mean("ratio"), mean("raw"), mean("novelty")
+    seen = torch.isfinite(raw)
+    share = table(raw / raw[seen].sum()) if seen.any() and raw[seen].sum() > 1e-12 else {}
+    liked, disliked = reward > 0, reward < 0
+    difference = None
+    if int(liked.sum()) >= MIN_PER_GROUP and int(disliked.sum()) >= MIN_PER_GROUP:
+        difference = table(mean("ratio", liked) - mean("ratio", disliked))
+    # Flatness is read on RAW push: the ratio falls with depth by construction (the stream grows), so
+    # a flat model would read as uneven on it.
+    vals = raw[torch.isfinite(raw)]
+    flat = float(vals.std(unbiased=False) / vals.mean()) if len(vals) and abs(float(vals.mean())) > 1e-12 else None
+    nov = novelty[torch.isfinite(novelty)]
+    return {"used": len(rows), "overall": table(overall), "difference": difference, "share": share,
+            "novelty": table(novelty), "mean_novelty": float(nov.mean()) if len(nov) else None,
+            "flatness": flat, "n_liked": int(liked.sum()), "n_disliked": int(disliked.sum())}
+
+
+GROUPS = ("liked", "image", "composition", "both")
+
+
+def _group(row):
+    """liked; or a dislike sorted by its axis: image, composition, or both (plain dislike)."""
+    reward = float(row["reward"])
+    if reward > 0:
+        return "liked"
+    if reward == 0:
+        return None
+    return row.get("axis") if row.get("axis") in ("image", "composition") else "both"
+
+
+def groups(rows, shuffles=200, seed=0) -> dict:
+    """Do the four groups point in different directions over the block profile?
+
+    For each dislike group, `d = mean(group) - mean(liked)`; the answer is the cosine between
+    those directions. The control reshuffles the group labels over the same clips (same group
+    sizes) and asks how often that cosine comes out as high. A real difference should sit
+    above the shuffled range; inside it, the ratings are not telling the groups apart yet.
+    """
+    rows = [r for r in rows if "ratio" in r["rows"]]
+    if not rows:
+        return {"used": 0, "counts": {}, "cos": {}, "note": "nothing recorded yet"}
+    n = len(rows[-1]["rows"]["ratio"])
+    rows = [r for r in rows if len(r["rows"]["ratio"]) == n]
+    stack = torch.stack([r["rows"]["ratio"].float() for r in rows])
+    # A block some clip never measured is left out of every group, not filled in with a guess.
+    stack = stack[:, torch.isfinite(stack).all(dim=0)]
+    if stack.shape[1] == 0:
+        return {"used": len(rows), "counts": {g: sum(1 for r in rows if _group(r) == g) for g in GROUPS},
+                "cos": {}, "note": "no block was measured on every clip"}
+    labels = [_group(r) for r in rows]
+    counts = {g: labels.count(g) for g in GROUPS}
+
+    def directions(labs):
+        means = {}
+        for g in GROUPS:
+            idx = [i for i, x in enumerate(labs) if x == g]
+            if len(idx) >= MIN_PER_GROUP:
+                means[g] = stack[idx].mean(dim=0)
+        if "liked" not in means:
+            return {}
+        return {g: means[g] - means["liked"] for g in ("image", "composition", "both") if g in means}
+
+    def cosines(d):
+        pairs = {}
+        names = sorted(d)
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                pairs[f"{a} vs {b}"] = float(torch.nn.functional.cosine_similarity(d[a], d[b], dim=0))
+        return pairs
+
+    observed = cosines(directions(labels))
+    if not observed:
+        return {"used": len(rows), "counts": counts, "cos": {}, "note": "not enough clips in each group yet"}
+    gen = torch.Generator().manual_seed(seed)
+    null = {k: [] for k in observed}
+    for _ in range(shuffles):
+        perm = torch.randperm(len(labels), generator=gen).tolist()
+        for k, v in cosines(directions([labels[i] for i in perm])).items():
+            null[k].append(v)
+    chance = {k: {"mean": sum(v) / len(v), "p95": sorted(v)[int(0.95 * (len(v) - 1))]} for k, v in null.items() if v}
+    return {"used": len(rows), "counts": counts, "cos": observed, "chance": chance}
+
+
+def _kind(key):
+    kind = registry.current().ask("taste_kind", key, KIND)
+    if kind is None:
+        raise ValueError("the Taste key module is off, so there is nowhere to read profiles from")
+    return kind
+
+
+def resolve(key):
+    """The key to show. The panel asks for a placeholder ("default") when it does not know
+    which Taste key the runs write to, so a key with nothing recorded falls back to the key
+    the latest capture went to -- and the answer says which one it is."""
+    if _kind(key).path().exists():
+        return key
+    latest = registry.current().ask("taste_latest_key")
+    return latest if latest and _kind(latest).path().exists() else key
+
+
+def state(key, fallback=True) -> dict:
+    """What Settings > Refinement & Taste shows for one key. `fallback` False answers for
+    exactly that key (after a Clear, which must not show another key's data)."""
+    key = resolve(key) if fallback else key
+    rows = _kind(key).rows()
+    prof = profile(rows)
+    shown = problem if enabled() else None
+    return {"key": key, "enabled": enabled(), "runs": len(rows), "problem": shown,
+            "skipped": len(rows) - prof["used"], "min_per_group": MIN_PER_GROUP,
+            **prof}
+
+
+def four_groups(key, fallback=True) -> dict:
+    """The four-group report for one key, for the panel (same key rules as state())."""
+    key = resolve(key) if fallback else key
+    return {"key": key, "enabled": enabled(), **groups(_kind(key).rows())}
+
+
+def clear(key):
+    _kind(key).clear()
+
+
+def path_of(key):
+    return _kind(key).path()

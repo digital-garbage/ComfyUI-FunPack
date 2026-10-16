@@ -1,0 +1,407 @@
+"""Validating an announcement.
+
+Everything here refuses rather than repairs. A module whose declaration is wrong
+does not get a best-effort panel -- it does not load at all, and says why once.
+That is the same rule the UI follows: absent, not approximate.
+"""
+
+import math
+from typing import Any, Dict, List, Tuple
+
+from .contract import CATEGORIES, NUMERIC, STAGES, TYPES, UI_HINTS, ModuleSpec
+
+
+class SchemaError(ValueError):
+    """A declaration core will not accept."""
+
+
+SCALARS = (str, int, float, bool)
+
+# Content the UI renders as text. Anything non-scalar here would have to be
+# interpreted to be displayed, and interpreting module-supplied content is the
+# one thing the kit will not do.
+TEXT_KEYS = ("label", "hint", "unit", "placeholder")
+
+
+def _require_text(value: Any, where: str) -> None:
+    if not isinstance(value, str):
+        raise SchemaError(f"{where} must be a string; got {type(value).__name__}.")
+
+
+def validate_setting(key: str, spec: Any, siblings: Dict[str, dict]) -> dict:
+    where = f"setting {key!r}"
+    if not isinstance(spec, dict):
+        raise SchemaError(f"{where} must be a dict; got {type(spec).__name__}.")
+
+    kind = spec.get("type")
+    if kind not in TYPES:
+        raise SchemaError(f"{where} has unknown type {kind!r}. Known: {', '.join(sorted(TYPES))}.")
+
+    if "default" not in spec:
+        # Without one there is no value for a headless run, and the panel would
+        # have to invent a starting point that apply() never agreed to.
+        raise SchemaError(f"{where} has no default.")
+
+    for text_key in TEXT_KEYS:
+        if text_key in spec:
+            _require_text(spec[text_key], f"{where}'s {text_key}")
+
+    hint = spec.get("ui")
+    if hint is not None and hint not in UI_HINTS[kind]:
+        raise SchemaError(
+            f"{where} asks for ui {hint!r}, which is not available for a {kind}. "
+            f"Allowed: {', '.join(UI_HINTS[kind])}."
+        )
+
+    if kind == "enum":
+        _validate_enum(spec, where)
+    elif kind in NUMERIC:
+        _validate_numeric(spec, where, kind)
+    elif kind == "bool":
+        if not isinstance(spec["default"], bool):
+            raise SchemaError(f"{where} is a bool but its default is {spec['default']!r}.")
+    elif kind == "color":
+        _validate_colour(spec["default"], where)
+    else:
+        if not isinstance(spec["default"], str):
+            raise SchemaError(f"{where} is a {kind} but its default is not a string.")
+
+    if "when" in spec:
+        _validate_when(spec["when"], where, siblings, key)
+
+    return spec
+
+
+def _validate_enum(spec: dict, where: str) -> None:
+    options = spec.get("options")
+    if not isinstance(options, (list, tuple)) or not options:
+        raise SchemaError(f"{where} is an enum with no options.")
+
+    values = []
+    for i, option in enumerate(options):
+        if not isinstance(option, dict):
+            raise SchemaError(f"{where} option {i} must be a dict with value and label.")
+        if "value" not in option or "label" not in option:
+            raise SchemaError(f"{where} option {i} needs both a value and a label.")
+        if not isinstance(option["value"], SCALARS):
+            raise SchemaError(f"{where} option {i}'s value must be a scalar.")
+        _require_text(option["label"], f"{where} option {i}'s label")
+        values.append(option["value"])
+
+    if len(set(values)) != len(values):
+        raise SchemaError(f"{where} has duplicate option values.")
+    if spec["default"] not in values:
+        raise SchemaError(f"{where}'s default {spec['default']!r} is not one of its options.")
+
+
+# Accepted as #rgb, #rrggbb or #rrggbbaa. One spelling in, one spelling out --
+# a module that has to guess whether it was handed "red", "#f00" or "255,0,0"
+# will guess wrong somewhere.
+_HEX = frozenset("0123456789abcdefABCDEF")
+
+
+def _validate_colour(value, where: str) -> None:
+    if not isinstance(value, str) or not value.startswith("#"):
+        raise SchemaError(f"{where} is a colour and must be a hex string like '#ff8800'; got {value!r}.")
+    digits = value[1:]
+    if len(digits) not in (3, 6, 8) or any(c not in _HEX for c in digits):
+        raise SchemaError(f"{where} is not a valid hex colour: {value!r}.")
+
+
+def _validate_numeric(spec: dict, where: str, kind: str) -> None:
+    default = spec["default"]
+    if isinstance(default, bool) or not isinstance(default, (int, float)):
+        raise SchemaError(f"{where} is a {kind} but its default is {default!r}.")
+    if kind == "int" and not isinstance(default, int):
+        raise SchemaError(f"{where} is an int but its default is a float.")
+    # The same check the OVERRIDE path makes, on the door nobody was watching.
+    # A caller-supplied NaN was refused while a module's own NaN default sailed
+    # through -- and a default is the value MOST runs use, because a setting
+    # nobody touches never reaches the override check at all.
+    if not math.isfinite(default):
+        raise SchemaError(f"{where}'s default must be a finite number, got {default!r}.")
+
+    low, high = spec.get("min"), spec.get("max")
+    for name, bound in (("min", low), ("max", high)):
+        if bound is not None and (isinstance(bound, bool) or not isinstance(bound, (int, float))):
+            raise SchemaError(f"{where}'s {name} must be a number.")
+        if bound is not None and not math.isfinite(bound):
+            raise SchemaError(f"{where}'s {name} must be a finite number, got {bound!r}.")
+    if low is not None and high is not None and low > high:
+        raise SchemaError(f"{where} has min {low} above max {high}.")
+    if low is not None and default < low:
+        raise SchemaError(f"{where}'s default {default} is below its min {low}.")
+    if high is not None and default > high:
+        raise SchemaError(f"{where}'s default {default} is above its max {high}.")
+
+    step = spec.get("step")
+    if step is not None and (isinstance(step, bool) or not isinstance(step, (int, float)) or step <= 0):
+        raise SchemaError(f"{where}'s step must be a positive number.")
+
+
+def _validate_when(when: Any, where: str, siblings: Dict[str, dict], key: str) -> None:
+    if not isinstance(when, dict) or not when:
+        raise SchemaError(f"{where}'s when must be a non-empty dict of sibling conditions.")
+    for other, expected in when.items():
+        if other == key:
+            raise SchemaError(f"{where}'s when refers to itself.")
+        if other not in siblings:
+            # A condition on a key that does not exist is always false, so the
+            # row would simply never appear -- a typo that reads as a decision.
+            raise SchemaError(f"{where}'s when refers to {other!r}, which this module does not declare.")
+        if not isinstance(expected, SCALARS) and not isinstance(expected, (list, tuple)):
+            raise SchemaError(f"{where}'s when value for {other!r} must be a scalar or a list.")
+        options = siblings[other].get("options") if isinstance(siblings[other], dict) else None
+        if isinstance(options, (list, tuple)):
+            allowed = [o.get("value") for o in options if isinstance(o, dict)]
+            for value in expected if isinstance(expected, (list, tuple)) else [expected]:
+                if value not in allowed:            # a value the setting can never hold: the condition is never true
+                    raise SchemaError(f"{where}'s when value {value!r} for {other!r} is not one of its options.")
+
+
+def validate_nodes(value: Any, module_id: str) -> list:
+    """The node classes a module contributes.
+
+    Checked structurally, not by isinstance against `io.ComfyNode`, so core stays
+    importable without ComfyUI -- the same property that lets the whole suite run
+    outside it. The ComfyUI-specific checks (a FunPack-prefixed node_id, and no
+    two modules claiming one id) happen in `core.nodes`, where ComfyUI exists.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        raise SchemaError(
+            f"module {module_id!r}'s nodes must be a list; got {value!r}."
+        )
+
+    for node in value:
+        if not isinstance(node, type):
+            raise SchemaError(
+                f"module {module_id!r} lists {node!r} as a node, which is not a class."
+            )
+        for method in ("define_schema", "execute"):
+            if not callable(getattr(node, method, None)):
+                raise SchemaError(
+                    f"module {module_id!r}'s node {node.__name__} has no {method}(). "
+                    f"A FunPack node is a comfy_api io.ComfyNode subclass."
+                )
+    return list(value)
+
+
+def validate_traits(value: Any, module_id: str):
+    """A module's trait provider: callable(model) -> iterable of trait names."""
+    if value is None:
+        return None
+    if not callable(value):
+        raise SchemaError(
+            f"module {module_id!r}'s traits must be a callable(model), got "
+            f"{type(value).__name__}."
+        )
+    return value
+
+
+def refuse_or_warn(problems: List[str], where: str, guards_off: bool) -> None:
+    """Raise, or say it and carry on.
+
+    Full control means the user asked for the raw behaviour -- a one-step
+    schedule, a width the model cannot use -- so a refusal becomes a warning.
+    It is never silent: a run made without the guards has to be identifiable as
+    one afterwards, because the consequences land later than the choice.
+    """
+    if not problems:
+        return
+    if not guards_off:
+        # RuntimeError, not SchemaError: SchemaError means a DECLARATION is
+        # wrong and the module does not load. This is a value supplied at run
+        # time, and the run is what stops.
+        raise RuntimeError(f"{where}:\n  " + "\n  ".join(problems))
+
+    from . import log
+    for problem in problems:
+        log.warning(where, f"{problem} -- allowed because full control is on, "
+                           f"and the consequences are yours")
+
+
+def validate_provides(value: Any, module_id: str) -> dict:
+    """Named capabilities: {name: callable}."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise SchemaError(
+            f"module {module_id!r}'s provides must be a dict of name -> callable; "
+            f"got {type(value).__name__}.")
+    for name, fn in value.items():
+        if not isinstance(name, str) or not name.strip():
+            raise SchemaError(f"module {module_id!r} provides a capability with no name.")
+        if not callable(fn):
+            raise SchemaError(
+                f"module {module_id!r}'s {name!r} capability is not callable.")
+    return dict(value)
+
+
+def check_values(spec, values: Any, keep_bad: bool = False) -> Tuple[Dict[str, Any], List[str]]:
+    """One module's live values, checked against its own declaration.
+
+    Returns (values, problems). Anything missing falls back to the declared
+    default, so a partial payload is fine; anything WRONG is reported rather than
+    coerced.
+
+    `keep_bad` is full control: the problem is still reported, but the value is
+    passed through instead of being replaced by the default. Reporting a
+    complaint and then quietly using the default would be the worst of both --
+    the user asked for 999 and would get 0.4 with a warning about 999.
+
+    A key NO module declares is never kept, whatever the setting: nothing reads
+    it, so keeping it cannot honour the request, only disguise the typo. v4 carried these as JSON in a string widget that nothing validated,
+    which is why it needed a hand-maintained mirror of every default and a list of
+    keys that no longer meant anything.
+    """
+    problems: List[str] = []
+    if values is None:
+        return spec.defaults(), problems
+    if not isinstance(values, dict):
+        return spec.defaults(), [f"{spec.id}: settings must be an object, got {type(values).__name__}."]
+
+    clean = spec.defaults()
+    for key, value in values.items():
+        declared = spec.settings.get(key)
+        if declared is None:
+            # A key nobody declares is a leftover (a setting that was removed or renamed) or a typo. Refusing the run would
+            # break every project saved before the change, so it is skipped -- and said, once per run.
+            from . import log
+            log.once(f"stale_setting:{spec.id}.{key}", log.WARNING, "FunPack settings",
+                     f"{spec.id}: saved setting {key!r} ignored: this module has no such setting")
+            continue
+        problem = _value_problem(declared, key, value, spec.id)
+        if problem:
+            problems.append(problem)
+            if not keep_bad:
+                continue
+        clean[key] = value
+    return clean, problems
+
+
+def _value_problem(declared: dict, key: str, value: Any, module_id: str):
+    kind = declared["type"]
+    where = f"{module_id}.{key}"
+
+    if kind == "bool":
+        if not isinstance(value, bool):
+            return f"{where} is a bool, got {value!r}."
+        return None
+
+    if kind == "enum":
+        allowed = [option["value"] for option in declared["options"]]
+        if value not in allowed:
+            return f"{where} must be one of {allowed}, got {value!r}."
+        return None
+
+    if kind == "color":
+        try:
+            _validate_colour(value, where)
+        except SchemaError as exc:
+            return str(exc)
+        return None
+
+    if kind in NUMERIC:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"{where} is a {kind}, got {value!r}."
+        # NaN and the infinities compare False against BOTH bounds, so a range
+        # check alone lets them through -- and json.loads accepts all three by
+        # default. A NaN strength reaches sampling and poisons it silently.
+        if not math.isfinite(value):
+            return f"{where} must be a finite number, got {value!r}."
+        if kind == "int" and not isinstance(value, int):
+            return f"{where} is an int, got {value!r}."
+        low, high = declared.get("min"), declared.get("max")
+        if low is not None and value < low:
+            return f"{where} is below its minimum {low}: {value}."
+        if high is not None and value > high:
+            return f"{where} is above its maximum {high}: {value}."
+        return None
+
+    if not isinstance(value, str):
+        return f"{where} is a {kind}, got {value!r}."
+    return None
+
+
+def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
+    """A validated ModuleSpec, or SchemaError naming what is wrong."""
+    for required in ("id", "title"):
+        value = announcement.get(required)
+        if not isinstance(value, str) or not value.strip():
+            raise SchemaError(f"module {source or '?'} has no {required}.")
+
+    # A mount point is only meaningful for a module with something to render.
+    # A loader or a node-only module has no panel, and forcing it to name a
+    # region would make it invent one -- which then shows up as "hidden", i.e.
+    # a module reported as broken for having nothing to show.
+    mount = announcement.get("mount")
+    renders = bool(announcement.get("settings")) or bool(announcement.get("ui"))
+    if renders and (not isinstance(mount, str) or not mount.strip()):
+        raise SchemaError(
+            f"module {announcement.get('id') or source or '?'} has settings to render "
+            f"but no mount."
+        )
+    if mount is not None and not isinstance(mount, str):
+        raise SchemaError(f"module {announcement.get('id')!r}'s mount must be a string.")
+
+    stage = announcement.get("stage", "sampling")
+    if stage not in STAGES:
+        raise SchemaError(f"module {announcement['id']!r} has unknown stage {stage!r}. Known: {', '.join(STAGES)}.")
+
+    # Unlike stage, empty is valid here -- most modules have no reason to name a
+    # category until something actually groups by it, and "uncategorised" is a
+    # real, displayable bucket rather than a refusal.
+    category = announcement.get("category") or ""
+    if category and category not in CATEGORIES:
+        raise SchemaError(
+            f"module {announcement['id']!r} has unknown category {category!r}. "
+            f"Known: {', '.join(sorted(CATEGORIES))}."
+        )
+
+    status = announcement.get("status", "experimental")
+    if status not in ("proven", "experimental"):
+        raise SchemaError(f"module {announcement['id']!r} has unknown status {status!r}.")
+
+    raw = announcement.get("settings") or {}
+    if not isinstance(raw, dict):
+        raise SchemaError(f"module {announcement['id']!r} has a non-dict settings block.")
+    settings = {key: validate_setting(key, spec, raw) for key, spec in raw.items()}
+
+    def _ids(name: str) -> list:
+        value = announcement.get(name)
+        if value is None:
+            return []
+        if isinstance(value, str) or not isinstance(value, (list, tuple)):
+            raise SchemaError(f"module {announcement['id']!r}'s {name} must be a list.")
+        for item in value:
+            if not isinstance(item, str):
+                raise SchemaError(f"module {announcement['id']!r}'s {name} must contain strings.")
+        return list(value)
+
+    uses_when = announcement.get("uses_when")
+    if uses_when is not None:
+        _validate_when(uses_when, f"module {announcement['id']!r}'s uses_when", raw, "")
+
+    return ModuleSpec(
+        nodes=validate_nodes(announcement.get("nodes"), announcement["id"]),
+        traits=validate_traits(announcement.get("traits"), announcement["id"]),
+        provides=validate_provides(announcement.get("provides"), announcement["id"]),
+        id=announcement["id"],
+        title=announcement["title"],
+        mount=announcement.get("mount") or "",
+        settings=settings,
+        requires=_ids("requires"),
+        uses=_ids("uses"),
+        uses_when=dict(uses_when or {}),
+        roles=_ids("roles"),
+        hooks=_ids("hooks"),
+        after=_ids("after"),
+        before=_ids("before"),
+        stage=stage,
+        category=category,
+        ui=announcement.get("ui"),
+        status=status,
+        source=source,
+    )

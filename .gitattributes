@@ -1,0 +1,4 @@
+# Bundled fonts are binary. Git's heuristic gets this right on its own, but an
+# explicit declaration means a checkout with core.autocrlf=true can never treat
+# one as text and rewrite its bytes.
+*.woff2 binary

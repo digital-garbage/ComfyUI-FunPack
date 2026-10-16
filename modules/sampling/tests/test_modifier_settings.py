@@ -1,0 +1,184 @@
+"""The settings payload, checked rather than trusted.
+
+v4 carried these as JSON in a string widget that nothing validated. The cost was
+visible in the code: a hand-mirrored table of every default, "regenerated from
+engine_settings.js by a test", plus a list of keys that no longer meant anything
+and had to be filtered out so they could not reach the render. Every test here
+is a thing that silently did nothing in v4.
+"""
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _needs_comfy(comfyui):
+    """Imports comfy."""
+
+
+@pytest.fixture
+def registry(monkeypatch):
+    from core import registry as registry_mod
+    from core.contract import ModuleSpec
+
+    fake = registry_mod.Registry()
+    fake.specs = {
+            "alg": ModuleSpec(id="alg", title="ALG", mount="", settings={
+                "enabled": {"type": "bool", "default": False, "label": "On"},
+                "strength": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "label": "S"},
+                "steps": {"type": "int", "default": 2, "min": 0, "max": 8, "label": "N"},
+                "mode": {"type": "enum", "default": "beat", "label": "M", "options": [
+                    {"value": "beat", "label": "Beat"}, {"value": "flat", "label": "Flat"}]},
+            }),
+    }
+    monkeypatch.setattr(registry_mod, "current", lambda rescan=False: fake)
+    return fake
+
+
+def _run(text):
+    from modules.sampling.modifiers.nodes import FunPackModifierSettings
+    return FunPackModifierSettings.execute(text).result
+
+
+def test_a_valid_payload_comes_back_merged_over_the_defaults(registry):
+    values, _status = _run('{"alg": {"enabled": true}}')
+    assert values["alg"] == {"enabled": True, "strength": 0.5, "steps": 2, "mode": "beat"}
+
+
+def test_an_empty_payload_is_fine(registry):
+    values, _status = _run("")
+    assert values == {}
+
+
+def test_malformed_json_says_so_instead_of_meaning_nothing(registry):
+    with pytest.raises(RuntimeError, match="not valid JSON"):
+        _run("{not json")
+
+
+def test_a_setting_no_module_declares_is_skipped_and_said(registry):
+    """Saved settings outlive settings: the run goes on, the log names the dead key (v4 did it silently)."""
+    from core import log as _log
+    _log._reset()
+    values, _status = _run('{"alg": {"stength": 0.5}}')
+    assert "stength" not in values["alg"]
+    assert any("stength" in r["message"] and "ignored" in r["message"] for r in _log.history())
+
+
+def test_a_module_that_is_not_installed_is_skipped_and_said(registry):
+    """A module that was removed, renamed or failed to load must not stop the projects that saved settings for it."""
+    from core import log as _log
+    _log._reset()
+    values, _status = _run('{"ghost": {"x": 1}, "alg": {"enabled": true}}')
+    assert "ghost" not in values and values["alg"]["enabled"] is True
+    assert any("'ghost'" in r["message"] and "ignored" in r["message"] for r in _log.history())
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ('{"alg": {"strength": "loud"}}', "float"),
+    ('{"alg": {"strength": 2.0}}', "above its maximum"),
+    ('{"alg": {"strength": -1.0}}', "below its minimum"),
+    ('{"alg": {"steps": 1.5}}', "int"),
+    ('{"alg": {"enabled": "yes"}}', "bool"),
+    ('{"alg": {"mode": "swing"}}', "must be one of"),
+])
+def test_a_wrong_value_is_refused_not_coerced(registry, payload, expected):
+    with pytest.raises(RuntimeError, match=expected):
+        _run(payload)
+
+
+def test_a_bool_is_not_accepted_as_a_number(registry):
+    """True == 1 in Python, so an unguarded numeric check lets a checkbox through
+    as a strength."""
+    with pytest.raises(RuntimeError, match="float"):
+        _run('{"alg": {"strength": true}}')
+
+
+def test_a_payload_that_is_not_an_object_is_refused(registry):
+    with pytest.raises(RuntimeError, match="keyed by module id"):
+        _run("[1, 2, 3]")
+
+
+def test_every_problem_is_reported_at_once(registry):
+    """One error per run means finding them one at a time."""
+    with pytest.raises(RuntimeError) as raised:
+        _run('{"alg": {"strength": 9.0, "steps": 99}}')
+    message = str(raised.value)
+    assert "above its maximum 1.0" in message and "above its maximum 8" in message
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_a_non_finite_number_is_refused(registry, literal):
+    """json.loads accepts all three by default, and NaN compares False against
+    BOTH bounds -- so a range check alone lets it through and it reaches sampling
+    as a strength that poisons everything it touches."""
+    with pytest.raises(RuntimeError, match="finite|maximum|minimum"):
+        _run('{"alg": {"strength": %s}}' % literal)
+
+
+def test_nan_specifically_is_not_silently_accepted(registry):
+    import math
+    try:
+        values, _ = _run('{"alg": {"strength": NaN}}')
+    except RuntimeError:
+        return                      # refused, which is the point
+    pytest.fail(f"NaN was accepted as {values['alg']['strength']!r} "
+                f"(isnan={math.isnan(values['alg']['strength'])})")
+
+
+# --- refused at queue time, not at execution time --------------------------
+
+def test_a_bad_payload_is_refused_before_anything_runs(registry):
+    """ComfyUI calls validate_inputs inside validate_prompt, before any node
+    executes: a wrong VALUE is found before the checkpoint loads, not after
+    (on a rented GPU that is the cost the guard exists to avoid)."""
+    from modules.sampling.modifiers.nodes import FunPackModifierSettings
+
+    said = FunPackModifierSettings.validate_inputs('{"alg": {"enabled": "yes please"}}')
+    assert said is not True
+    assert FunPackModifierSettings.validate_inputs('{"ghost": {"x": 1}}') is True      # a name nobody has is skipped, not refused
+
+
+def test_a_good_payload_passes_validation(registry):
+    from modules.sampling.modifiers.nodes import FunPackModifierSettings
+    assert FunPackModifierSettings.validate_inputs('{"alg": {"enabled": true}}') is True
+
+
+def test_an_empty_payload_passes_validation(registry):
+    from modules.sampling.modifiers.nodes import FunPackModifierSettings
+    assert FunPackModifierSettings.validate_inputs("") is True
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ("{not json", "not valid JSON"),
+    ("[1,2]", "keyed by module id"),
+    ('{"alg": {"strength": 9.0}}', "above its maximum"),
+    ('{"alg": {"strength": NaN}}', "finite"),
+])
+def test_validation_catches_the_same_things_execution_would(registry, payload, expected):
+    """The two doors must agree. A payload the queue accepts and execution
+    rejects is worse than either alone."""
+    from modules.sampling.modifiers.nodes import FunPackModifierSettings
+
+    said = FunPackModifierSettings.validate_inputs(payload)
+    assert said is not True and expected in said
+
+    with pytest.raises(RuntimeError):
+        _run(payload)
+
+
+def test_the_projects_off_list_passes_through_and_is_not_mistaken_for_a_module(registry):
+    out, _status = _run('{"alg": {"enabled": true}, "_off": {"modules": ["sharpen"]}}')
+    assert out["_off"] == {"modules": ["sharpen"]} and out["alg"]["enabled"] is True
+
+
+def test_a_malformed_off_list_is_refused_with_a_reason(registry):
+    with pytest.raises(RuntimeError, match="modules"):
+        _run('{"_off": ["sharpen"]}')
+
+
+def test_a_switched_off_modules_bad_value_does_not_refuse_the_run(registry):
+    import dataclasses
+    registry.specs["alg"] = dataclasses.replace(registry.specs["alg"], provides={"modifier": lambda *a, **k: None})
+    out, _ = _run('{"alg": {"strength": 99}, "_off": {"modules": ["alg"]}}')
+    assert "alg" not in out
+    with pytest.raises(RuntimeError, match="strength"):
+        _run('{"alg": {"strength": 99}}')

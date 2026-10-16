@@ -1,0 +1,68 @@
+/* The frame's proportions, as v4 had them: fixed side columns and a fixed-height timeline across the bottom. */
+:root { --media-w: clamp(180px, 20vw, 280px); --properties-w: clamp(270px, 28vw, 360px); --timeline-h: clamp(270px, 42vh, 340px); --pad: 10px; --pgap: 10px; }
+.fp-main { flex-direction: column; padding: 0 var(--pad) var(--pad); gap: var(--pgap); }
+.fp-row { flex: 1 1 auto; flex-direction: row; min-block-size: 0; gap: var(--pgap); }
+.fp-row > *, .fp-main > :nth-child(2) { min-inline-size: 0; border: var(--bw) solid var(--line); border-radius: var(--card-r); overflow: hidden; background: var(--elev-1); }
+.fp-row > :first-child { flex: 0 0 var(--media-w); }
+.fp-row > :nth-child(2) { flex: 1 1 auto; }
+.fp-row > :nth-child(3) { flex: 0 0 var(--properties-w); }
+.fp-main > :nth-child(2) { flex: 0 0 var(--timeline-h); min-block-size: 200px; }
+.cx-frame-head { padding-inline: calc(var(--sp-6) + var(--sp-1)); }
+.cx-frame-head > .cx-toolbar { gap: calc(var(--sp-6) + var(--sp-3)); }
+/* A zone body is a scroller of rows: they keep their height instead of squashing, and a tab strip spans the zone. */
+.cx-zone .cx-panel-body > :not(.cx-stack-fill):not(.cx-viewer) { flex-shrink: 0; }
+.cx-zone .cx-stack-fill > :not(.cx-viewer):not(.cx-stack-fill) { flex-shrink: 0; }
+.cx-zone .cx-stack-fill > .cx-segmented { display: flex; }
+.cx-zone .cx-stack-fill > .cx-segmented .cx-segment { flex: 1 1 0; }
+[hidden] { display: none !important; }
+/* An empty zone says so in the middle of it, with the controls kept at its foot. */
+.cx-zone .cx-stack-fill > .cx-empty { flex: 1 1 auto; justify-content: center; }
+
+/* Splitters: thin hit areas straddling the zone borders. */
+.fp-main, .fp-row { position: relative; }   /* side bars live in the row, so they stop above the timeline */
+.fp-split { position: absolute; z-index: 20; background: transparent; touch-action: none; }
+.fp-split:hover { background: var(--accent, var(--line)); opacity: .5; }
+.fp-split-left, .fp-split-right { top: 0; bottom: 0; inline-size: 7px; cursor: col-resize; }
+.fp-split-left { left: calc(var(--media-w) + var(--pgap) / 2 - 3.5px); }
+.fp-split-right { right: calc(var(--properties-w) + var(--pgap) / 2 - 3.5px); }
+.fp-split-bottom { left: 0; right: 0; block-size: 7px; bottom: calc(var(--pad) + var(--timeline-h) + var(--pgap) / 2 - 3.5px); cursor: row-resize; }
+
+/* Dock: a hidden zone leaves the row (and the splitter beside it). */
+.fp-hide-assets .fp-row > :nth-child(1),
+.fp-hide-preview .fp-row > :nth-child(2),
+.fp-hide-properties .fp-row > :nth-child(3) { display: none; }
+.fp-hide-assets .fp-split-left, .fp-hide-properties .fp-split-right, .fp-hide-preview .fp-split-right { display: none; }
+.fp-hide-preview .fp-row > :nth-child(3), .fp-hide-preview.fp-hide-properties .fp-row > :nth-child(1) { flex: 1 1 auto; }
+.fp-hide-assets.fp-hide-preview .fp-row > :nth-child(3) { flex: 1 1 auto; }
+.fp-split { border: 0 !important; }
+
+/* Auto-hide timeline: its title bar and a strip; full height once the pointer rests on the strip or the timeline, or during a drag. */
+:root.fp-peek .fp-main { position: relative; padding-block-end: calc(var(--peek-h, 64px) + var(--pgap)); }
+:root.fp-peek .fp-main > :nth-child(2) { position: absolute; inset-inline: 0; bottom: 0; block-size: auto; min-block-size: 0; z-index: 20; overflow: hidden; }
+:root.fp-peek .fp-main > :nth-child(2) .cx-panel-body { display: none; }
+:root.fp-peek.fp-peek-open .fp-main > :nth-child(2) { block-size: var(--timeline-h); overflow: visible; }
+:root.fp-peek.fp-peek-open .fp-main > :nth-child(2) .cx-panel-body { display: block; }
+.fp-peek-strip { display: none; }
+:root.fp-peek .fp-peek-strip { display: flex; align-items: center; justify-content: center; block-size: 26px; flex: none; font-size: var(--fs-6); color: var(--faint); user-select: none; }
+:root.fp-peek .fp-peek-strip:hover { color: var(--text); }
+:root.fp-peek.fp-peek-open .fp-peek-strip { display: none; }
+:root.fp-peek .fp-split-bottom { display: none; }
+
+/* Welcome: the maintenance actions as a 2x2 of tiles */
+.fp-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); margin-block-start: var(--sp-5); }
+.fp-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: var(--sp-5) var(--sp-6); border: 0; border-radius: var(--r-5); background: var(--elev-2); color: var(--text); text-align: left; cursor: pointer; }
+.fp-tile:hover { background: var(--hover); }
+.fp-tile-title { font-size: var(--fs-4); font-weight: var(--fw-medium); }
+.fp-tile-hint { font-size: var(--fs-6); color: var(--muted); }
+@media (max-width: 1150px) { .fp-keyhint { display: none; } }
+
+/* Models & Pipeline: every node is a card in its group */
+.fp-node-grid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--sp-5); }
+.fp-node-card { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-2); min-block-size: 84px; padding: var(--sp-6) var(--sp-6) var(--sp-5); border: 0; border-radius: var(--r-5); background: var(--elev-2); color: var(--text); text-align: left; cursor: pointer; }
+.fp-node-card:hover { background: var(--hover); }
+.fp-node-title { font-size: var(--fs-4); font-weight: var(--fw-semibold); padding-inline-end: var(--sp-6); }
+.fp-node-sub { font-size: var(--fs-6); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-inline-size: 100%; }
+.fp-node-state { position: absolute; inset-block-start: var(--sp-6); inset-inline-end: var(--sp-6); inline-size: 8px; block-size: 8px; border-radius: var(--r-pill); background: var(--good); }
+.fp-node-state.fp-needs { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 25%, transparent); }
+.fp-node-add { align-items: center; justify-content: center; background: transparent; border: var(--bw) dashed var(--line); color: var(--muted); }
+.fp-node-add .fp-node-title { padding: 0; font-weight: var(--fw-medium); }

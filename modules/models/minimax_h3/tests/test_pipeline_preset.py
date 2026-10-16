@@ -1,0 +1,156 @@
+"""The MiniMax H3 Reference-to-Video preset: does it hang together as a real
+ComfyUI graph, the way a person would load it and run it?
+
+Registers ComfyUI's own extra nodes (MiniMaxH3SigmaShift, MiniMaxH3Reference-
+ToVideo, CreateVideo, SaveVideo all live in comfy_extras), FunPack's own nodes
+the way ComfyUI itself loads a pack, and the installed KJNodes pack (for
+ImageTransformKJ) -- then runs the exact preset through core/graph.py's real
+build(), the same function a queued run is checked with.
+"""
+
+import asyncio
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture(scope="module")
+def registered(comfyui):
+    import nodes as comfy_nodes
+
+    async def load():
+        await comfy_nodes.init_extra_nodes(init_custom_nodes=False)
+        await comfy_nodes.load_custom_node(
+            str(Path(__file__).resolve().parents[4]), module_parent="custom_nodes")
+        kjnodes = Path(comfyui) / "custom_nodes" / "ComfyUI-KJNodes"
+        if kjnodes.is_dir():
+            await comfy_nodes.load_custom_node(str(kjnodes), module_parent="custom_nodes")
+
+    asyncio.run(load())
+    return comfy_nodes
+
+
+def test_the_preset_is_offered(registered):
+    from modules.models.minimax_h3.pipeline import presets
+    offered = presets()
+    assert [p["id"] for p in offered] == ["minimax_h3_reference_to_video"]      # the second-pass preset is held back
+    assert all(p["slots"] for p in offered)
+
+
+def test_the_route_serves_it(registered):
+    from core import routes as routes_mod
+
+    async def _run():
+        found = []
+        for spec, make in routes_mod.modules().providers("pipeline_presets"):
+            for preset in make():
+                found.append((spec.id, preset["id"]))
+        return found
+
+    found = asyncio.run(_run())
+    assert ("model_minimax_h3", "minimax_h3_reference_to_video") in found
+
+
+def test_the_preset_builds_a_real_graph_with_no_structural_problems(registered):
+    """Every reason build() could refuse this graph, other than a loader's own
+    file combo (model_name/clip_name.../vae_name) being unset -- those are
+    real "fresh install, no files on disk" states this preset deliberately
+    leaves for the user to fill in, not a bug in how it wires itself together.
+
+    Anything the preset itself SUPPLIES has to be a value the real node
+    schema actually accepts -- an "is not one of" for one of those is not a
+    fresh-install state, it is this preset handing the node a value that was
+    never valid. That exact bug shipped once: keep_proportion/extra_padding/
+    invert_crop/format were wrapped in a redundant {"field": "value"} dict
+    (copied from nowhere -- no other module in this codebase does this), so
+    every one of them failed this same check silently -- caught only by
+    loading the preset in a real browser, not by this test, because an
+    earlier version of this assertion swallowed ALL "is not one of" messages
+    instead of just the loader-file ones. See modules/models/minimax_h3/
+    pipeline.py's keep_proportion/extra_padding/invert_crop/format inputs.
+    """
+    from core import graph
+
+    if "ImageTransformKJ" not in registered.NODE_CLASS_MAPPINGS:
+        pytest.skip("ComfyUI-KJNodes is not installed on this machine")
+
+    from modules.models.minimax_h3.pipeline import h3_reference_to_video
+
+    _prompt, problems = graph.build(h3_reference_to_video())
+    unset_loader_file = ("needs 'model_name'", "needs 'clip_name", "needs 'vae_name'")
+    structural = [p for p in problems if not any(marker in p for marker in unset_loader_file)]
+    assert structural == [], f"unexpected graph problems: {structural}"
+
+
+def test_every_slot_id_is_unique_and_every_link_points_somewhere_real():
+    """A self-consistency check on the preset's own data, independent of
+    whether ComfyUI happens to have every node installed on this machine."""
+    from modules.models.minimax_h3.pipeline import h3_reference_to_video
+
+    slots = h3_reference_to_video()
+    ids = [s["id"] for s in slots]
+    assert len(ids) == len(set(ids)), "duplicate slot id"
+
+    known = set(ids)
+    for slot in slots:
+        for name, value in (slot.get("inputs") or {}).items():
+            if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str):
+                assert value[0] in known, (
+                    f"{slot['id']}.{name} is wired to {value[0]!r}, which is not a slot here")
+
+
+def test_a_picked_references_wire_target_resolves_and_builds_clean(registered):
+    """The exact edit boot.js's queueInputs() makes at generate time (see its
+    own use of each ref_source_N role's `wireTo`) -- proving the dotted
+    autogrow key really is what core/graph.py's AUTOGROW expansion (and
+    ComfyUI's own _io.build_nested_inputs at execution time) both agree it is,
+    not just that the STATIC, unwired preset happens to build."""
+    from core import graph
+    from modules.models.minimax_h3.pipeline import h3_reference_to_video
+
+    if "ImageTransformKJ" not in registered.NODE_CLASS_MAPPINGS:
+        pytest.skip("ComfyUI-KJNodes is not installed on this machine")
+
+    slots = h3_reference_to_video()
+    ref_slot = next(s for s in slots if s["id"] == "ref_source_1")
+    role = ref_slot["roles"][0]
+    assert role["wireTo"] == {"slot": "r2v", "input": "ref_images.ref_image_0"}
+
+    edited, refused = graph.override(
+        slots, {ref_slot["id"]: {"media_id": "abcdef012345"},
+                role["wireTo"]["slot"]: {role["wireTo"]["input"]: [ref_slot["id"], 0]}})
+    assert refused == []
+
+    _prompt, problems = graph.build(edited)
+    unset_loader_file = ("needs 'model_name'", "needs 'clip_name", "needs 'vae_name'")
+    structural = [p for p in problems if not any(marker in p for marker in unset_loader_file)]
+    assert structural == [], f"unexpected graph problems: {structural}"
+    assert _prompt["r2v"]["inputs"]["ref_images.ref_image_0"] == ["ref_source_1", 0]
+
+
+def test_no_reference_slot_is_pre_wired_into_r2v():
+    """References only enter the graph when boot.js actually adds the wire for
+    a reference the user picked -- see the preset module's own docstring. A
+    static wire here would mean R2V always sees MAX_REFERENCES entries, most
+    of them empty, corrupting its <Picture i> numbering for everyone."""
+    from modules.models.minimax_h3.pipeline import h3_reference_to_video
+
+    slots = h3_reference_to_video()
+    r2v = next(s for s in slots if s["id"] == "r2v")
+    assert not any(k.startswith("ref_images") for k in (r2v.get("inputs") or {}))
+
+
+def test_the_second_pass_preset_builds_clean_and_decodes_pass_two(registered):
+    from core import graph
+
+    if "ImageTransformKJ" not in registered.NODE_CLASS_MAPPINGS:
+        pytest.skip("ComfyUI-KJNodes is not installed on this machine")
+
+    from modules.models.minimax_h3.pipeline import h3_reference_to_video_second_pass
+
+    slots = h3_reference_to_video_second_pass()
+    _prompt, problems = graph.build(slots)
+    unset = ("needs 'model_name'", "needs 'clip_name", "needs 'vae_name'", "needs 'upscaler_name'")
+    assert [p for p in problems if not any(m in p for m in unset)] == []
+    decode = next(s for s in slots if s["id"] == "decode")
+    assert decode["inputs"]["samples"] == ["pass2", 0]

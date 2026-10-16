@@ -1,0 +1,319 @@
+"""Modifiers: what the user chose, and putting it on the model.
+
+Two nodes, because the two jobs are genuinely different. One carries the values a
+person picked; the other reads what is installed and applies whatever announced
+itself. Neither names a modifier, and no sampler is involved in either.
+
+**Modifiers attach to the MODEL, not to a sampler.** They install through
+ComfyUI's own `patcher_extension` wrappers on a CLONE of the patcher, which has
+two consequences worth stating:
+
+* Wire the resulting model into ComfyUI's own SamplerCustomAdvanced and every
+  per-step modifier still runs. The sampler's cooperation is not required, so no
+  sampler can own them -- which is the whole architectural claim, made physical.
+* `ModelPatcher.clone()` copies the wrapper lists per key, so installing on the
+  clone cannot touch the model everyone else is holding.
+* A module never gets the real patcher. It gets one that guards every hook it
+  installs, so a modifier that raises mid-sampling is dropped for the rest of
+  that run instead of ending it. Catching a failure to INSTALL was never the
+  hard part: the one that costs a rental is the hook that works at step 0 and
+  raises at step 3, after the GPU time is spent.
+
+That second point protects the ORIGINAL, and on its own it does not stop this
+node's own output being fed back in. `add_wrapper_with_key` APPENDS to a list
+under the key, and a clone carries that list, so running a model through here
+twice -- two passes, a flattened subgraph, anything that chains -- installed the
+same wrapper twice and ran it twice per step at double strength, reporting
+"1 modifier applied" both times. So every install is preceded by stripping our
+own keys: tag, then strip, which is the discipline the leaked-hook fault taught
+this project the first time. Foreign keys are never touched.
+"""
+
+import json
+
+from comfy_api.latest import io
+
+from ..._core import (control as control_mod, log, patching, registry as registry_mod,
+                      relations as relations_mod, run as run_mod,
+                      schema as schema_mod)
+
+CAPABILITY = "modifier"
+
+# A module whose install depends on something outside the node's inputs (a switch in Settings)
+# answers this with a value that changes when that does: ComfyUI re-runs this node, and the
+# modifier is installed or removed, instead of the cached model being handed back.
+CACHE_KEY = "cache_key"
+
+# Anything answering this decides whether the foundation's guards step aside.
+GUARDS_OFF = "guards_off"
+
+# Namespaced so removing ours never touches a wrapper somebody else installed.
+KEY_PREFIX = "funpack."
+
+
+class FunPackModifierSettings(io.ComfyNode):
+    """The values a person picked, on their way to the graph.
+
+    One widget, not one per setting. A socket per setting would mean this node's
+    shape changing every time any module gained an option, and every saved
+    workflow referring to sockets that had moved.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="FunPackModifierSettings",
+            display_name="FunPack Modifier Settings",
+            category="FunPack/Sampling",
+            description="Settings for every FunPack modifier, as one payload.",
+            inputs=[
+                io.String.Input(
+                    "settings", multiline=True, default="{}",
+                    tooltip='{"module_id": {"setting": value}}. The app writes this; '
+                            'editing it by hand is fine, and mistakes are reported.'),
+            ],
+            outputs=[
+                io.Custom("FUNPACK_SETTINGS").Output(display_name="settings"),
+                io.String.Output(display_name="status"),
+            ],
+        )
+
+    @classmethod
+    def validate_inputs(cls, settings: str = "{}"):
+        """Checked at QUEUE time, not at execution time.
+
+        ComfyUI runs this inside validate_prompt, before any node executes. That
+        matters on a rented GPU: without it a typo'd module id was found only
+        after the checkpoint had already loaded, which is the same "cost paid
+        before the guard fires" this project builds guards to avoid -- just one
+        layer up from sampling.
+
+        The payload is an opaque string to ComfyUI's own validator, so this is
+        the only place it can be understood before the queue accepts it.
+        """
+        problems = cls._problems(settings)
+        if not problems:
+            return True
+        # With the guards off a bad value is the user's business, so the queue
+        # accepts it and the warning is said at execution instead.
+        import json as _json
+        try:
+            raw = _json.loads((settings or "").strip() or "{}")
+        except ValueError:
+            raw = {}
+        if cls._guards_off(raw):
+            return True
+        return "FunPack Modifier Settings: " + "; ".join(problems)
+
+    @classmethod
+    def _problems(cls, settings: str):
+        """Everything wrong with this payload, or an empty list."""
+        import json as _json
+        text = (settings or "").strip() or "{}"
+        try:
+            raw = _json.loads(text)
+        except ValueError as exc:
+            return [f"this is not valid JSON -- {exc}"]
+        if not isinstance(raw, dict):
+            return [f"expected an object keyed by module id, got {type(raw).__name__}"]
+
+        specs = registry_mod.current().specs
+        problems = []
+        skip = control_mod.skipped(raw)           # off or quarantined: its values are not read, so not checked
+        for module_id, values in raw.items():
+            if module_id in skip:
+                continue
+            if module_id in control_mod.RESERVED:
+                said = control_mod.bad_off(values)
+                if said:
+                    problems.append(said)
+                continue
+            spec = specs.get(module_id)
+            if spec is None:
+                continue                  # named in saved settings, not installed: execute() says so (once) and runs without it
+            _clean, said = schema_mod.check_values(spec, values)
+            problems.extend(said)
+        return problems
+
+    @classmethod
+    def _guards_off(cls, raw) -> bool:
+        """Asked by capability, so nothing here names the module that answers."""
+        if not isinstance(raw, dict):
+            return False
+        return any(answer(raw) for _spec, answer
+                   in registry_mod.current().providers(GUARDS_OFF))
+
+    @classmethod
+    def execute(cls, settings: str) -> io.NodeOutput:
+        text = (settings or "").strip() or "{}"
+        try:
+            raw = json.loads(text)
+        except ValueError as exc:
+            raise RuntimeError(f"FunPack Modifier Settings: this is not valid JSON -- {exc}")
+        if not isinstance(raw, dict):
+            raise RuntimeError(
+                f"FunPack Modifier Settings: expected an object keyed by module id, "
+                f"got {type(raw).__name__}.")
+
+        specs = registry_mod.current().specs
+        guards_off = cls._guards_off(raw)
+        problems, checked = [], {}
+        skip = control_mod.skipped(raw)
+        for module_id, values in raw.items():
+            if module_id in skip:
+                continue
+            if module_id in control_mod.RESERVED:
+                said = control_mod.bad_off(values)
+                if said:
+                    problems.append(said)
+                else:
+                    checked[module_id] = values
+                continue
+            spec = specs.get(module_id)
+            if spec is None:
+                # Saved settings outlive modules (removed, renamed, or one that failed to load). Refusing the run for a
+                # name nobody can act on would break every project that ever used it, so it is skipped -- out loud.
+                log.once(f"stale_module:{module_id}", log.WARNING, "FunPack Modifier Settings",
+                         f"saved settings for {module_id!r} ignored: no module with that id is loaded")
+                continue
+            clean, said = schema_mod.check_values(spec, values, keep_bad=guards_off)
+            checked[module_id] = clean
+            problems.extend(said)
+
+        # Full control reaches this node too: it is in the payload being checked.
+        schema_mod.refuse_or_warn(problems, "FunPack Modifier Settings",
+                                  guards_off=cls._guards_off(raw))
+
+        named = ", ".join(sorted(checked)) or "nothing set"
+        return io.NodeOutput(checked, f"settings for {named}")
+
+
+class FunPackLoadModifiers(io.ComfyNode):
+    """Whatever announced itself, filtered by this model, installed in order."""
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="FunPackLoadModifiers",
+            display_name="FunPack Load Modifiers",
+            category="FunPack/Sampling",
+            description="Apply the enabled modifiers to a model. Works with any sampler.",
+            inputs=[
+                io.Model.Input("model"),
+                io.Custom("FUNPACK_SETTINGS").Input("settings", optional=True),
+            ],
+            outputs=[
+                io.Model.Output(display_name="model"),
+                io.String.Output(display_name="status"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, **_):
+        return "|".join([f"{spec.id}={answer()}"
+                         for spec, answer in registry_mod.current().providers(CACHE_KEY)]
+                        + ["quarantine=" + control_mod.fingerprint()])
+
+    @classmethod
+    def execute(cls, model, settings=None) -> io.NodeOutput:
+        from ..._core import traits as traits_mod
+        order = relations_mod.order
+
+        if settings is not None and not isinstance(settings, dict):
+            raise RuntimeError(
+                f"FunPack Load Modifiers: settings must be an object keyed by module "
+                f"id, got {type(settings).__name__}. Wire FunPack Modifier Settings "
+                f"into this input.")
+
+        registry = registry_mod.current()
+        specs = list(registry.specs.values())
+
+        # What this model actually is, read off the model itself.
+        available = traits_mod.traits_of(model, specs)
+
+        offering = [spec for spec in specs if spec.provides.get(CAPABILITY)]
+        compatible, incompatible = traits_mod.split(offering, available)
+        compatible, switched = control_mod.partition(compatible, settings)
+        ordered, rejected = order(compatible)
+
+        patched = model.clone()
+        stripped = patching.strip(patched, KEY_PREFIX)
+        applied, notes = [], []
+
+        # This node does NOT start the run. ComfyUI caches a node whose inputs
+        # have not changed, and only the seed changes between most generations --
+        # so this executes once and every later run would report under the first
+        # one's id. The sampler marks the run instead: it is what generates, and
+        # it re-executes whenever anything about the generation differs.
+        dropped = patching.Dropped()
+        patched.funpack_dropped = dropped
+        patched.model_options["funpack_dropped"] = dropped      # stock nodes' clone() keeps model_options, not attributes
+
+        # Asked for by capability, so nothing here names the module that answers
+        # and a build without it installed has nobody saying yes -- which reads
+        # as guarded, the safe direction.
+        full_control = any(answer(settings)
+                           for _spec, answer in registry.providers(GUARDS_OFF))
+        # Read before the values are checked, because it changes what checking
+        # them DOES: refuse, or let it through and say so.
+        if full_control:
+            notes.append("full control is ON: modifiers are not guarded, and a "
+                         "failing one will end the run. Any consequences of "
+                         "these settings are yours.")
+        if stripped:
+            notes.append(f"replaced {stripped} modifier(s) already on this model")
+        notes.extend(switched)
+
+        # Checked HERE, not only where the payload was made. A FUNPACK_SETTINGS
+        # socket is typed by a string tag, so a dict can reach this node without
+        # ever passing through FunPackModifierSettings -- a raw API prompt, or a
+        # second producer of that type. Validating only at the producer is a
+        # guard on one of two doors, and the one left open let NaN through:
+        # `sigma > nan` is False at every step, so a modifier became a permanent
+        # no-op while reporting that it had been applied.
+        problems = []
+        chosen = {}
+        known = registry_mod.current().specs
+        for module_id in (settings or {}):
+            if module_id not in known and module_id not in control_mod.RESERVED:
+                log.once(f"stale_module_load:{module_id}", log.WARNING, "FunPack Load Modifiers",
+                         f"saved settings for {module_id!r} ignored: no module with that id is loaded")
+        for spec in ordered:
+            values, said = schema_mod.check_values(
+                spec, (settings or {}).get(spec.id), keep_bad=full_control)
+            chosen[spec.id] = values
+            problems.extend(said)
+        schema_mod.refuse_or_warn(problems, "FunPack Load Modifiers",
+                                  guards_off=full_control)
+
+        for spec in ordered:
+            values = chosen[spec.id]
+            install = spec.provides[CAPABILITY]
+            key = KEY_PREFIX + spec.id
+            guarded = patching.GuardedPatcher(patched, key, dropped, guarding=not full_control)
+            try:
+                note = install(guarded, values, key=key)
+            except Exception as exc:             # noqa: BLE001
+                # Absent, and said out loud. A modifier that half-installed and
+                # carried on is how a run silently stops meaning what it says.
+                log.broke(f"{spec.id}.{CAPABILITY}", exc, "installing itself")
+                control_mod.start_failed(spec, exc)
+                notes.append(f"{spec.id}: failed to install -- {type(exc).__name__}: {exc}")
+                continue
+            if note is None:
+                continue                          # the module decided it is off
+            applied.append(spec.id)
+            notes.append(f"{spec.id}: {note}")
+            for name in guarded.unguarded:
+                # Named rather than assumed safe: this hook shape has no known
+                # neutral result, so a failure inside it can still end the run.
+                notes.append(f"{spec.id}: {name} could not be guarded")
+
+        for spec in incompatible:
+            notes.append(f"{spec.id}: needs {', '.join(traits_mod.missing_for(spec, available))}")
+        for spec, why in rejected:
+            notes.append(f"{spec.id}: {why}")
+
+        headline = (f"{len(applied)} modifier(s) applied"
+                    + (f": {', '.join(applied)}" if applied else ""))
+        return io.NodeOutput(patched, "\n".join([headline, f"model traits: {', '.join(available) or 'none read'}", *notes]))

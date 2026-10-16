@@ -1,0 +1,738 @@
+import test from "node:test";
+import assert from "node:assert";
+import { createPipelineState } from "../pipeline_state.js";
+
+let lastApi;
+function load(posts, opts = {}) {
+  const defaults = [
+    { id: "model", node: "Loader", group: "Loaders", inputs: { file: "", dtype: "bf16" } },
+    { id: "gen", node: "Gen", group: "Sampling", inputs: { steps: 8, model: ["model", 0] } },
+  ];
+  const API = {
+      pipeline: async () => ({ slots: JSON.parse(JSON.stringify(defaults)), incomplete: [], refused: [], queueable: true }),
+      editPipeline: async (body) => {
+        body = JSON.parse(JSON.stringify(body));     // sent over HTTP: the server never shares the page's objects
+        posts.push(body);
+        if (body.action === "replace") { const sl = body.slots.find((x) => x.id === body.slot); if (sl) { sl.node = body.node; sl.inputs = {}; } }
+        if (opts.delay) await new Promise((r) => setTimeout(r, opts.delay));
+        const bad = (body.slots || []).findIndex((s) => typeof s.node !== "string");
+        if (bad >= 0) { const e = new Error(`slot ${bad} has no node`); throw e; } for (const [id, edits] of Object.entries(body.inputs || {})) { const sl = body.slots.find((x) => x.id === id); if (sl) sl.inputs = { ...sl.inputs, ...edits }; }
+        return { slots: body.slots, incomplete: [], refused: [], queueable: true }; },
+      modules: async () => ({ modules: [] }),
+      probeFamily: async () => ({}),
+  };
+  lastApi = API;
+  return createPipelineState(API, { answerMs: opts.answerMs });
+}
+
+test("a project's saved pipeline lays its values over the server's default, keeping what the default added", async () => {
+  const posts = [];
+  const PS = load(posts);
+  await PS.adopt([
+    { id: "model", node: "Loader", group: "Mine", inputs: { file: "h3.safetensors" } },
+    { id: "gen", node: "OtherNode", inputs: { steps: 99 } },                 // a swapped node: the person's swap stays
+    { id: "extra", node: "Added", inputs: { x: 1 } },                         // the person's own
+  ]);
+  const by = Object.fromEntries(PS.slots().map((s) => [s.id, s]));
+  assert.deepStrictEqual(by.model.inputs, { file: "h3.safetensors", dtype: "bf16" });
+  assert.strictEqual(by.model.group, "Mine");
+  assert.deepStrictEqual([by.gen.node, by.gen.inputs.steps], ["OtherNode", 99]);
+  assert.ok(by.extra);
+});
+
+test("a project's pipeline going in is announced once it is in, so views redraw; a real edit is announced too", async () => {
+  const posts = [];
+  const PS = load(posts);
+  let heard = [];
+  PS.subscribe((s) => { heard.push(s.find((x) => x.id === "model").inputs.file); });
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "a" } }]);
+  assert.deepStrictEqual(heard, ["a"]);
+  await PS.save({ inputs: { model: { file: "b" } } });
+  assert.deepStrictEqual(heard, ["a", "b"]);
+});
+
+test("nothing saved leaves the session's pipeline as it is", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const before = JSON.stringify(PS.slots());
+  await PS.adopt([]);
+  assert.strictEqual(JSON.stringify(PS.slots()), before);
+});
+
+test("a v4-shaped or hostile saved slot cannot brick the pipeline", async () => {
+  const PS = load([]);
+  await PS.adopt([
+    { id: "model", node: "Loader", inputs: { file: "h3.safetensors" } },
+    { id: "abc123", node_class: "OldV4Node", inputs: {} },
+    { id: "bad", node: "X", inputs: [1, 2] },
+  ]);
+  assert.deepStrictEqual(PS.slots().map((s) => s.id), ["model", "gen"]);
+  assert.strictEqual(PS.slots()[0].inputs.file, "h3.safetensors");
+  await PS.save({ inputs: { model: { file: "new" } } });
+  assert.strictEqual(PS.slots()[0].inputs.file, "new");
+});
+
+test("an answer about the previous project's pipeline does not overwrite the one just opened", async () => {
+  const PS = load([], { delay: 30 });
+  await PS.ensureLoaded();
+  const inflight = PS.save({ inputs: { model: { file: "A-file" } } });
+  await new Promise((r) => setTimeout(r, 5));
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "B-file" } }]);
+  await inflight;
+  assert.strictEqual(PS.slots()[0].inputs.file, "B-file");
+});
+
+test("nothing loaded (ComfyUI unreachable) leaves slots null, never an empty pipeline", async () => {
+  const PS = load([]);
+  lastApi.pipeline = async () => { throw new Error("down"); };
+  const P2 = createPipelineState(lastApi);
+  await P2.adopt([{ id: "model", node: "Loader", inputs: {} }]);
+  assert.strictEqual(P2.slots(), null);
+});
+
+test("a project's pipeline waits out an unreachable server and goes in on the first successful load", async () => {
+  const PS = load([]);
+  const good = lastApi.pipeline;
+  let up = false;
+  lastApi.pipeline = async () => { if (!up) throw new Error("down"); return good(); };
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "h3.safetensors" } }]);
+  assert.strictEqual(PS.slots(), null);
+  up = true;
+  await PS.ensureLoaded();
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "h3.safetensors");
+});
+
+test("adopt says so when the project's pipeline could not go in", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  lastApi.editPipeline = async () => { throw new Error("tunnel"); };
+  assert.strictEqual(await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "x" } }]), false);
+  assert.strictEqual(await PS.adopt([]), true);
+});
+
+test("an edit made while a project's pipeline goes in lands on that pipeline", async () => {
+  const PS = load([], { delay: 30 });
+  await PS.ensureLoaded();
+  const adopting = PS.adopt([{ id: "model", node: "Loader", inputs: { file: "B-file", dtype: "fp8" } }]);
+  const edit = PS.save({ inputs: { model: { dtype: "int8" } } });
+  await Promise.all([adopting, edit]);
+  const model = PS.slots().find((s) => s.id === "model");
+  assert.deepStrictEqual([model.inputs.file, model.inputs.dtype], ["B-file", "int8"]);
+});
+
+test("a failed module-list fetch is retried on the next save, not remembered as done", async () => {
+  const posts = [];
+  const PS = load(posts);
+  let calls = 0;
+  lastApi.modules = async () => { if (++calls === 1) throw new Error("down"); return { modules: [{ id: "m" }] }; };
+  await PS.ensureLoaded();
+  assert.deepStrictEqual(Object.keys(PS.modulesById()), []);
+  await PS.save({ inputs: { model: { file: "z.safetensors" } } });
+  assert.deepStrictEqual(Object.keys(PS.modulesById()), ["m"]);
+});
+
+
+test("a slot the person removed stays removed when the project is opened again", async () => {
+  const PS = load([]);
+  await PS.adopt([{ id: "model", node: "Loader", inputs: {} }], ["gen"]);
+  assert.deepStrictEqual(PS.slots().map((s) => s.id), ["model"]);
+  assert.deepStrictEqual(PS.removedIds(), ["gen"]);
+});
+
+test("a structural edit is sent on its own and its refusal is handed back", async () => {
+  const posts = [];
+  const PS = load(posts);
+  await PS.ensureLoaded();
+  lastApi.editPipeline = async (body) => {
+    posts.push(body);
+    return { slots: body.slots, refused: ["nope"], incomplete: [], queueable: false };
+  };
+  const res = await PS.edit({ action: "remove", slot: "gen" });
+  assert.deepStrictEqual(res.refused, ["nope"]);
+  assert.strictEqual(posts.at(-1).action, "remove");
+  assert.deepStrictEqual(PS.removedIds(), []);                 // refused: nothing is remembered as removed
+});
+
+test("a default link the person unwired stays unwired when the project is opened again", async () => {
+  const PS = load([]);
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "x" } },
+                  { id: "gen", node: "Gen", inputs: { steps: 8 } }], [], { gen: ["model"] });
+  assert.strictEqual("model" in PS.slots().find((s) => s.id === "gen").inputs, false);
+  assert.deepStrictEqual(PS.unwiredMap(), { gen: ["model"] });
+});
+
+test("a default link an older project never had (an update added it) is kept", async () => {
+  const PS = load([]);
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "x" } },
+                  { id: "gen", node: "Gen", inputs: { steps: 8 } }]);       // nothing recorded as unwired
+  assert.strictEqual("model" in PS.slots().find((s) => s.id === "gen").inputs, true);
+});
+
+test("a group moved while a save is in flight is still moved when it lands", async () => {
+  const PS = load([], { delay: 30 });
+  await PS.ensureLoaded();
+  const inflight = PS.save({ inputs: { model: { file: "z" } } });
+  await new Promise((r) => setTimeout(r, 5));
+  await PS.setGroup("gen", "Mine");
+  await inflight;
+  assert.strictEqual(PS.slots().find((s) => s.id === "gen").group, "Mine");
+});
+
+test("a default slot swapped for the same node, or removed and added back, does not get its links back on reopen", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const API = lastApi;
+  API.editPipeline = async (body) => ({ refused: [], incomplete: [], queueable: true,
+    slots: body.slots.map((s) => (s.id === "gen" ? { ...s, inputs: {} } : s)) });
+  await PS.edit({ action: "replace", slot: "gen", node: "Gen" });
+  assert.deepStrictEqual(PS.unwiredMap(), { gen: ["model"] });
+  const saved = JSON.parse(JSON.stringify(PS.slots()));
+  const again = load([]);
+  await again.adopt(saved, [], PS.unwiredMap());
+  assert.strictEqual("model" in again.slots().find((s) => s.id === "gen").inputs, false);
+});
+
+test("a project with every slot removed does not get the default back", async () => {
+  const posts = [];
+  const PS = load(posts);
+  await PS.adopt([], ["model", "gen"]);
+  assert.ok(posts.length > 0);
+  assert.deepStrictEqual(posts.at(-1).slots, []);
+});
+
+test("a group change queued behind a save in flight is not re-stamped over a later group", async () => {
+  const PS = load([], { delay: 20 });
+  await PS.ensureLoaded();
+  const inflight = PS.save({ inputs: { model: { file: "z" } } });
+  const first = PS.setGroup("gen", "Mine");
+  await Promise.all([inflight, first]);
+  await PS.setGroup("gen", "Other");
+  assert.strictEqual(PS.slots().find((s) => s.id === "gen").group, "Other");
+});
+
+test("restore puts back the pipeline as snapshotted: slots, removed, unwired, and tells the project", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const snap = PS.snapshot();
+  await PS.save({ inputs: { model: { file: "changed" } } });
+  lastApi.editPipeline = async (body) => ({ refused: [], incomplete: [], queueable: true, slots: body.slots });
+  await PS.edit({ action: "remove", slot: "gen" });
+  assert.deepStrictEqual(PS.removedIds(), ["gen"]);
+  let heard = 0;
+  PS.subscribe(() => { heard++; });
+  const res = await PS.restore(snap);
+  assert.deepStrictEqual(res.refused, []);
+  assert.deepStrictEqual(PS.slots(), snap.slots);
+  assert.deepStrictEqual(PS.removedIds(), []);
+  assert.strictEqual(heard, 1);
+});
+
+test("a refused restore leaves the pipeline as it is", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const snap = PS.snapshot();
+  await PS.save({ inputs: { model: { file: "changed" } } });
+  lastApi.editPipeline = async () => ({ refused: ["no"], slots: [] });
+  const res = await PS.restore(snap);
+  assert.deepStrictEqual(res.refused, ["no"]);
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "changed");
+});
+
+test("a module switched off is remembered with the settings, listed as off, and can be switched back on", async () => {
+  const posts = [];
+  const PS = load(posts);
+  await PS.ensureLoaded();
+  lastApi.modules = async () => ({ modules: [{ id: "sharpen", settings: {} }, { id: "alg", settings: {} }], control: {} });
+  await PS.refreshControl();
+  await PS.setOff("sharpen", true);
+  assert.strictEqual(PS.isOff("sharpen"), true);
+  assert.strictEqual(PS.isOff("alg"), false);
+  assert.deepStrictEqual(posts.at(-1).values._off, { modules: ["sharpen"] });
+  await PS.setOff("alg", true);
+  await PS.setOff("sharpen", false);
+  assert.deepStrictEqual(posts.at(-1).values._off, { modules: ["alg"] });
+});
+
+test("Disable all enhancements is saved on its own, hides every module, and keeps the per-module choices underneath", async () => {
+  const posts = [];
+  const PS = load(posts);
+  await PS.ensureLoaded();
+  lastApi.modules = async () => ({ modules: [{ id: "sharpen", settings: {} }, { id: "alg", settings: {} }], control: {} });
+  await PS.refreshControl();
+  await PS.setOff("alg", true);
+  await PS.setAllOff(true);
+  assert.strictEqual(PS.allOff(), true);
+  assert.deepStrictEqual(posts.at(-1).values._off, { modules: ["alg"], all: true });
+  assert.deepStrictEqual(PS.activeModules(), []);
+  await PS.setAllOff(false);
+  assert.strictEqual(PS.allOff(), false);
+  assert.strictEqual(PS.isOff("alg"), true);
+});
+
+test("a value edit is in the live slots at once, before any save answers", async () => {
+  const PS = load([]);
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "" } }, { id: "cfg", node: "Settings", inputs: { values: "{\"_off\":{}}" } }]);
+  const sink = () => PS.slots().find((x) => x.id === "cfg").inputs.values;
+  PS.setAllOff(true);
+  assert.strictEqual(JSON.parse(sink())._off.all, true);
+});
+
+test("a project opened after another does not inherit the first one's pending switch", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  await PS.setOff("sharpen", true);
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "x" } }]);
+  assert.strictEqual(PS.isOff("sharpen"), false);
+});
+
+test("a pipeline replaced whole (a preset) is reopened as it was: no default slot or role comes back", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const preset = [{ id: "ckpt", node: "Checkpoint", inputs: { file: "sd.safetensors" } },
+    { id: "gen", node: "Gen", roles: [{ at: "generation.seed", input: "seed" }], inputs: { steps: 20, model: ["ckpt", 0] } }];
+  await PS.restore({ slots: preset, removed: [], unwired: {} });
+  assert.deepStrictEqual([PS.removedIds(), PS.whole()], [["model"], true]);
+  const again = load([]);
+  await again.adopt(PS.slots(), PS.removedIds(), {}, PS.whole());
+  assert.deepStrictEqual(again.slots(), preset);
+  assert.strictEqual(again.whole(), true);
+});
+
+test("a whole pipeline saved before the flag existed is still reopened as it was", async () => {
+  const preset = [{ id: "ckpt", node: "Checkpoint", inputs: { file: "sd.safetensors" } }, { id: "gen", node: "Gen", inputs: { steps: 20 } }];
+  const PS = load([]);
+  await PS.adopt(preset, [], {});
+  assert.deepStrictEqual(PS.slots(), preset);
+});
+
+test("an edited default stays a layer: the default's new values still fill in, and Revert to it is not whole", async () => {
+  const PS = load([]);
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "a" } }, { id: "gen", node: "Gen", inputs: { steps: 3 } }], [], {}, false);
+  assert.strictEqual(PS.whole(), false);
+  assert.deepStrictEqual(PS.slots().find((s) => s.id === "model").inputs, { file: "a", dtype: "bf16" });
+  const snap = PS.snapshot();
+  await PS.restore({ slots: [{ id: "x", node: "X", inputs: {} }], removed: [], unwired: {} });
+  await PS.restore(snap);
+  assert.strictEqual(PS.whole(), false);
+});
+
+const withCheckpoint = (PS) => { lastApi.pipeline = async () => ({ slots: [{ id: "model", node: "FunPackCheckpointLoader", inputs: { ckpt_name: "a" } }], incomplete: [], refused: [], queueable: true }); return PS; };
+
+test("a module's settings count only when something would read them: its own node, or a user of what it serves that is on", async () => {
+  const learner = (mode, enabled = true) => ({ id: "learner", settings: { enabled: { type: "bool", default: enabled }, mode: { type: "enum", default: mode } }, uses: ["taste_store"], uses_when: { mode: "learned" } });
+  const cam = { id: "cam", nodes: ["CamNode"], settings: { on: { default: false } } }, taste = { id: "taste", serves: ["taste_store"], settings: { key: { default: "" } } };
+  const check = async (mods) => { const PS = withCheckpoint(load([])); lastApi.modules = async () => ({ modules: mods }); await PS.ensureLoaded(); const by = PS.modulesById(); return [PS.useful(by.cam), PS.useful(by.taste)]; };
+  assert.deepStrictEqual(await check([cam, taste, learner("learned")]), [false, true]);     // the pipeline has no CamNode
+  assert.deepStrictEqual(await check([cam, taste, learner("manual")]), [false, false]);    // its one user is on a manual value
+  const always = { ...learner("manual"), uses_when: {} };                                   // a manual mode that still reads the store (shot memory)
+  assert.deepStrictEqual(await check([cam, taste, always]), [false, true]);
+  assert.deepStrictEqual(await check([cam, taste, learner("learned", false)]), [false, false]);
+  assert.deepStrictEqual(await check([{ ...cam, nodes: ["FunPackCheckpointLoader"] }, taste]), [true, false]);
+});
+
+test("a file picked in a save is announced after its modules are known", async () => {
+  const PS = withCheckpoint(load([]));
+  await PS.ensureLoaded();
+  lastApi.probeFamily = async () => ({ detected: true, traits: [] });
+  lastApi.modules = async () => ({ modules: [{ id: "new" }] });
+  let seen = null;
+  PS.subscribe(() => { seen = Object.keys(PS.modulesById()); });
+  await PS.save({ inputs: { model: { ckpt_name: "picked" } } });
+  assert.deepStrictEqual(seen, ["new"]);
+});
+
+test("a model file no module recognises says so, and why nothing is hidden", async () => {
+  const PS = withCheckpoint(load([]));
+  lastApi.probeFamily = async () => ({ detected: false, reason: "a.ckpt: only .safetensors can be inspected without loading it" });
+  await PS.ensureLoaded();
+  assert.match(PS.saveNotes().join(" "), /only \.safetensors.*every module is offered/);
+});
+
+test("a save reaches listeners before the model probe answers, so a project switched to meanwhile cannot take it", async () => {
+  const PS = withCheckpoint(load([]));
+  await PS.ensureLoaded();
+  let answer;
+  lastApi.probeFamily = () => new Promise((r) => { answer = r; });
+  let heard = 0;
+  PS.subscribe(() => { heard += 1; });
+  const saving = PS.save({ inputs: { model: { ckpt_name: "picked" } } });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(heard >= 1, "announced while the probe is still out");
+  answer({ detected: true, traits: [] });
+  await saving;
+});
+
+const sink = (blob) => ({ id: "settings", node: "Sink", inputs: { settings: JSON.stringify(blob) } });
+
+test("a setting changed while another project's pipeline goes in is built on that project's values", async () => {
+  const posts = [];
+  const PS = load(posts, { delay: 30 });
+  lastApi.modules = async () => ({ modules: [{ id: "sharpen", settings: { enabled: { type: "bool", default: false }, amount: { type: "float", default: 0.5 } } }] });
+  const edit = lastApi.editPipeline;
+  lastApi.editPipeline = (body) => {                  // the server writes the whole values blob into the sink, as core's place() does
+    if (body.values) body.slots.filter((x) => x.node === "Sink").forEach((x) => { x.inputs = { settings: JSON.stringify(body.values) }; });
+    return edit(body);
+  };
+  await PS.adopt([sink({ sharpen: { enabled: true, amount: 0.9 } })]);
+  const opening = PS.adopt([sink({ sharpen: { enabled: false, amount: 0.1 } })]);
+  await new Promise((r) => setTimeout(r, 5));
+  await PS.setModuleValue("sharpen", "amount", 0.5);
+  await opening;
+  assert.deepStrictEqual(PS.currentValues().sharpen, { enabled: false, amount: 0.5 });
+});
+
+test("a new project made while another project's pipeline goes in inherits it, never a half-replaced one", async () => {
+  const posts = [];
+  const PS = load(posts, { delay: 30 });
+  await PS.ensureLoaded();
+  const opening = PS.adopt([{ id: "model", node: "Loader", inputs: { file: "A" } }]);
+  const fresh = PS.adopt([], [], {}, undefined, true);
+  let seenByNew = null;
+  await fresh.then(() => { seenByNew = PS.slots().find((s) => s.id === "model").inputs.file; });
+  await opening;
+  assert.strictEqual(seenByNew, "A");
+});
+
+test("a modifier's settings count only when the pipeline has both the settings node and the loader that installs it", async () => {
+  const loader = { id: "mods", nodes: ["FunPackModifierSettings", "FunPackLoadModifiers"], uses: ["modifier"] };
+  const sharpen = { id: "sharpen", serves: ["modifier"], settings: { amount: { default: 0.5 } } };
+  const learner = { id: "q", serves: ["modifier"], uses: ["taste_store"], settings: { enabled: { type: "bool", default: true } } };
+  const taste = { id: "taste", serves: ["modifier", "taste_store"], settings: { key: { default: "" } } };
+  const check = async (nodes, mods = [loader, sharpen, learner, taste]) => {
+    const PS = load([]);
+    lastApi.pipeline = async () => ({ slots: nodes.map((node, i) => ({ id: `s${i}`, node, inputs: {} })), incomplete: [], refused: [], queueable: true });
+    lastApi.modules = async () => ({ modules: mods });
+    await PS.ensureLoaded();
+    const by = PS.modulesById();
+    return [PS.useful(by.sharpen), PS.useful(by.taste)];
+  };
+  assert.deepStrictEqual(await check(["FunPackModifierSettings", "FunPackLoadModifiers"]), [true, true]);
+  assert.deepStrictEqual(await check(["FunPackModifierSettings"]), [false, false]);           // loader removed: nothing installs them, so no learner reads taste
+  assert.deepStrictEqual(await check(["CheckpointLoaderSimple", "KSampler"]), [false, false]); // a plain imported workflow
+  assert.deepStrictEqual(await check(["FunPackModifierSettings", "FunPackLoadModifiers"], [loader, sharpen, taste]), [true, false]);   // the key installed, but no learner reads it
+});
+
+test("a project retried after the first load failed goes in, and nothing waits forever", async () => {
+  const posts = [];
+  const PS = load(posts);
+  const real = lastApi.pipeline;
+  lastApi.pipeline = async () => { throw new Error("tunnel blip"); };
+  const saved = [{ id: "model", node: "Loader", inputs: { file: "mine" } }];
+  assert.strictEqual(await PS.adopt(saved), false);
+  lastApi.pipeline = real;
+  const done = await Promise.race([PS.adopt(saved), new Promise((r) => setTimeout(() => r("HUNG"), 1000))]);
+  assert.strictEqual(done, true);
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "mine");
+  await Promise.race([PS.save({ inputs: { model: { file: "next" } } }), new Promise((_, no) => setTimeout(() => no(new Error("save hung")), 1000))]);
+});
+
+test("with every enhancement disabled, the modules kept underneath still count, so the Modules page can list them", async () => {
+  const loader = { id: "mods", nodes: ["FunPackModifierSettings", "FunPackLoadModifiers"], uses: ["modifier"] };
+  const sharpen = { id: "sharpen", serves: ["modifier"], settings: { amount: { default: 0.5 } } };
+  const PS = load([]);
+  lastApi.pipeline = async () => ({ slots: [{ id: "a", node: "FunPackModifierSettings", inputs: {} }, { id: "b", node: "FunPackLoadModifiers", inputs: {} }], incomplete: [], refused: [], queueable: true });
+  lastApi.modules = async () => ({ modules: [loader, sharpen], control: {} });
+  await PS.ensureLoaded();
+  await PS.setAllOff(true);
+  assert.strictEqual(PS.allOff(), true);
+  assert.strictEqual(PS.usefulness()(PS.modulesById().sharpen), true);
+});
+
+test("a request that never answers gives up, so the pipeline loads once the server answers and edits go through", async () => {
+  const PS = load([], { answerMs: 50 });
+  const real = lastApi.pipeline;
+  lastApi.pipeline = () => new Promise(() => {});                 // hangs forever
+  const saved = [{ id: "model", node: "Loader", inputs: { file: "mine" } }];
+  assert.strictEqual(await PS.adopt(saved), false);
+  lastApi.pipeline = real;
+  assert.strictEqual(await PS.adopt(saved), true);
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "mine");
+  await PS.save({ inputs: { model: { file: "next" } } });
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "next");
+});
+
+test("a module list that failed once is asked for again, and the error clears when it comes", async () => {
+  const PS = load([]);
+  const real = async () => ({ modules: [{ id: "sharpen", settings: {} }] });
+  lastApi.modules = async () => { throw new Error("HTTP 500"); };
+  await PS.ensureLoaded();
+  assert.ok(PS.loadError());
+  lastApi.modules = real;
+  let heard = 0;
+  PS.subscribe(() => { heard += 1; });
+  await PS.ensureLoaded();
+  assert.deepStrictEqual([PS.loadError(), Object.keys(PS.modulesById()), heard], [null, ["sharpen"], 1]);
+});
+
+test("a project opened while ComfyUI is down never gets an earlier project's waiting pipeline", async () => {
+  const PS = load([]);
+  const real = lastApi.pipeline;
+  lastApi.pipeline = async () => { throw new Error("down"); };
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "A" } }]);
+  await PS.adopt([], [], {}, undefined, false);                    // an older project with nothing saved
+  lastApi.pipeline = real;
+  await PS.ensureLoaded();
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "");
+});
+
+test("a saved pipeline the server answers with a refusal is a refusal, not an outage; no answer is an outage", async () => {
+  for (const [err, outage] of [[Object.assign(new Error("slot 0 role 0 has no input"), { status: 400 }), false], [new Error("Failed to fetch"), true], [Object.assign(new Error("Bad gateway"), { status: 502 }), true], [Object.assign(new Error("Internal Server Error"), { status: 500 }), true]]) {
+    const PS = load([]);
+    await PS.ensureLoaded();
+    const real = lastApi.editPipeline;
+    lastApi.editPipeline = async () => { throw err; };
+    assert.strictEqual(await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "x" } }]), false);
+    assert.strictEqual(PS.unreachable(), outage, err.message);
+    lastApi.editPipeline = real;
+  }
+});
+
+test("settings can be read from a frozen pipeline, apart from the live one and edits not yet landed", async () => {
+  const PS = load([]);
+  lastApi.modules = async () => ({ modules: [{ id: "continuity", settings: { carry: { type: "bool", default: true } } }] });
+  await PS.adopt([{ id: "settings", node: "Sink", inputs: { settings: JSON.stringify({ continuity: { carry: true } }) } }]);
+  const frozen = structuredClone(PS.slots());
+  await PS.adopt([{ id: "settings", node: "Sink", inputs: { settings: JSON.stringify({ continuity: { carry: false }, _off: { all: true } }) } }]);
+  assert.deepStrictEqual([PS.currentValues(frozen).continuity.carry, PS.allOff(frozen)], [true, false]);
+  assert.deepStrictEqual([PS.currentValues().continuity.carry, PS.allOff()], [false, true]);
+});
+
+const withSink = (blob, mods) => {
+  const PS = load([]);
+  lastApi.pipeline = async () => ({ slots: [{ id: "settings", node: "Sink", inputs: { settings: blob } }, { id: "other", node: "X", inputs: { note: '{"sharpen": {"amount": 9}}' } }], incomplete: [], refused: [], queueable: true });
+  lastApi.modules = async () => ({ modules: mods, sinks: [{ node: "Sink", input: "settings" }], control: {} });
+  return PS;
+};
+const sharpen = { id: "sharpen", settings: { enabled: { type: "bool", default: false }, amount: { type: "float", default: 0.5 } } };
+
+test("a first setting on a fresh pipeline is in its settings slot at once, so a failed save cannot leave the run on old values", async () => {
+  const PS = withSink("{}", [sharpen]);
+  await PS.ensureLoaded();
+  lastApi.editPipeline = async () => { throw new Error("boom"); };
+  await PS.setModuleValue("sharpen", "enabled", true);
+  assert.strictEqual(JSON.parse(PS.slots().find((s) => s.id === "settings").inputs.settings).sharpen.enabled, true);
+  assert.strictEqual(PS.slots().find((s) => s.id === "other").inputs.note, '{"sharpen": {"amount": 9}}');    // not a sink: never read or written
+});
+
+test("settings of a module the current model hides are kept when another setting is changed", async () => {
+  const PS = withSink(JSON.stringify({ reins: { enabled: true } }), [sharpen]);
+  await PS.ensureLoaded();
+  await PS.setModuleValue("sharpen", "enabled", true);
+  const blob = JSON.parse(PS.slots().find((s) => s.id === "settings").inputs.settings);
+  assert.deepStrictEqual([blob.reins, blob.sharpen.enabled, PS.currentValues().sharpen.amount], [{ enabled: true }, true, 0.5]);
+});
+
+test("a pipeline the server refuses leaves the plain default with no flags from the project it could not load", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  lastApi.editPipeline = async () => { throw Object.assign(new Error("refused"), { status: 400 }); };
+  assert.strictEqual(await PS.adopt([{ id: "model", node: "Loader", inputs: {} }], ["gen"], { model: ["x"] }, true), false);
+  assert.deepStrictEqual([PS.removedIds(), PS.unwiredMap(), PS.whole()], [[], {}, false]);
+});
+
+test("a second setting changed while the first is saving survives the first landing, and a failure of its own save", async () => {
+  const PS = withSink(JSON.stringify({ sharpen: { enabled: false, amount: 0.5 } }), [sharpen]);
+  await PS.ensureLoaded();
+  let calls = 0;
+  const real = lastApi.editPipeline;
+  lastApi.editPipeline = async (body) => {
+    const sent = structuredClone(body), n = ++calls;              // what left the browser at the call, as a network takes it
+    await new Promise((r) => setTimeout(r, 20));
+    if (n === 2) throw new Error("502");
+    return real(sent);
+  };
+  const first = PS.setModuleValue("sharpen", "enabled", true);
+  await PS.setModuleValue("sharpen", "amount", 0.9);
+  await first;
+  assert.strictEqual(PS.currentValues().sharpen.amount, 0.9);
+  assert.strictEqual(JSON.parse(PS.slots().find((s) => s.id === "settings").inputs.settings).sharpen.amount, 0.9);   // what a run reads
+});
+
+test("a guarded edit is refused, said, and leaves nothing on screen that will not run", async () => {
+  const PS = withSink("{}", [sharpen]);
+  await PS.ensureLoaded();
+  PS.setEditGuard(() => "Could not save: not loaded");
+  await PS.setModuleValue("sharpen", "enabled", true);
+  assert.deepStrictEqual([PS.currentValues().sharpen.enabled, PS.saveNotes()], [false, ["Could not save: not loaded"]]);
+  assert.deepStrictEqual((await PS.edit({ action: "remove", slot: "other" })).refused, ["Could not save: not loaded"]);
+});
+
+test("the stand-in for a pipeline that could not go in does not inherit the last project's readiness", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  assert.strictEqual(PS.queueable(), true);
+  lastApi.editPipeline = async () => { throw Object.assign(new Error("refused"), { status: 400 }); };
+  await PS.adopt([{ id: "model", node: "Loader", inputs: {} }]);
+  assert.strictEqual(PS.queueable(), false);
+});
+
+test("a settings node swapped in (or put back by Revert) starts with the project's settings, saved, so the run stays queueable", async () => {
+  for (const how of ["replace", "restore"]) {
+    const PS = withSink(JSON.stringify({ sharpen: { enabled: true, amount: 0.9 } }), [sharpen]);
+    await PS.ensureLoaded();
+    const old = PS.snapshot();
+    old.slots.find((s) => s.id === "settings").inputs = {};                    // a snapshot from before it had settings
+    const real = lastApi.editPipeline, posts = [];
+    lastApi.editPipeline = async (body) => {
+      posts.push(structuredClone(body));
+      if (body.action === "replace") return { slots: body.slots.map((s) => (s.id === body.slot ? { ...s, inputs: {} } : s)), incomplete: [], refused: [], queueable: false };
+      return real(body);
+    };
+    const res = how === "replace" ? await PS.edit({ action: "replace", slot: "settings", node: "Sink" }) : await PS.restore(old);
+    assert.deepStrictEqual(res.refused, [], how);
+    const blob = (sl) => JSON.parse(sl.find((s) => s.id === "settings").inputs.settings);
+    assert.deepStrictEqual(blob(PS.slots()).sharpen, { enabled: true, amount: 0.9 }, how);
+    assert.deepStrictEqual(blob(posts.at(-1).slots).sharpen, { enabled: true, amount: 0.9 }, how);      // and sent, not only shown
+  }
+});
+
+test("whether the last project's pipeline went in is known the moment the load ends", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const real = lastApi.editPipeline;
+  lastApi.editPipeline = async () => { throw Object.assign(new Error("refused"), { status: 400 }); };
+  await PS.adopt([{ id: "model", node: "Loader", inputs: {} }]);
+  assert.strictEqual(PS.adoptedOk(), false);
+  lastApi.editPipeline = real;
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "a" } }]);
+  assert.strictEqual(PS.adoptedOk(), true);
+});
+
+test("a module that acts through a pipeline input counts only in a pipeline that has that input", async () => {
+  const carry = { id: "continuity", roles: ["assets.source_image"], settings: { carry: { type: "bool", default: true } } };
+  for (const [roles, shown] of [[[], false], [[{ at: "assets.source_image", input: "media_id" }], true]]) {
+    const PS = load([]);
+    lastApi.pipeline = async () => ({ slots: [{ id: "img", node: "Img", roles, inputs: {} }], incomplete: [], refused: [], queueable: true });
+    lastApi.modules = async () => ({ modules: [carry], control: {} });
+    await PS.ensureLoaded();
+    assert.strictEqual(PS.usefulness()(PS.modulesById().continuity), shown);
+  }
+});
+
+test("a value edit and a change of shape are told apart, to the guard and to listeners", async () => {
+  const PS = withSink("{}", [sharpen]);
+  await PS.ensureLoaded();
+  const asked = [], heard = [];
+  PS.setEditGuard((kind) => { asked.push(kind); return null; });
+  PS.subscribe((_s, kind) => heard.push(kind));
+  await PS.setModuleValue("sharpen", "enabled", true);
+  await PS.edit({ action: "remove", slot: "other" });
+  assert.deepStrictEqual([asked.includes("edit"), asked.includes("shape")], [true, true]);
+  assert.deepStrictEqual([heard.includes("edit"), heard.includes("shape")], [true, true]);
+});
+
+test("Revert to what is already live changes nothing and is not a change of shape", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const heard = [];
+  PS.subscribe((_s, kind) => heard.push(kind));
+  const posts = [];
+  lastApi.editPipeline = async (b) => { posts.push(b); return { slots: b.slots, incomplete: [], refused: [], queueable: true }; };
+  assert.deepStrictEqual((await PS.restore(PS.snapshot())).refused, []);
+  assert.deepStrictEqual([posts.length, heard], [0, []]);
+});
+
+test("a typed node value is in the live slots at once, not when the server answers; one typed during the round trip survives it", async () => {
+  const posts = [];
+  const PS = load(posts, { delay: 30 });
+  await PS.ensureLoaded();
+  const steps = () => PS.slots().find((s) => s.id === "gen").inputs.steps;
+  const first = PS.save({ inputs: { gen: { steps: 12 } } });
+  assert.strictEqual(steps(), 12, "Generate now reads what was typed");
+  await new Promise((r) => setTimeout(r, 5));
+  const second = PS.save({ inputs: { gen: { steps: 20 } } });          // typed while the first is on its way
+  assert.strictEqual(steps(), 20);
+  await new Promise((r) => setTimeout(r, 32));                         // the first answer lands, carrying 12
+  assert.strictEqual(steps(), 20, "the older answer does not put the old value back on screen");
+  await Promise.all([first, second]);
+  assert.strictEqual(steps(), 20);
+});
+
+test("a run does not wait on a value save (the value is already live), but does wait for a node change", async () => {
+  const posts = [];
+  const PS = load(posts, { delay: 200 });
+  await PS.ensureLoaded();
+  const valueSave = PS.save({ inputs: { gen: { steps: 12 } } });
+  const t0 = Date.now();
+  assert.strictEqual(await PS.readyToRun(), true);
+  assert.ok(Date.now() - t0 < 100, "ready while the value save is still on its way");
+  await valueSave;
+  const shape = PS.edit({ remove: [] });
+  await new Promise((r) => setTimeout(r, 10));
+  const t1 = Date.now();
+  await PS.readyToRun();
+  assert.ok(Date.now() - t1 > 100, "a node change is waited for");
+  await shape;
+});
+
+test("a value typed while a node change is on its way survives the change's answer, and the run sees it", async () => {
+  const PS = load([], { delay: 60 });
+  await PS.ensureLoaded();
+  const shape = PS.edit({ remove: [] });
+  await new Promise((r) => setTimeout(r, 10));
+  PS.save({ inputs: { gen: { steps: 33 } } });                       // typed during it
+  await PS.readyToRun();
+  assert.strictEqual(PS.slots().find((s) => s.id === "gen").inputs.steps, 33);
+  await shape;
+});
+
+test("after a preset or import goes in, a run is ready at once (the node-change wait is released)", async () => {
+  const PS = load([], { delay: 5 });
+  await PS.ensureLoaded();
+  const next = JSON.parse(JSON.stringify(PS.slots()));
+  next.find((s) => s.id === "gen").inputs.steps = 40;               // a different pipeline: restore really sends it
+  await PS.restore({ slots: next });
+  assert.strictEqual(PS.slots().find((s) => s.id === "gen").inputs.steps, 40);
+  const t0 = Date.now();
+  assert.strictEqual(await PS.readyToRun(), true);
+  assert.ok(Date.now() - t0 < 100);
+});
+
+test("a value typed for a node while it is being swapped is dropped, not put on the node that replaces it", async () => {
+  const posts = [];
+  const PS = load(posts, { delay: 40 });
+  await PS.ensureLoaded();
+  const swap = PS.edit({ action: "replace", slot: "gen", node: "Other" });
+  await new Promise((r) => setTimeout(r, 10));
+  const typed = PS.save({ inputs: { gen: { steps: 33 } } });
+  await swap; await typed; await PS.settled();
+  const gen = PS.slots().find((x) => x.id === "gen");
+  assert.strictEqual(gen.node, "Other");
+  assert.strictEqual(gen.inputs.steps, undefined, "no stray input the new node cannot take");
+  assert.ok(posts.every((b) => !(b.inputs && b.inputs.gen && "steps" in b.inputs.gen) || !b.slots.some((x) => x.id === "gen" && x.node === "Other")));
+});
+
+test("a node change asked for while a value save is on its way holds a run back until it lands", async () => {
+  const PS = load([], { delay: 60 });
+  await PS.ensureLoaded();
+  PS.save({ inputs: { gen: { steps: 12 } } });
+  const swap = PS.edit({ action: "replace", slot: "gen", node: "Other" });   // queued behind the save
+  await PS.readyToRun();
+  assert.strictEqual(PS.slots().find((x) => x.id === "gen").node, "Other", "the run freezes the pipeline after the swap");
+  await swap;
+});
+
+test("a skipped optional node keeps only the controls its pass-through needs, in view() and never in the saved slots", async () => {
+  const slots = [
+    { id: "enhance", node: "Enhance", roles: [{ at: "generation.prompt", input: "text" }, { at: "generation.prompt", input: "enabled" }], inputs: { text: "", enabled: false } },
+    { id: "gen", node: "Gen", inputs: { steps: 8 } },
+  ];
+  const API = {
+    pipeline: async () => ({ slots, incomplete: [], refused: [], queueable: true, skipped: [{ slot: "enhance", node: "Enhance", keeps: ["text"] }] }),
+    editPipeline: async (b) => ({ slots: b.slots, incomplete: [], refused: [], queueable: true }),
+    modules: async () => ({ modules: [] }), probeFamily: async () => ({}),
+  };
+  const PS = createPipelineState(API, {});
+  await PS.ensureLoaded();
+  assert.deepStrictEqual(PS.view().find((s) => s.id === "enhance").roles.map((r) => r.input), ["text"]);
+  assert.strictEqual(PS.slots().find((s) => s.id === "enhance").roles.length, 2);        // what is saved still has both
+  assert.deepStrictEqual(Object.keys(PS.skipped()), ["enhance"]);
+});
+
+test("the Project tab, the frame grid and the scene tab read the pipeline through view(), not slots()", async () => {
+  const { readFileSync } = await import("node:fs");
+  const read = (f) => readFileSync(new URL(`../../features/${f}`, import.meta.url), "utf8");
+  assert.match(read("inspector/index.js"), /projectRows\(p, slots,/);
+  assert.match(read("inspector/index.js"), /app\.pipeline\.view/);
+  assert.match(read("inspector/scene.js"), /app\.pipeline\.view/);
+});

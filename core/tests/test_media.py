@@ -1,0 +1,352 @@
+"""Media: files the user brought in, not something a run produced.
+
+Mirrors test_projects.py's shape (store-level, then over HTTP) because the
+store itself mirrors projects.py's -- same atomic-index-write, same
+id-is-the-only-safe-filename rule, same "a request is not the thing it
+claims to be" refusals.
+"""
+
+import json
+import socket
+import threading
+
+import pytest
+
+from core import config, media
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "MEDIA_DIR", tmp_path / "media")
+    return tmp_path / "media"
+
+
+# ── the model ────────────────────────────────────────────────────────────
+
+
+def test_an_upload_round_trips(store):
+    entry = media.save_upload("ref.png", b"\x89PNG fake bytes")
+    assert entry["kind"] == "image"
+    assert entry["name"] == "ref.png"
+
+    back = media.get(entry["id"])
+    assert back == entry
+    assert media.path_for(entry["id"]).read_bytes() == b"\x89PNG fake bytes"
+
+
+def test_kind_is_read_from_the_extension(store):
+    assert media.save_upload("a.png", b"x")["kind"] == "image"
+    assert media.save_upload("a.mp4", b"x")["kind"] == "video"
+    assert media.save_upload("a.wav", b"x")["kind"] == "audio"
+
+
+def test_an_extension_not_on_the_allowlist_is_refused(store):
+    with pytest.raises(ValueError):
+        media.save_upload("payload.exe", b"MZ")
+    with pytest.raises(ValueError):
+        media.save_upload("script.js", b"alert(1)")
+    assert media.listing() == []
+
+
+def test_an_empty_upload_is_refused(store):
+    with pytest.raises(ValueError):
+        media.save_upload("empty.png", b"")
+
+
+def test_an_oversized_upload_is_refused(store, monkeypatch):
+    monkeypatch.setattr(media, "MAX_BYTES", 4)
+    with pytest.raises(ValueError):
+        media.save_upload("big.png", b"way too much data")
+
+
+def test_concurrent_uploads_all_survive_in_the_index(store):
+    """The index is one shared index.json, read-modified-and-written by every
+    upload. Without a lock around that, two threads racing it lose entries or
+    crash on the shared tmp file -- found by the adversarial review, which
+    reproduced both with real threads against the bare store."""
+    errors = []
+
+    def go(i):
+        try:
+            media.save_upload(f"f{i}.png", f"data{i}".encode())
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert errors == []
+    assert len(media.listing()) == 20
+    assert len({it["id"] for it in media.listing()}) == 20
+
+
+def test_concurrent_upload_and_delete_do_not_corrupt_the_index(store):
+    entries = [media.save_upload(f"f{i}.png", f"d{i}".encode()) for i in range(5)]
+
+    def upload(i):
+        media.save_upload(f"new{i}.png", f"n{i}".encode())
+
+    def remove(mid):
+        media.delete(mid)
+
+    threads = ([threading.Thread(target=upload, args=(i,)) for i in range(10)]
+               + [threading.Thread(target=remove, args=(e["id"],)) for e in entries])
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    listed = media.listing()
+    assert len(listed) == 10, "an upload or a delete was lost to the race"
+    assert len({it["id"] for it in listed}) == 10
+
+
+def test_the_listing_is_newest_first(store):
+    a = media.save_upload("a.png", b"1")
+    b = media.save_upload("b.png", b"2")
+    assert [it["id"] for it in media.listing()] == [b["id"], a["id"]]
+
+
+def test_a_missing_file_drops_out_of_the_listing(store):
+    entry = media.save_upload("gone.png", b"1")
+    (store / entry["filename"]).unlink()
+    assert media.listing() == []
+    assert media.path_for(entry["id"]) is None
+
+
+def test_delete_removes_the_file_and_the_entry(store):
+    entry = media.save_upload("x.png", b"1")
+    assert media.delete(entry["id"]) is True
+    assert media.get(entry["id"]) is None
+    assert not (store / entry["filename"]).exists()
+    assert media.delete(entry["id"]) is False
+
+
+def test_an_id_from_a_request_cannot_be_a_path(store):
+    for bad in ("../escape", "a/b", "", "..", "x" * 64, None, 5):
+        assert media.is_id(bad) is False
+        assert media.get(bad) is None
+        assert media.path_for(bad) is None
+
+
+def test_a_long_name_is_cut_not_refused(store):
+    entry = media.save_upload("x" * 500 + ".png", b"1")
+    assert len(entry["name"]) == media.MAX_NAME
+
+
+# ── over HTTP ────────────────────────────────────────────────────────────
+
+pytest.importorskip("aiohttp")
+
+
+@pytest.fixture
+def server(store):
+    from aiohttp import web as aioweb
+    from core import routes
+
+    app = aioweb.Application()
+    table = aioweb.RouteTableDef()
+    routes.register(table, prefix="/funpack")
+    app.add_routes(table)
+
+    holder = {"ready": threading.Event()}
+
+    def run():
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        runner = aioweb.AppRunner(app)
+        loop.run_until_complete(runner.setup())
+        site = aioweb.TCPSite(runner, "127.0.0.1", 0)
+        loop.run_until_complete(site.start())
+        holder["port"] = site._server.sockets[0].getsockname()[1]
+        holder["loop"] = loop
+        holder["ready"].set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert holder["ready"].wait(20), "the test server did not start"
+    yield holder["port"]
+    holder["loop"].call_soon_threadsafe(holder["loop"].stop)
+
+
+def _request(port, method, path, body=None, raw=None, content_type="application/json"):
+    if raw is not None:
+        payload = raw
+    else:
+        payload = b"" if body is None else json.dumps(body).encode()
+    head = (f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n"
+            f"Content-Type: {content_type}\r\n"
+            f"Content-Length: {len(payload)}\r\nConnection: close\r\n\r\n").encode()
+    with socket.create_connection(("127.0.0.1", port), timeout=30) as sock:
+        sock.sendall(head + payload)
+        chunks = []
+        while True:
+            got = sock.recv(65536)
+            if not got:
+                break
+            chunks.append(got)
+    header, _, rest = b"".join(chunks).partition(b"\r\n\r\n")
+    status = int(header.split()[1])
+    try:
+        return status, json.loads(rest.decode() or "{}")
+    except ValueError:
+        return status, {"raw": rest, "head": header.decode("latin-1")}
+
+
+def _upload(port, filename, data, field="file"):
+    boundary = "----funpacktestboundary"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
+        f"Content-Type: application/octet-stream\r\n\r\n"
+    ).encode() + data + f"\r\n--{boundary}--\r\n".encode()
+    return _request(port, "POST", "/funpack/api/media", raw=body,
+                     content_type=f"multipart/form-data; boundary={boundary}")
+
+
+def test_upload_list_file_delete(server):
+    status, resp = _upload(server, "ref.png", b"fake png bytes")
+    assert status == 200, resp
+    assert len(resp["media"]) == 1
+    mid = resp["media"][0]["id"]
+
+    status, listed = _request(server, "GET", "/funpack/api/media")
+    assert status == 200 and [it["id"] for it in listed["media"]] == [mid]
+
+    status, body = _request(server, "GET", f"/funpack/api/media/{mid}/file")
+    assert status == 200 and body["raw"] == b"fake png bytes"
+    assert "filename*=UTF-8''ref.png" in body["head"], "Save as names it after the upload, not 'file'"
+
+    assert _request(server, "DELETE", f"/funpack/api/media/{mid}")[0] == 200
+    assert _request(server, "GET", f"/funpack/api/media/{mid}/file")[0] == 404
+
+
+def test_a_disallowed_extension_is_refused_over_http(server):
+    status, resp = _upload(server, "payload.exe", b"MZ")
+    assert status == 400
+    assert "problems" in resp
+    assert _request(server, "GET", "/funpack/api/media")[1]["media"] == []
+
+
+def test_a_non_multipart_body_is_refused(server):
+    status, resp = _request(server, "POST", "/funpack/api/media", {"not": "multipart"})
+    assert status == 400
+
+
+def test_media_for_a_bad_id_is_a_404(server):
+    assert _request(server, "GET", "/funpack/api/media/../../etc/passwd/file")[0] in (400, 404)
+    assert _request(server, "DELETE", "/funpack/api/media/0123456789ab")[0] == 404
+
+
+# ── names and thumbnails ──────────────────────────────────────────────────
+
+
+def test_a_rename_changes_the_name_not_the_file(store):
+    entry = media.save_upload("ref.png", b"\x89PNG")
+    renamed = media.rename(entry["id"], "  my   reference  ")
+    assert renamed["name"] == "my reference" and renamed["filename"] == entry["filename"]
+    assert media.get(entry["id"])["name"] == "my reference"
+    assert media.rename("aaaaaaaaaaaa", "x") is None
+    with pytest.raises(ValueError):
+        media.rename(entry["id"], "   ")
+
+
+def test_a_subject_text_is_kept_trimmed_and_cleared_by_an_empty_one(store):
+    entry = media.save_upload("ref.png", b"\x89PNG")
+    assert media.set_subject(entry["id"], "  <Subject 1>  is the woman  ")["subject"] == "<Subject 1> is the woman"
+    assert media.get(entry["id"])["subject"] == "<Subject 1> is the woman"
+    assert "subject" in [it for it in media.listing() if it["id"] == entry["id"]][0]
+    assert "subject" not in media.set_subject(entry["id"], "   ")
+    assert media.set_subject("aaaaaaaaaaaa", "x") is None
+
+
+def test_an_image_gets_a_small_cached_jpeg_and_delete_removes_it(store):
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (1000, 500), (200, 30, 30)).save(buf, "PNG")
+    entry = media.save_upload("big.png", buf.getvalue())
+    thumb = media.thumb_path_for(entry["id"])
+    assert thumb is not None and thumb.suffix == ".jpg"
+    assert max(Image.open(thumb).size) == media.THUMB_MAX_DIM and thumb.stat().st_size < len(buf.getvalue())
+    assert media.thumb_path_for(entry["id"]) == thumb                  # cached
+    assert media.delete(entry["id"]) and not thumb.exists()
+
+
+def test_audio_and_unreadable_files_have_no_thumbnail(store):
+    assert media.thumb_path_for(media.save_upload("a.wav", b"RIFF....")["id"]) is None
+    assert media.thumb_path_for(media.save_upload("broken.png", b"not a png")["id"]) is None
+    assert media.thumb_path_for("not-an-id") is None
+
+
+def test_a_video_thumbnail_comes_from_a_frame(store, tmp_path):
+    import shutil
+    import subprocess
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg is not installed")
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=640x360:rate=10",
+                    "-pix_fmt", "yuv420p", str(clip)], check=True, capture_output=True)
+    thumb = media.thumb_path_for(media.save_upload("c.mp4", clip.read_bytes())["id"])
+    assert thumb is not None and thumb.stat().st_size > 0
+
+
+def test_rename_and_thumb_over_http(server):
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64)).save(buf, "PNG")
+    mid = _upload(server, "p.png", buf.getvalue())[1]["media"][0]["id"]
+    status, body = _request(server, "PATCH", f"/funpack/api/media/{mid}", {"name": "renamed"})
+    assert status == 200 and body["media"]["name"] == "renamed"
+    assert _request(server, "PATCH", f"/funpack/api/media/{mid}", {"name": ""})[0] == 400
+    assert _request(server, "PATCH", "/funpack/api/media/aaaaaaaaaaaa", {"name": "x"})[0] == 404
+    status, body = _request(server, "PATCH", f"/funpack/api/media/{mid}", {"subject": "the woman"})
+    assert status == 200 and body["media"]["subject"] == "the woman" and body["media"]["name"] == "renamed"
+    status, jpg = _request(server, "GET", f"/funpack/api/media/{mid}/thumb")
+    assert status == 200 and jpg["raw"][:2] == b"\xff\xd8"
+    assert _request(server, "GET", "/funpack/api/media/aaaaaaaaaaaa/thumb")[0] == 404
+
+
+def test_a_photo_thumbnail_is_turned_upright_like_the_browser_shows_it(store):
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    img = Image.new("RGB", (400, 200), (10, 200, 10))
+    exif = img.getexif()
+    exif[274] = 6                                       # rotate 90 on display
+    img.save(buf, "JPEG", exif=exif)
+    entry = media.save_upload("p.jpg", buf.getvalue())
+    assert Image.open(media.thumb_path_for(entry["id"])).size == (160, 320)
+
+
+def test_a_file_the_server_made_itself_is_not_held_to_the_upload_limit(store, monkeypatch):
+    from core import media
+    monkeypatch.setattr(media, "MAX_BYTES", 10)
+    import pytest
+    with pytest.raises(ValueError, match="limit"):
+        media.save_upload("a.mp4", b"x" * 11)
+    try:
+        media.save_upload("a.mp4", b"x" * 11, limit=None)
+    except ValueError as exc:
+        assert "limit" not in str(exc)
+
+
+def test_the_files_tab_lists_and_deletes_library_files_and_nothing_else(server, monkeypatch, tmp_path):
+    from core import config
+    for attr, name in (("SHORTCUTS_FILE", "shortcuts.json"), ("SHORTCUT_CATEGORIES_FILE", "shortcut_categories.json"),
+                       ("REVOLVER_FILE", "shortcut_revolver.json"), ("MARKERS_FILE", "markers.json")):
+        monkeypatch.setattr(config, attr, tmp_path / name)          # never the real library
+    config.MARKERS_FILE.write_text('{"words": []}')
+    status, body = _request(server, "GET", "/funpack/api/files")
+    assert status == 200 and {"name": "markers.json", "size": 13} in body["files"]
+    assert _request(server, "DELETE", "/funpack/api/files/index.json")[0] == 404          # the media index is not one of them
+    assert _request(server, "DELETE", "/funpack/api/files/..%2Fshortcuts.json")[0] == 404
+    status, body = _request(server, "DELETE", "/funpack/api/files/markers.json")
+    assert status == 200 and not config.MARKERS_FILE.exists()
+    assert all(f["name"] != "markers.json" for f in body["files"])

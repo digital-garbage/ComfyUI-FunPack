@@ -1,0 +1,875 @@
+"""The pipeline, as slots rather than as a core.
+
+The pipeline is DATA: a list of slots, each naming a node and what feeds it.
+Nothing here is a fixed chain, and that is the whole point.
+
+v4 could not remove a built-in node from the pipeline, and the reason was
+structural rather than an oversight: the wiring lived in code as a `CORE` dict
+the user could not reach, so there was no entry to delete. Anything that only
+exists as code cannot be replaced by something that is not that code.
+
+So three operations, and each has to hold for a foundation nobody can break:
+
+* **build** -- turn slots into the API prompt ComfyUI queues.
+* **replace** -- point a slot at a different node. Allowed when the replacement
+  still produces what its consumers read; refused, with the reason, when it does
+  not. Anything producing the same result is as good as the built-in one.
+* **remove** -- take a slot out and rewire what it fed to what fed it. Allowed
+  when the removed node has exactly one input matching each output somebody
+  consumes; refused otherwise, naming the ambiguity.
+
+Refused and not silently skipped. v4 shipped a bypass that reported a problem
+into a field nothing rendered, so toggling it did nothing and said nothing --
+the user's word for it was "terrifying".
+"""
+
+import re
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+from . import comfy_types, log
+
+Link = list          # [slot_id, output_index]
+
+
+def is_link(value: Any) -> bool:
+    """A reference to another slot's output, as ComfyUI spells it."""
+    return (isinstance(value, (list, tuple)) and len(value) == 2
+            and isinstance(value[0], str) and isinstance(value[1], int))
+
+
+class Schemas:
+    """What core is allowed to know about a node: its input and output types.
+
+    Injected rather than imported so the whole of this file is testable without
+    ComfyUI, and so nothing here depends on how node classes happen to be built.
+    """
+
+    def __init__(self, lookup: Callable[[str], Optional[dict]]):
+        self._lookup = lookup
+
+    def of(self, class_type: str) -> Optional[dict]:
+        return self._lookup(class_type)
+
+    def outputs(self, class_type: str) -> List[str]:
+        found = self.of(class_type)
+        return list(found["outputs"]) if found else []
+
+    def inputs(self, class_type: str) -> Dict[str, str]:
+        found = self.of(class_type)
+        return dict(found["inputs"]) if found else {}
+
+    def required(self, class_type: str, inputs: Optional[dict] = None) -> List[str]:
+        """Inputs that must be filled. Absent from a schema means none are. A field a dynamic combo's
+        choice brings (`required_when`: {field: (combo, choices)}) only while `inputs` picks that choice."""
+        found = self.of(class_type)
+        if not found:
+            return []
+        picked = inputs or {}
+        return list(found.get("required", [])) + [
+            name for name, (parent, keys) in (found.get("required_when") or {}).items()
+            if picked.get(parent) in keys]
+
+    def limits(self, class_type: str) -> Dict[str, dict]:
+        """What each input will ACCEPT: a combo's choices, a number's bounds.
+
+        Absent from a schema means unknown, which is checked as no limit --
+        a schema that does not say is not a schema that says no.
+        """
+        found = self.of(class_type)
+        return dict(found.get("limits", {})) if found else {}
+
+
+def from_comfyui() -> Schemas:
+    """Schemas read from whatever ComfyUI has registered, FunPack's and everyone
+    else's alike -- a slot may point at any node, not only ours."""
+    def lookup(class_type: str) -> Optional[dict]:
+        import nodes as comfy_nodes
+        node = comfy_nodes.NODE_CLASS_MAPPINGS.get(class_type)
+        if node is None:
+            return None
+        spec = node.INPUT_TYPES()
+        inputs, required, limits, when = {}, [], {}, {}
+        for section in ("required", "optional"):
+            for name, declared in (spec.get(section) or {}).items():
+                kind, options = comfy_types.declared(declared)
+                # An Autogrow is not one input -- "ref_images" is really
+                # "ref_image_0".."ref_image_9", each a real socket, none of
+                # them named "ref_images" itself. Expanded here (see
+                # comfy_types' own docstring) so a wire naming one is checked
+                # against its own declared type, rather than refused as an
+                # input the node does not have.
+                if kind == comfy_types.AUTOGROW:
+                    for instance_name, instance_kind, instance_options in (
+                            comfy_types.autogrow_instances(options)):
+                        edited = comfy_types.widget_type(instance_kind, instance_options)
+                        inputs[f"{name}.{instance_name}"] = edited if edited else instance_kind
+                    continue
+                # A MatchType input's own type name says nothing about what it
+                # actually accepts -- resolve it to the real union (see
+                # comfy_types' own docstring) before anything below judges a
+                # wire against it, or a completely legal one is refused.
+                if kind == comfy_types.MATCH_TYPE:
+                    resolved = comfy_types.match_type_union(
+                        (options.get("template") or {}).get("allowed_types"))
+                    if resolved:
+                        kind = resolved
+                # The type as ComfyUI would WIRE it. A list of choices is a
+                # combo; so is the string "COMBO" and every V3 dynamic combo,
+                # and none of them can be fed by a wire.
+                edited = comfy_types.widget_type(kind, options)
+                inputs[name] = edited if edited else kind
+                if comfy_types.is_combo(kind) and comfy_types.reveals(options):
+                    for dotted, decl, req, parent, keys in comfy_types.revealed(name, options):
+                        sub_kind, sub_options = comfy_types.declared(decl)
+                        sub_edited = comfy_types.widget_type(sub_kind, sub_options)
+                        inputs[dotted] = sub_edited if sub_edited else sub_kind
+                        if req:
+                            when[dotted] = (parent, keys)
+                        sub_bounds = {}
+                        if inputs[dotted] == comfy_types.COMBO:
+                            sub_bounds["choices"] = (list(sub_kind) if isinstance(sub_kind, (list, tuple))
+                                                     else comfy_types.choices(sub_options))
+                        for edge in ("min", "max"):
+                            if edge in sub_options:
+                                sub_bounds[edge] = sub_options[edge]
+                        if sub_bounds:
+                            limits[dotted] = sub_bounds
+                if section == "required":
+                    # Kept, because flattening the two sections loses the only
+                    # thing that says a slot is incomplete -- and a slot missing
+                    # a required input built clean and failed once queued.
+                    required.append(name)
+
+                bounds = {}
+                if inputs[name] == comfy_types.COMBO:
+                    bounds["choices"] = (list(kind) if isinstance(kind, (list, tuple))
+                                         else comfy_types.choices(options))
+                for edge in ("min", "max"):
+                    if edge in options:
+                        bounds[edge] = options[edge]
+                if bounds:
+                    limits[name] = bounds
+
+        outputs = list(node.RETURN_TYPES)
+        # Same resolution, the output side: RETURN_TYPES carries no template of
+        # its own (it is the V1-compat tuple, plain strings only), so a real
+        # union has to come from the V3 schema's own output list -- read only
+        # when a MatchType actually shows up here, so a node with none of these
+        # never pays for a schema object it does not need.
+        if comfy_types.MATCH_TYPE in outputs and hasattr(node, "GET_SCHEMA"):
+            schema_outputs = node.GET_SCHEMA().outputs
+            for i, kind in enumerate(outputs):
+                if kind != comfy_types.MATCH_TYPE or i >= len(schema_outputs):
+                    continue
+                template = getattr(schema_outputs[i], "template", None)
+                resolved = comfy_types.match_type_union(
+                    getattr(template, "allowed_types", None))
+                if resolved:
+                    outputs[i] = resolved
+
+        return {"inputs": inputs, "outputs": outputs,
+                "required": required, "limits": limits, "required_when": when}
+    return Schemas(lookup)
+
+
+def shape_problems(slots: Any) -> List[str]:
+    """Whether this is even a pipeline, before anything indexes into it.
+
+    A payload arrives from HTTP, so "it parsed as JSON" is all that has been
+    established. Reading slot["id"] off a string raised a TypeError and the
+    route answered 500 in plain text -- which the app cannot turn into a reason
+    to show, and a refusal nobody can read is the failure this file exists to
+    avoid.
+
+    Separate from build() so a caller can refuse a malformed REQUEST before
+    reporting on an incomplete PIPELINE: those are different things and an app
+    showing them together says the wrong thing about both.
+    """
+    if not isinstance(slots, (list, tuple)):
+        return [f"a pipeline is a list of slots, not {type(slots).__name__}"]
+
+    problems: List[str] = []
+    for index, slot in enumerate(slots):
+        where = f"slot {index}"
+        if not isinstance(slot, dict):
+            problems.append(f"{where} is {type(slot).__name__}, not an object")
+            continue
+        for key in ("id", "node"):
+            value = slot.get(key)
+            if not isinstance(value, str) or not value.strip():
+                problems.append(f"{where} has no {key}")
+        inputs = slot.get("inputs")
+        if inputs is not None and not isinstance(inputs, dict):
+            problems.append(f"{where}'s inputs must be an object, not {type(inputs).__name__}")
+        # Core does not know what a group MEANS -- it is the pipeline's own way
+        # of arranging itself, and any name is a valid one. It does know a name
+        # is text: a number here becomes a card titled `5`, and two slots
+        # grouped under `5` and `"5"` land in two cards reading the same.
+        group = slot.get("group")
+        if group is not None:
+            if not isinstance(group, str):
+                problems.append(f"{where}'s group must be a name, not {type(group).__name__}")
+            elif not group.strip():
+                problems.append(f"{where}'s group is blank; leave it out to leave the "
+                                f"slot ungrouped")
+        problems.extend(_role_problems(slot.get("roles"), where))
+        problems.extend(_optional_problems(slot.get("optional"), where))
+    return problems
+
+
+def _role_problems(roles: Any, where: str) -> List[str]:
+    """A role says one of this slot's inputs belongs on the app's surface.
+
+    Core knows nothing about what any of these NAMES mean -- which places exist
+    is the app's business, and an input's meaning is the node's. It knows the
+    shape: a place to put it and an input to put there, both named in text. A
+    role naming a place nothing offers is simply not shown, the same as a module
+    asking for a mount point nobody has.
+    """
+    if roles is None:
+        return []
+    if not isinstance(roles, list):
+        return [f"{where}'s roles must be a list, not {type(roles).__name__}"]
+
+    problems = []
+    for index, role in enumerate(roles):
+        at = f"{where} role {index}"
+        if not isinstance(role, dict):
+            problems.append(f"{at} is {type(role).__name__}, not an object")
+            continue
+        for key in ("at", "input"):
+            value = role.get(key)
+            if not isinstance(value, str) or not value.strip():
+                problems.append(f"{at} has no {key}")
+        label = role.get("label")
+        if label is not None and not isinstance(label, str):
+            problems.append(f"{at}'s label must be text, not {type(label).__name__}")
+    return problems
+
+
+def _optional_problems(optional: Any, where: str) -> List[str]:
+    """`optional` marks a slot the pipeline can run without: {"pass": {"<output index>": "<input name>"}}. When the
+    slot's node is not installed, whatever read output N reads that input of the slot instead."""
+    if optional is None:
+        return []
+    passes = optional.get("pass") if isinstance(optional, dict) else None
+    if not isinstance(passes, dict) or not passes or not all(
+            isinstance(k, str) and k.isdigit() and isinstance(v, str) and v for k, v in passes.items()):
+        return [f'{where}\'s optional must be {{"pass": {{"<output index>": "<input name>"}}}}']
+    return []
+
+
+def bypass_missing(slots: Sequence[dict], schemas: Optional[Schemas] = None,
+                   optional: Optional[Dict[str, dict]] = None) -> Tuple[List[dict], List[dict]]:
+    """(slots, skipped): the pipeline with every OPTIONAL slot whose node is not installed taken out.
+
+    A slot is optional when it says so itself (`optional`) or when its node class is in `optional`, a table
+    {node class: {"pass": {output index: input name}}} that the model modules provide. What read an output of a
+    skipped slot reads the input the slot passes through (a wire, or the value typed into it: the prompt box writes
+    into the Enhance slot's text, and that text has to survive the slot being skipped). A slot is skipped only when
+    every read of it, however long the chain of skipped slots, ends somewhere real; otherwise it stays, and build()
+    says the node is missing, as it does for any slot that is not optional. The input list is not changed: the skipped
+    slot stays in the saved pipeline, so the moment its module is back, it runs again.
+    """
+    schemas = schemas or from_comfyui()
+    if not isinstance(slots, (list, tuple)) or any(not isinstance(s, dict) or "id" not in s for s in slots):
+        return list(slots) if isinstance(slots, (list, tuple)) else [], []        # shape_problems() reports it
+    table = optional or {}
+
+    def marker(slot):
+        return slot.get("optional") if isinstance(slot.get("optional"), dict) else table.get(slot.get("node"))
+
+    gone = {s["id"]: dict(s, optional=marker(s)) for s in slots
+            if isinstance(s.get("node"), str) and marker(s) is not None and schemas.of(s["node"]) is None}
+    for slot_id in list(gone):
+        bad = _optional_problems(gone[slot_id]["optional"], slot_id)
+        if bad:
+            log.once(f"bad_optional:{gone[slot_id]['node']}", log.WARNING, "FunPack pipeline",
+                     f"{gone[slot_id]['node']} cannot be skipped, so the run refuses it: {bad[0]}")
+            del gone[slot_id]
+
+    def walk(value):
+        """(value a reader should read instead, or the id of the skipped slot that cannot be passed through)."""
+        for _ in range(len(gone) + 1):
+            if not (is_link(value) and value[0] in gone):
+                return value, None
+            slot = gone[value[0]]
+            name = slot["optional"]["pass"].get(str(value[1]))
+            if name is None or name not in (slot.get("inputs") or {}):
+                return None, value[0]
+            value = slot["inputs"][name]
+            if value is None:                                          # nothing was typed or wired there
+                return None, slot["id"]
+        return None, value[0]                                         # skipped slots reading each other in a loop
+
+    while gone:                       # a slot that cannot be passed through stays; that can strand another, so look again
+        failing = None
+        for slot in slots:
+            if slot["id"] in gone:
+                continue
+            for value in (slot.get("inputs") or {}).values():
+                _v, failing = walk(value)
+                if failing:
+                    break
+            if failing:
+                break
+        if not failing:
+            break
+        del gone[failing]
+    if not gone:
+        return list(slots), []
+
+    kept = []
+    for slot in slots:
+        if slot["id"] in gone:
+            continue
+        inputs = dict(slot.get("inputs") or {})
+        for name, value in list(inputs.items()):
+            if is_link(value) and value[0] in gone:
+                inputs[name] = walk(value)[0]
+        kept.append(dict(slot, inputs=inputs))
+    return kept, [{"slot": s["id"], "node": s["node"], "keeps": sorted(set(s["optional"]["pass"].values()))} for s in gone.values()]
+
+
+def build(slots: Sequence[dict], schemas: Optional[Schemas] = None,
+          optional: Optional[Dict[str, dict]] = None) -> Tuple[dict, List[str]]:
+    """(prompt, problems) -- the graph ComfyUI queues, and why it should not.
+
+    Nothing is queued while `problems` is non-empty, so a wrong graph is refused
+    here rather than surfacing as a traceback from inside sampling.
+    """
+    schemas = schemas or from_comfyui()
+    problems: List[str] = []
+    prompt: Dict[str, dict] = {}
+
+    # The shape first, because everything below indexes into a slot.
+    problems = shape_problems(slots)
+    if problems:
+        return {}, problems
+
+    # A set of ids cannot see a duplicate, and writing the prompt by id would
+    # then silently overwrite one slot with the other -- losing a node, or
+    # leaving one reading its own output. Refused, because a graph quietly
+    # missing a node is the shape of fault this whole file exists to prevent.
+    seen = set()
+    for slot in slots:
+        if slot["id"] in seen:
+            problems.append(f"{slot['id']!r} is used by more than one slot; ids are how "
+                            f"a link names what feeds it, so they have to be unique")
+        seen.add(slot["id"])
+    if problems:
+        return {}, problems
+
+    slots, _skipped = bypass_missing(slots, schemas, optional)
+    known = {s["id"] for s in slots}
+    # Built once. Rebuilding it per link made validating a chain of N slots do N
+    # dict rebuilds, and this runs on the event loop: the cost of checking a
+    # pipeline is paid by every other request the server is holding.
+    by_id = slots_by_id(slots)
+
+    for slot in slots:
+        slot_id, class_type = slot["id"], slot["node"]
+        if schemas.of(class_type) is None:
+            problems.append(f"{slot_id}: there is no node called {class_type!r} installed")
+            continue
+
+        declared = schemas.inputs(class_type)
+        limits = schemas.limits(class_type)
+        inputs, refused_here = {}, set()
+        for name, value in (slot.get("inputs") or {}).items():
+            if name not in declared:
+                problems.append(f"{slot_id}: {class_type} has no input {name!r}")
+                continue
+            if is_link(value):
+                source, index = value
+                if source not in known:
+                    problems.append(f"{slot_id}.{name} is fed by {source!r}, which is not in the pipeline")
+                    continue
+                produced = schemas.outputs(by_id[source]["node"])
+                if index >= len(produced):
+                    problems.append(f"{slot_id}.{name} reads output {index} of {source!r}, "
+                                    f"which has {len(produced)}")
+                    continue
+                # A union on either side, not an exact string. `"IMAGE,MASK"`
+                # takes either, and comparing the whole string refused a MASK
+                # feeding it -- a legal wire refused, which is as bad a failure
+                # as an illegal one accepted, and harder to argue with.
+                if not comfy_types.accepts(declared[name], produced[index]):
+                    problems.append(f"{slot_id}.{name} wants {declared[name]} but {source!r} "
+                                    f"gives {produced[index]}")
+                    continue
+                inputs[name] = [source, index]
+            else:
+                value = as_choice(value, limits.get(name))
+                problem = unacceptable(name, value, limits.get(name))
+                if problem:
+                    # An input the app writes under a name the person sees (Length, Width) is refused by that name.
+                    label = next((r.get("label") for r in slot.get("roles") or []
+                                  if isinstance(r, dict) and r.get("input") == name and r.get("label")), None)
+                    problems.append(unacceptable(label, value, limits.get(name)) if label else f"{slot_id}.{problem}")
+                    refused_here.add(name)
+                    continue
+                inputs[name] = value
+        for name in schemas.required(class_type, inputs):
+            if name not in inputs and name not in refused_here:       # a refused value was just said; "nothing fills it" would be false
+                problems.append(f"{slot_id}: {class_type} needs {name!r} and nothing "
+                                f"fills it")
+
+        prompt[slot_id] = {"class_type": class_type, "inputs": inputs}
+
+    problems.extend(cycles(prompt))
+    return prompt, problems
+
+
+def as_choice(value: Any, bounds: Optional[dict]) -> Any:
+    """A combo choice saved as text ("8") back to the choice it names (8). A web page's select hands back
+    text whatever it was given, and ComfyUI refuses "8" from a list holding the number 8."""
+    choices = (bounds or {}).get("choices")
+    if isinstance(value, str) and choices and value not in choices:
+        return next((c for c in choices if not isinstance(c, str) and str(c) == value), value)
+    return value
+
+
+def unacceptable(name: str, value: Any, bounds: Optional[dict]) -> Optional[str]:
+    """Why this literal will not do, or None.
+
+    ComfyUI checks these too, at /prompt -- and it refuses the WHOLE graph when
+    one value is wrong, which v4 hit with a LoRA file that had been deleted: a
+    feature that was switched off still stopped every generation. Refusing here
+    means the reason arrives naming the slot and the input, before anything is
+    queued, instead of as "Prompt outputs failed validation".
+
+    No bounds means unknown, and unknown is not a refusal.
+    """
+    if not bounds:
+        return None
+
+    choices = bounds.get("choices")
+    if choices is not None:
+        # An empty list is a machine with no files of that kind, not a value
+        # that was checked and rejected -- the slot being unfilled is what gets
+        # reported, and saying "x is not one of: " helps nobody.
+        if choices and value not in choices:
+            offered = ", ".join(repr(c) for c in choices[:6])
+            more = "" if len(choices) <= 6 else f", and {len(choices) - 6} more"
+            return (f"{name} is {value!r}, which is not one of: {offered}{more}")
+        return None
+
+    # Only a number has bounds, and only a number is compared to them. A bool is
+    # an int in Python and would sail through a naive comparison as 0 or 1.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if "min" in bounds and value < bounds["min"]:
+        return f"{name} is {value}, below the smallest {bounds['min']} it takes"
+    if "max" in bounds and value > bounds["max"]:
+        return f"{name} is {value}, above the largest {bounds['max']} it takes"
+    return None
+
+
+def place(slots: Sequence[dict], value: Any,
+          sinks: Sequence[dict]) -> Tuple[List[dict], int]:
+    """Write one value into every slot a sink names. Returns (slots, how many).
+
+    This is how what the UI holds reaches the graph, and it is deliberately
+    ignorant of what the value MEANS: a module says "a node of this class takes
+    it, under this input name" and core does exactly that. Core naming the node
+    itself would make one module's node privileged, which is the thing the whole
+    announcement contract exists to prevent.
+
+    The count is returned rather than a message, because only the caller knows
+    what the value was -- and a value with nowhere to go has to be SAID. Writing
+    it nowhere and reporting success is how a settings panel becomes decoration.
+    """
+    out = [dict(slot, inputs=dict(slot.get("inputs") or {})) for slot in slots]
+    wanted = [(sink.get("node"), sink.get("input")) for sink in sinks
+              if isinstance(sink, dict) and sink.get("node") and sink.get("input")]
+
+    placed = 0
+    for slot in out:
+        for class_type, name in wanted:
+            if slot.get("node") == class_type:
+                slot["inputs"][name] = value
+                placed += 1
+    return out, placed
+
+
+def override(slots: Sequence[dict], edits: Any) -> Tuple[List[dict], List[str]]:
+    """Values the app is holding for named inputs: {slot_id: {input: value}}.
+
+    Addressed rather than merged: the app sends what it is showing, not a whole
+    pipeline, so a control on the main window and the pipeline window cannot
+    disagree about the slots between them -- one of them owns the structure and
+    the other owns a value in it.
+
+    An address that is not there is REFUSED, never written and hoped for. A
+    prompt typed into a box for a slot somebody removed has gone nowhere, and a
+    run that starts anyway is a run without the prompt in it.
+    """
+    if not isinstance(edits, dict):
+        return list(slots), [f"overrides are an object keyed by slot id, "
+                             f"not a {type(edits).__name__}"]
+
+    out = [dict(slot, inputs=dict(slot.get("inputs") or {})) for slot in slots]
+    by_id = {slot.get("id"): slot for slot in out}
+    problems: List[str] = []
+
+    for slot_id, values in edits.items():
+        slot = by_id.get(slot_id)
+        if slot is None:
+            problems.append(f"{slot_id}: there is no such slot to put a value in")
+            continue
+        if not isinstance(values, dict):
+            problems.append(f"{slot_id}: its values are an object keyed by input name, "
+                            f"not a {type(values).__name__}")
+            continue
+        for name, value in values.items():
+            # A link is the graph's structure, and a value written over one
+            # silently unwires a node. Whatever meant to do that has to say so
+            # somewhere it can be seen.
+            if is_link(slot["inputs"].get(name)):
+                problems.append(f"{slot_id}.{name} is fed by another node, so a value "
+                                f"cannot be put in it")
+                continue
+            slot["inputs"][name] = value
+    return out, problems
+
+
+def wire(slots: Sequence[dict], to_slot_id: str, to_input: str,
+        from_slot_id: str, from_output: int,
+        schemas: Optional[Schemas] = None) -> Tuple[List[dict], List[str]]:
+    """Feed one slot's input from another slot's output.
+
+    Not restricted to socket-typed inputs: ComfyUI's own Primitive nodes
+    (PrimitiveInt, PrimitiveFloat...) exist to feed a widget input from a wire,
+    which is how several nodes end up sharing one value edited in one place --
+    v4 called this a "linked input" and froze the set once made. Nothing here
+    freezes: a link is an ordinary entry in a slot's `inputs`, so adding a
+    fourth consumer to an existing Primitive later is just wiring one more
+    slot to it, not editing a group that has to already know about it.
+
+    Refused, not silently accepted, for the same reasons build() would refuse
+    the resulting graph -- a slot that does not exist, an input the node does
+    not declare, a type mismatch, or a link that would close a cycle. Checked
+    here so a bad wire is never written into the pipeline at all.
+    """
+    schemas = schemas or from_comfyui()
+    by_id = slots_by_id(slots)
+    if to_slot_id not in by_id:
+        return list(slots), [f"there is no slot called {to_slot_id!r}"]
+    if from_slot_id not in by_id:
+        return list(slots), [f"there is no slot called {from_slot_id!r}"]
+
+    to_node = by_id[to_slot_id]["node"]
+    declared = schemas.inputs(to_node)
+    if to_input not in declared:
+        return list(slots), [f"{to_node} has no input {to_input!r}"]
+
+    produced = schemas.outputs(by_id[from_slot_id]["node"])
+    if from_output < 0 or from_output >= len(produced):
+        return list(slots), [f"{by_id[from_slot_id]['node']} has {len(produced)} "
+                             f"output(s); {from_output} does not exist"]
+
+    wanted, given = declared[to_input], produced[from_output]
+    if not comfy_types.accepts(wanted, given):
+        return list(slots), [f"{to_slot_id}.{to_input} wants {wanted} but "
+                             f"{from_slot_id!r} gives {given}"]
+
+    out = [dict(slot, inputs=dict(slot.get("inputs") or {})) for slot in slots]
+    slots_by_id(out)[to_slot_id]["inputs"][to_input] = [from_slot_id, from_output]
+
+    # The same refusal build() would make at prompt time, made here instead --
+    # a wire that closes a loop is wrong the moment it is drawn, not once
+    # queued.
+    prompt = {s["id"]: {"inputs": s.get("inputs") or {}} for s in out}
+    problems = cycles(prompt)
+    if problems:
+        return list(slots), problems
+    return out, []
+
+
+def unwire(slots: Sequence[dict], to_slot_id: str, to_input: str) -> Tuple[List[dict], List[str]]:
+    """Remove whatever feeds one input, leaving it unset.
+
+    Not a value written over the link -- override() already refuses that, on
+    purpose, because a value silently unwiring a node is a structural change
+    nobody asked for. This is that same structural change, asked for.
+    """
+    by_id = slots_by_id(slots)
+    if to_slot_id not in by_id:
+        return list(slots), [f"there is no slot called {to_slot_id!r}"]
+
+    out = [dict(slot, inputs=dict(slot.get("inputs") or {})) for slot in slots]
+    slots_by_id(out)[to_slot_id]["inputs"].pop(to_input, None)
+    return out, []
+
+
+def cycles(prompt: Dict[str, dict]) -> List[str]:
+    """Slots that feed each other, named in the order the loop runs.
+
+    Every other refusal here is local -- a type, a name, an index -- and a cycle
+    is the one wrong graph that is correct at every link and impossible as a
+    whole. ComfyUI does catch it, but at execution: the run is queued, accepted,
+    and dies inside the executor with a message the app has no reason to be
+    reading, which is the "refused somewhere nobody looks" shape this file
+    exists to prevent.
+
+    Walked with an explicit stack rather than recursion. Slots arrive from a
+    request, so how many there are is the caller's choice, and a long enough
+    chain would turn a refusal into a RecursionError -- a 500 instead of a
+    reason.
+    """
+    feeds = {slot_id: [value[0] for value in node["inputs"].values() if is_link(value)]
+             for slot_id, node in prompt.items()}
+    cleared: set = set()
+    reported: set = set()
+    found: List[str] = []
+
+    for root in prompt:
+        if root in cleared:
+            continue
+        stack: List[List] = [[root, 0]]     # [slot, index of its next feed]
+        path: List[str] = [root]            # what we are currently inside
+        on_path = {root}
+        while stack:
+            slot_id, i = stack[-1]
+            sources = feeds.get(slot_id, ())
+            if i >= len(sources):
+                cleared.add(slot_id)
+                on_path.discard(slot_id)
+                path.pop()
+                stack.pop()
+                continue
+            stack[-1][1] = i + 1
+            source = sources[i]
+            if source in on_path:
+                loop = path[path.index(source):]
+                # One loop, reported once, however many links close it.
+                key = frozenset(loop)
+                if key not in reported:
+                    reported.add(key)
+                    found.append(f"{' feeds '.join(reversed(loop))} feeds {loop[-1]}: "
+                                 f"a slot cannot end up feeding itself")
+            elif source not in cleared:
+                stack.append([source, 0])
+                path.append(source)
+                on_path.add(source)
+    return found
+
+
+def slots_by_id(slots: Sequence[dict]) -> Dict[str, dict]:
+    return {slot["id"]: slot for slot in slots}
+
+
+def consumers(slots: Sequence[dict], slot_id: str) -> List[Tuple[str, str, int]]:
+    """Every (consumer_id, input_name, output_index) reading this slot."""
+    found = []
+    for slot in slots:
+        for name, value in (slot.get("inputs") or {}).items():
+            if is_link(value) and value[0] == slot_id:
+                found.append((slot["id"], name, value[1]))
+    return found
+
+
+def add(slots: Sequence[dict], class_type: str, group: Optional[str] = None,
+        schemas: Optional[Schemas] = None) -> Tuple[List[dict], List[str]]:
+    """Put a new slot at the end, holding `class_type`, with nothing set and nothing wired.
+
+    The id is made from the node's name and is never one already taken, so adding the same
+    node twice gives two slots, not a collision. Wiring it in is a separate, checked step:
+    splice(), for a pass-through node.
+    """
+    schemas = schemas or from_comfyui()
+    if schemas.of(class_type) is None:
+        return list(slots), [f"there is no node called {class_type!r} installed"]
+    if group is not None and (not isinstance(group, str) or not group.strip()):
+        return list(slots), ["a group is a name; leave it out to leave the slot ungrouped"]
+    taken = {slot["id"] for slot in slots}
+    stem = re.sub(r"[^a-z0-9]+", "_", class_type.lower()).strip("_") or "node"
+    n = 1
+    new_id = stem
+    while new_id in taken:
+        n += 1
+        new_id = f"{stem}_{n}"
+    slot = {"id": new_id, "node": class_type, "inputs": {}}
+    if group:
+        slot["group"] = group.strip()
+    return [dict(s) for s in slots] + [slot], []
+
+
+def splice(slots: Sequence[dict], slot_id: str,
+           schemas: Optional[Schemas] = None) -> Tuple[List[dict], Optional[str]]:
+    """Put a just-added pass-through node (a MODEL in and a MODEL out, say) into its chain, last:
+    between the chain's end and what uses it -- the sampler, for a model patch. Left out, it would
+    feed nothing, and ComfyUI never runs a node nothing reads. -> (slots, what to tell the person).
+
+    Only where there is one answer: a node taking and giving more than one kind, or a chain whose
+    end several nodes read, is left unwired and the note says to wire it."""
+    schemas = schemas or from_comfyui()
+    by_id = slots_by_id(slots)
+    node = by_id[slot_id]["node"]
+    shape = _pass_through(node, schemas)
+    if not shape:
+        return list(slots), None              # not a pass-through: wiring it is the person's call
+    kind, into, out_index = shape
+    # The chain's end: a link of this kind into a node that does not hand the kind on.
+    ends = []
+    for slot in slots:
+        if slot["id"] == slot_id or kind in schemas.outputs(slot["node"]):
+            continue
+        for name, value in (slot.get("inputs") or {}).items():
+            if (is_link(value) and value[0] in by_id
+                    and schemas.outputs(by_id[value[0]]["node"])[value[1]:value[1] + 1] == [kind]):
+                ends.append((slot["id"], name, value))
+    if len(ends) != 1:
+        where = ", ".join(f"{c}.{n}" for c, n, _ in ends) or "nothing"
+        return list(slots), (f"{node} was added but not connected: its {kind} could go before "
+                             f"{where}. Wire its {into} and what reads it under Show all nodes, "
+                             f"or it will not run.")
+    consumer, name, source = ends[0]
+    out, problems = wire(slots, slot_id, into, source[0], source[1], schemas)
+    if not problems:
+        out, problems = wire(out, consumer, name, slot_id, out_index, schemas)
+    if problems:
+        return list(slots), f"{node} was added but could not be connected: {' '.join(problems)}"
+    return out, None
+
+
+def _pass_through(node: str, schemas: Schemas) -> Optional[Tuple[str, str, int]]:
+    """(kind, its one input, its output index) for a node that takes and gives one kind (MODEL in, MODEL
+    out), or None: any other node's wiring is the person's call."""
+    produced = schemas.outputs(node)
+    must = schemas.required(node)         # a LoRA loader's optional CLIP does not stop it being a MODEL patch; a schema naming none counts every input
+    kinds = []
+    for kind in dict.fromkeys(k for k in produced if k not in comfy_types.PRIMITIVE and k != "*"):
+        ins = [n for n, wants in schemas.inputs(node).items() if wants == kind and (not must or n in must)]
+        if len(ins) == 1:
+            kinds.append((kind, ins[0], produced.index(kind)))
+    return kinds[0] if len(kinds) == 1 else None
+
+
+def forward(slots: Sequence[dict], slot_id: str, to_input: str,
+            schemas: Optional[Schemas] = None) -> Tuple[List[dict], Optional[str]]:
+    """After a pass-through node's input was wired from X: if nothing reads the node yet, everything that
+    read X (that output) reads the node instead -- it goes in after X. A node nothing reads never runs.
+    -> (slots, what to tell the person)."""
+    schemas = schemas or from_comfyui()
+    by_id = slots_by_id(slots)
+    me = by_id[slot_id]
+    shape = _pass_through(me["node"], schemas)
+    source = (me.get("inputs") or {}).get(to_input)
+    if not shape or shape[1] != to_input or not is_link(source) or consumers(slots, slot_id):
+        return list(slots), None
+    out, moved = list(slots), []
+    for consumer, name, index in consumers(slots, source[0]):
+        if consumer == slot_id or index != source[1]:
+            continue
+        out, problems = wire(out, consumer, name, slot_id, shape[2], schemas)
+        if problems:
+            return list(slots), f"{me['node']} was wired in but could not take over {consumer}.{name}: {' '.join(problems)}"
+        moved.append(f"{consumer}.{name}")
+    return out, (f"{', '.join(moved)} now read{'s' if len(moved) == 1 else ''} {me['node']}" if moved else None)
+
+
+def replace(slots: Sequence[dict], slot_id: str, class_type: str,
+            schemas: Optional[Schemas] = None) -> Tuple[List[dict], List[str]]:
+    """Point a slot at a different node.
+
+    Allowed when the replacement still produces what its consumers read. The
+    built-in nodes have no special standing: anything producing the same result
+    is as good, which is what makes them replaceable rather than merely present.
+    """
+    schemas = schemas or from_comfyui()
+    by_id = slots_by_id(slots)
+    if slot_id not in by_id:
+        return list(slots), [f"there is no slot called {slot_id!r}"]
+    if schemas.of(class_type) is None:
+        return list(slots), [f"there is no node called {class_type!r} installed"]
+
+    was = schemas.outputs(by_id[slot_id]["node"])
+    now = schemas.outputs(class_type)
+    problems = []
+    for consumer, name, index in consumers(slots, slot_id):
+        wanted = was[index] if index < len(was) else None
+        if index >= len(now):
+            problems.append(f"{consumer}.{name} reads output {index}, which {class_type} "
+                            f"does not have")
+        elif wanted is not None and not comfy_types.accepts(wanted, now[index]):
+            problems.append(f"{consumer}.{name} needs {wanted} but {class_type} gives "
+                            f"{now[index]} there")
+    if problems:
+        return list(slots), problems
+
+    # Inputs are NOT carried across: a different node has different inputs, and
+    # silently keeping the ones whose names happen to match is how a value ends
+    # up meaning something else.
+    # The slot's roles say which of its inputs the app writes to (the prompt box, the source image,
+    # the length). Only the ones the new node actually has can still be written: a role left
+    # pointing at an input that is gone would make every run refuse.
+    have = schemas.inputs(class_type)
+
+    def fits(slot):
+        roles = [r for r in (slot.get("roles") or []) if isinstance(r, dict) and r.get("input") in have]
+        out = dict(slot, node=class_type, inputs={})
+        out.pop("roles", None)
+        out.pop("optional", None)          # the marker belonged to the old node class
+        if roles:
+            out["roles"] = roles
+        return out
+
+    changed = [fits(slot) if slot["id"] == slot_id else dict(slot) for slot in slots]
+    return changed, []
+
+
+def remove(slots: Sequence[dict], slot_id: str,
+           schemas: Optional[Schemas] = None) -> Tuple[List[dict], List[str]]:
+    """Take a slot out, and rewire what it fed to what fed it.
+
+    The passthrough rule is ComfyUI's own for a bypassed node: for each output
+    somebody actually consumes, the removed node must have exactly one input of
+    that type to inherit from. Only CONSUMED outputs are checked -- v4 required
+    one for every output a class could theoretically produce, and a node with a
+    spare FLOAT output nobody wired became unremovable.
+    """
+    schemas = schemas or from_comfyui()
+    by_id = slots_by_id(slots)
+    if slot_id not in by_id:
+        return list(slots), [f"there is no slot called {slot_id!r}"]
+
+    going = by_id[slot_id]
+    produced = schemas.outputs(going["node"])
+    declared = schemas.inputs(going["node"])
+    wired = going.get("inputs") or {}
+
+    replacement: Dict[int, Any] = {}
+    problems: List[str] = []
+
+    for index in sorted({index for _c, _n, index in consumers(slots, slot_id)}):
+        if index >= len(produced):
+            problems.append(f"something reads output {index} of {slot_id!r}, which does not exist")
+            continue
+        kind = produced[index]
+        matching = [name for name, wants in declared.items()
+                    if comfy_types.accepts(wants, kind)
+                    and name in wired and is_link(wired[name])]
+        if len(matching) == 1:
+            replacement[index] = wired[matching[0]]
+        elif not matching:
+            problems.append(f"removing {slot_id!r} would leave its {kind} output unfed: it has "
+                            f"no wired {kind} input for whatever reads it to inherit")
+        else:
+            problems.append(f"removing {slot_id!r} is ambiguous: {kind} could come from "
+                            f"{', '.join(sorted(matching))}")
+
+    if problems:
+        return list(slots), problems
+
+    changed = []
+    for slot in slots:
+        if slot["id"] == slot_id:
+            continue
+        inputs = dict(slot.get("inputs") or {})
+        for name, value in list(inputs.items()):
+            if is_link(value) and value[0] == slot_id:
+                inputs[name] = replacement[value[1]]
+        changed.append(dict(slot, inputs=inputs))
+    return changed, []

@@ -1,0 +1,650 @@
+"""Git pull / branch switch for the FunPack repo (ComfyUI custom node root).
+
+Carried across from v4 unchanged but for REPO_ROOT, and deliberately: this is
+the most-used feature in an experimental pack, it has been switching branches on
+real rentals for months, and every one of its refusals -- no git on PATH, not a
+checkout, a dirty tree, a branch that exists on neither side -- is a lesson that
+cost somebody an afternoon. Rewriting it to look more like v5 would be trading
+proven plumbing for a fresh set of edge cases.
+
+It is core rather than a module because it is about the INSTALL, not about a
+feature: no module can announce the thing that updates every module.
+"""
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+_BRANCH_PRIORITY = ("dev", "cutting_edge", "main")
+
+
+class GitUpdateError(RuntimeError):
+    pass
+
+
+def _run_git(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    if not shutil.which("git"):
+        raise GitUpdateError("git not found on PATH.")
+    if not (REPO_ROOT / ".git").exists():
+        raise GitUpdateError("FunPack is not a git checkout (no .git directory).")
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return proc
+
+
+def funpack_version() -> str:
+    """Custom-node version from pyproject.toml (shown in Settings ▸ About)."""
+    try:
+        text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    return m.group(1) if m else ""
+
+
+# Adjective + vegetable sharing an initial, advancing alphabetically. Keyed by MAJOR, so
+# every 3.x release ships under one name.
+CODENAMES = {
+    "3": "Auspicious Asparagus",
+    "4": "Blinding Blackout",
+    "5": "Cunning Cranberry",      # README on main: "FunPack v5.0 'Cunning Cranberry'"
+}
+
+
+def funpack_codename(version: str = "") -> str:
+    """Codename for `version` (default: the installed one); "" when its major has none."""
+    major = (version or funpack_version()).split(".", 1)[0].strip()
+    return CODENAMES.get(major, "")
+
+
+def _current_branch() -> str:
+    proc = _run_git("rev-parse", "--abbrev-ref", "HEAD")
+    if proc.returncode != 0:
+        raise GitUpdateError((proc.stderr or proc.stdout or "git rev-parse failed").strip())
+    return (proc.stdout or "").strip()
+
+
+def _current_commit() -> str:
+    proc = _run_git("rev-parse", "--short", "HEAD")
+    if proc.returncode != 0:
+        raise GitUpdateError((proc.stderr or proc.stdout or "git rev-parse failed").strip())
+    return (proc.stdout or "").strip()
+
+
+def _is_dirty() -> bool:
+    proc = _run_git("status", "--porcelain")
+    if proc.returncode != 0:
+        raise GitUpdateError((proc.stderr or "git status failed").strip())
+    return bool((proc.stdout or "").strip())
+
+
+def _stash_if_dirty(context: str) -> str | None:
+    """Auto-stash local changes rather than refuse, for the two actions where
+    they are almost always incidental to what was just asked for -- a rollback
+    or a branch switch, not "I was in the middle of something on THIS branch"
+    the way a plain update is. Returns the stash's own message if one was
+    made, so the caller can say so: an auto-stash nobody is told about is a
+    silent discard the first time someone goes looking for the change and it
+    is not where they left it.
+
+    `-u` includes untracked files, matching exactly what `_is_dirty()` itself
+    considers dirty (`git status --porcelain` reports those too) -- stashing
+    only tracked changes would leave the tree just as blocked by the ones
+    `_is_dirty()` is still counting.
+    """
+    if not _is_dirty():
+        return None
+    # Named plainly, including "new files" rather than just "changes": `-u`
+    # sweeps up anything untracked too, which reads very differently from an
+    # edit to a file already in the repo, and this message is the one place
+    # that gets shown -- in the UI, and in `git stash list` for anyone who
+    # goes looking on the command line instead.
+    message = f"FunPack: auto-stashed (incl. new files) before {context}"
+    proc = _run_git("stash", "push", "-u", "-m", message)
+    if proc.returncode != 0:
+        raise GitUpdateError((proc.stderr or proc.stdout or "git stash failed").strip())
+    return message
+
+
+def _disclosing(stashed: str | None, work):
+    """Run `work`, and if ANYTHING it raises escapes, make sure the stash is
+    named in what gets reported -- whatever failed, however far past the
+    stash it happened, whatever kind of exception it came out as.
+
+    Round three of the same fix. Round one only caught the ONE `git
+    checkout` call inside checkout() failing. Round two widened that to the
+    whole post-stash body of both checkout() and rollback(), since pull()
+    (called by checkout(pull_after=True), the real default) and
+    `git reset --hard` (inside rollback()) can each fail on their own --
+    but both rounds only caught `GitUpdateError`. `_run_git` can also raise
+    `subprocess.TimeoutExpired` (a hung `git fetch` on a slow or flaky
+    network -- exactly the kind of connection a rented GPU box has) or, in
+    principle, anything else `subprocess.run` itself can throw, and none of
+    those are a `GitUpdateError`, so they sailed straight past the narrower
+    catch with the stash disclosure lost the same way, one exception type
+    later. Catching broadly here also means an unexpected failure comes back
+    as a clean, named `GitUpdateError` (a 400 the UI can show) instead of an
+    unhandled exception (a bare 500 in `core/routes.py`'s generic handler) --
+    which is what every OTHER failure path in this file already does by
+    converting a bad `returncode` to `GitUpdateError` itself; this just
+    covers the exceptions `_run_git` can raise instead of returning.
+    """
+    if not stashed:
+        return work()
+    try:
+        return work()
+    except Exception as exc:
+        raise GitUpdateError(
+            f'{exc if isinstance(exc, GitUpdateError) else f"{type(exc).__name__}: {exc}"}'
+            f'\n\n(Local changes were stashed first, before this failed: '
+            f'"{stashed}". They are still there -- git stash pop to get them '
+            f'back.)') from exc
+
+
+def _ahead_behind(branch: str) -> tuple[int, int]:
+    proc = _run_git("rev-list", "--left-right", "--count", f"HEAD...origin/{branch}")
+    if proc.returncode != 0:
+        return 0, 0
+    parts = (proc.stdout or "").strip().split()
+    if len(parts) != 2:
+        return 0, 0
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return 0, 0
+
+
+def _unique_local_commits(branch: str) -> list[str]:
+    """Local commits with no patch-equivalent upstream — i.e. real work that a reset
+    would destroy. `git cherry` marks those "+" and marks "-" the ones whose CONTENT is
+    already upstream under a different hash, which is exactly what a rewritten history
+    leaves behind."""
+    proc = _run_git("cherry", f"origin/{branch}", branch)
+    if proc.returncode != 0:
+        return ["<unknown>"]  # can't prove it's safe → treat as if there were local work
+    return [ln[2:].strip() for ln in (proc.stdout or "").splitlines() if ln.startswith("+")]
+
+
+def _remote_names() -> set[str]:
+    proc = _run_git("remote")
+    if proc.returncode != 0:
+        return set()
+    return {ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()}
+
+
+def _list_branches() -> list[str]:
+    proc = _run_git("branch", "-a", "--format=%(refname:short)")
+    if proc.returncode != 0:
+        raise GitUpdateError((proc.stderr or "git branch failed").strip())
+    # refs/remotes/origin/HEAD shortens to a bare "origin", which is not a branch and
+    # fails on checkout — drop anything that is just a remote's name.
+    remotes = _remote_names()
+    names: set[str] = set()
+    for raw in (proc.stdout or "").splitlines():
+        line = raw.strip()
+        if not line or line == "HEAD" or line.endswith("/HEAD") or line in remotes:
+            continue
+        if line.startswith("origin/"):
+            names.add(line[7:])
+        elif not line.startswith("remotes/"):
+            names.add(line)
+    ordered = [b for b in _BRANCH_PRIORITY if b in names]
+    rest = sorted(b for b in names if b not in _BRANCH_PRIORITY)
+    return ordered + rest
+
+
+def rollback_target() -> dict | None:
+    """The commit HEAD pointed to before its last move (an Update or Switch branch — pull()
+    and checkout() are the only things in this app that move HEAD), read from git's own
+    reflog rather than a separate state file: git already records exactly this. None if
+    there is no prior entry (a fresh clone) or HEAD hasn't moved since."""
+    proc = _run_git("rev-parse", "--verify", "HEAD@{1}")
+    if proc.returncode != 0:
+        return None
+    commit = proc.stdout.strip()
+    if not commit or commit == _current_commit():
+        return None
+    subject = _run_git("log", "-1", "--format=%s", commit)
+    return {"commit": commit, "subject": (subject.stdout or "").strip()}
+
+
+def rollback() -> dict:
+    """Hard-reset to HEAD@{1} -- undoes the most recent Update or Switch branch. A dirty tree
+    is auto-stashed rather than refused (see _stash_if_dirty) -- local changes sitting around
+    right before a deliberate "undo the last update" are almost never the point of doing it,
+    and `git stash` is nothing is silently discarded, only moved somewhere it can be found
+    again. Does NOT reinstall requirements for the commit being rolled back to -- an update
+    that changed dependencies and turned out bad may need `pip install -r requirements.txt`
+    run by hand after rolling back the code; automatically reversing a pip install is its own
+    can of worms (downgrades can break OTHER already-installed packages) and out of scope
+    here.
+
+    The target is read BEFORE stashing, not after: `git stash push` writes its
+    own HEAD reflog entry, so stashing first shifts what `HEAD@{1}` means --
+    it silently manufactured a rollback target out of the stash's own move on
+    a repo that had none, and shifted a real one to point at the wrong commit
+    everywhere else. Found by a real-git test, not reasoned out in advance.
+    """
+    target = rollback_target()
+    if target is None:
+        raise GitUpdateError("Nothing to roll back to.")
+    stashed = _stash_if_dirty("rolling back")
+
+    def _do():
+        before = _current_commit()
+        reset = _run_git("reset", "--hard", target["commit"])
+        if reset.returncode != 0:
+            raise GitUpdateError((reset.stderr or reset.stdout or "git reset failed").strip())
+        return {"branch": _current_branch(), "before": before, "after": _current_commit()}
+
+    result = _disclosing(stashed, _do)
+    if stashed:
+        result["stashed"] = stashed
+    return result
+
+
+def status(*, remote: bool = True) -> dict:
+    """Current branch, switchable branches, and update availability.
+
+    `remote=False` answers from the checkout alone. Everything except ahead and
+    behind is local and instant; the fetch is the only part that touches the
+    network, and on a machine that cannot reach the remote it is the only part
+    that can hang. The app asks twice -- once without, to have something to draw,
+    then once with.
+
+    The fetch gets a short timeout of its own for the same reason: the default
+    120s is a spinner nobody waits out, and a failed fetch already has an honest
+    answer (`fetch_ok: false`, "this may be out of date").
+    """
+    try:
+        branch = _current_branch()
+        commit = _current_commit()
+        dirty = _is_dirty()
+        branches = _list_branches()
+        fetch_ok = False
+        if remote:
+            fetch = _run_git("fetch", "--prune", "origin", timeout=20)
+            fetch_ok = fetch.returncode == 0
+        ahead, behind = _ahead_behind(branch) if fetch_ok else (0, 0)
+        return {
+            "ok": True,
+            "version": funpack_version(),
+            "codename": funpack_codename(),
+            "branch": branch,
+            "commit": commit,
+            "dirty": dirty,
+            "branches": branches,
+            "ahead": ahead,
+            "behind": behind,
+            "fetch_ok": fetch_ok,
+            "checked_remote": bool(remote),
+            "repo": str(REPO_ROOT),
+            "rollback_target": rollback_target(),
+        }
+    except GitUpdateError as e:
+        return {"ok": False, "version": funpack_version(),
+                "codename": funpack_codename(), "detail": str(e)}
+
+
+REQUIREMENTS = "requirements.txt"
+
+
+def parse_requirement(line: str):
+    """(name, specifier) for one requirements line, or None for a blank/comment.
+
+    Deliberately small: FunPack's requirements are plain names with at most a version floor.
+    Anything with an environment marker or a URL is handed back name-only, which makes it
+    "install if absent" and never a reason to touch what is already there.
+    """
+    text = (line or "").split("#", 1)[0].strip()
+    if not text or text.startswith("-"):
+        return None
+    text = text.split(";", 1)[0].strip()          # drop environment markers
+    if not text:
+        return None
+    m = re.match(r"^([A-Za-z0-9._-]+)\s*(\[[^\]]*\])?\s*(.*)$", text)
+    if not m:
+        return None
+    return m.group(1), (m.group(3) or "").strip()
+
+
+def _installed_version(name: str):
+    """Installed version of `name` in THIS interpreter, or None. FunPack runs inside ComfyUI,
+    so importlib.metadata already sees the right environment — no pip subprocess needed."""
+    try:
+        from importlib import metadata
+        return metadata.version(name)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def requirement_status() -> dict:
+    """{"missing": [name], "below_floor": [(name, have, spec)], "present": [name]}.
+
+    `below_floor` is REPORTED, never acted on. Upgrading a package the rest of ComfyUI is
+    already built against is how a working install stops working: torch, numpy, transformers
+    and the compiled extensions on top of them do not survive being moved underneath.
+    Deciding to upgrade is the user's call, with the command in hand.
+    """
+    req = REPO_ROOT / REQUIREMENTS
+    out = {"missing": [], "below_floor": [], "present": []}
+    if not req.is_file():
+        return out
+    try:
+        lines = req.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        parsed = parse_requirement(line)
+        if parsed is None:
+            continue
+        name, spec = parsed
+        have = _installed_version(name)
+        if have is None:
+            out["missing"].append(name)
+            # what pip is given: the line itself, so a version pin or a URL (spaCy's model is not on PyPI) survives
+            out.setdefault("install", []).append(line.split("#", 1)[0].split(";", 1)[0].strip())
+            continue
+        out["present"].append(name)
+        if spec and not _satisfies(have, spec):
+            out["below_floor"].append((name, have, spec))
+    return out
+
+
+def _satisfies(have: str, spec: str) -> bool:
+    """Whether `have` meets `spec`. Unknown/unparseable -> True, because the fallback of a
+    false "outdated" is a warning about a package that is fine."""
+    try:
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+        return Version(have) in SpecifierSet(spec)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _spacy_model_loads() -> bool:
+    """Whether spaCy can load its English model, checked in a fresh interpreter: this process may
+    already hold an older spaCy. False when spaCy is not installed at all."""
+    try:
+        proc = subprocess.run([sys.executable, "-c", "import spacy; spacy.load('en_core_web_sm')"],
+                              capture_output=True, timeout=180)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return proc.returncode == 0
+
+
+def install_requirements(timeout: int = 900) -> dict:
+    """Install ONLY the requirements that are absent. Never upgrades anything.
+
+    `sys.executable`, never a bare `pip`: ComfyUI is usually in a venv, and the pip on PATH
+    belongs to whatever else is on it. Installing into the wrong environment succeeds loudly
+    and changes nothing.
+
+    A package that is present but below a version floor is reported, not moved. `pip install
+    -r requirements.txt` would upgrade it — and on a rental full of compiled extensions
+    (torch, comfy-kitchen, comfy-aimdo, onnxruntime, opencv) a numpy or transformers bump
+    underneath them does not raise. It segfaults, or corrupts memory, hours later, with
+    nothing in the log connecting it to the update that caused it.
+
+    Never raises. A failed install must not turn a completed update into an error — the code
+    IS updated by this point, and the remedy is a command the user can run.
+    """
+    req = REPO_ROOT / REQUIREMENTS
+    if not req.is_file():
+        return {"ran": False, "ok": True, "detail": "no requirements.txt in this checkout"}
+    status = requirement_status()
+    floor_note = ""
+    if status["below_floor"]:
+        floor_note = ("Present but older than FunPack asks for, and LEFT ALONE — upgrading a "
+                      "package the rest of ComfyUI is built against is not something an "
+                      "update should do behind you:\n"
+                      + "\n".join(f"  {n}: have {h}, wants {sp}"
+                                   for n, h, sp in status["below_floor"])
+                      + f"\n\nTo do it yourself:\n  {sys.executable} -m pip install -r {req}")
+        print(f"[FunPack update] {floor_note}")
+    # The spaCy model is a package the metadata can see even when it does not load (a half-finished
+    # install, a model built for another spaCy). Presence is judged by loading it, when spaCy is here.
+    model_broken = ("en_core_web_sm" in status["present"] and _installed_version("spacy") is not None
+                    and not _spacy_model_loads())
+    if not status["missing"] and not model_broken:
+        return {"ran": False, "ok": True, "changed": [],
+                "detail": ("Nothing to install — every requirement is already present."
+                           + (f"\n\n{floor_note}" if floor_note else ""))}
+
+    before = _pip_freeze()
+    # One pip call per absent requirement, never `-r requirements.txt` (that would upgrade anything
+    # below its floor). Separate calls, because one call is all-or-nothing: a single package that
+    # cannot install (a model URL that is unreachable, a wheel missing for this Python) used to
+    # stop every other one from installing too. Dependencies are resolved normally: a new package
+    # with nothing under it is not installed, it is broken. The freeze diff says whether anything
+    # already present moved as a result.
+    if not before:
+        return {"ran": False, "ok": False,
+                "detail": "Could not read the installed packages, so nothing is installed (an install could move them). "
+                          f"Run it yourself: {sys.executable} -m pip install <the missing packages>"}
+    return _constrained(before, lambda path: _install_each(status, path, before, floor_note, timeout, model_broken))
+
+
+def _constrained(before, run):
+    """`run(constraints_path)` with every installed package held at its version, so a new package's
+    dependencies can be added but never bump one that is already here. A dependency that needs a
+    newer one fails, and says so."""
+    constraints = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8")
+    try:
+        constraints.write("\n".join(f"{n}=={v}" for n, v in before.items()) + "\n")
+        constraints.close()
+        return run(constraints.name)
+    finally:
+        os.unlink(constraints.name)
+
+
+def install_lines(lines, timeout: int = 900) -> dict:
+    """Install the absent ones of these requirement lines, with the same guard as install_requirements:
+    nothing already present moves. Never raises."""
+    todo = [l for l in lines if (p := parse_requirement(l)) and _installed_version(p[0]) is None]
+    if not todo:
+        return {"ran": False, "ok": True, "changed": [], "detail": "Nothing to install."}
+    before = _pip_freeze()
+    if not before:
+        return {"ran": False, "ok": False, "detail": "Could not read the installed packages, so nothing was installed."}
+    status = {"install": todo, "missing": [parse_requirement(l)[0] for l in todo]}
+    return _constrained(before, lambda path: _install_each(status, path, before, "", timeout, False))
+
+
+def _install_each(status, constraints_path, before, floor_note, timeout, model_broken):
+    failed, done = [], []
+    for line in status.get("install", []):
+        cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-c", constraints_path, line]
+        try:
+            proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            failed.append((line, f"pip did not finish within {timeout}s"))
+            continue
+        except OSError as e:
+            failed.append((line, f"could not run pip: {e}"))
+            continue
+        if proc.returncode != 0:
+            failed.append((line, ((proc.stderr or proc.stdout or "").strip() or "pip failed")[-400:]))
+        else:
+            done.append(line)
+    if model_broken:
+        cmd = [sys.executable, "-m", "spacy", "download", "en_core_web_sm"]     # the model is data, not a dependency: no constraints
+        try:
+            proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
+            if proc.returncode != 0 or not _spacy_model_loads():
+                failed.append(("en_core_web_sm (spacy download)",
+                               ((proc.stderr or proc.stdout or "").strip() or "the model still does not load")[-400:]))
+            else:
+                done.append("en_core_web_sm (spacy download)")
+        except (subprocess.TimeoutExpired, OSError) as e:
+            failed.append(("en_core_web_sm (spacy download)", str(e)))
+    changed = _pip_diff(before, _pip_freeze())
+    if changed:
+        print("[FunPack update] pip changed these packages: " + ", ".join(changed))
+    if failed:
+        return {"ran": True, "ok": False, "changed": changed,
+                "detail": ("Could not install: " + ", ".join(line for line, _ in failed) + ".\n"
+                           + "\n".join(f"{line}:\n{tail}" for line, tail in failed)
+                           + "\n\nTo do it yourself:\n"
+                           + "\n".join(f"  {sys.executable} -m pip install {line}" for line, _ in failed))}
+    return {"ran": True, "ok": True, "changed": changed,
+            "detail": (f"Installed missing: {', '.join(status['missing'])}\n"
+                       + (("Changed: " + ", ".join(changed) + "\n") if changed else "")
+                       + (f"\n{floor_note}\n" if floor_note else ""))}
+
+
+def _pip_freeze() -> dict:
+    """{name: version} for the environment ComfyUI is running in. {} if pip cannot be read —
+    an unreadable freeze must never block the install it was only meant to describe."""
+    try:
+        out = subprocess.run([sys.executable, "-m", "pip", "freeze",
+                              "--disable-pip-version-check"],
+                             capture_output=True, text=True, timeout=120)
+        if out.returncode != 0:
+            return {}
+        found = {}
+        for line in (out.stdout or "").splitlines():
+            if "==" in line:
+                name, _, ver = line.partition("==")
+                found[name.strip().lower()] = ver.strip()
+        return found
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _pip_diff(before: dict, after: dict) -> list[str]:
+    """Human-readable list of what moved. Empty when nothing did, or when either side is
+    unknown — reporting every package as "new" because the freeze failed would be worse
+    than saying nothing."""
+    if not before or not after:
+        return []
+    out = []
+    for name, ver in sorted(after.items()):
+        was = before.get(name)
+        if was is None:
+            out.append(f"{name} {ver} (new)")
+        elif was != ver:
+            out.append(f"{name} {was} -> {ver}")
+    for name in sorted(set(before) - set(after)):
+        out.append(f"{name} {before[name]} (removed)")
+    return out
+
+
+def pull(branch: str | None = None, *, install_deps: bool = False) -> dict:
+    """Fast-forward pull from origin on the given branch (current if omitted).
+
+    `install_deps` is OFF by default and turned on by the update route. Running pip is a
+    side effect no caller should acquire by accident just for asking git to move a branch —
+    it has to be asked for at the point that means "the user pressed Update".
+    """
+    branch = (branch or _current_branch()).strip()
+    if not branch:
+        raise GitUpdateError("Could not determine current branch.")
+    if _is_dirty():
+        raise GitUpdateError("Working tree has local changes. Commit or stash them before updating.")
+    before = _current_commit()
+    fetch = _run_git("fetch", "--prune", "origin")
+    if fetch.returncode != 0:
+        raise GitUpdateError((fetch.stderr or fetch.stdout or "git fetch failed").strip())
+    if branch != _current_branch():
+        co = _run_git("checkout", branch)
+        if co.returncode != 0:
+            raise GitUpdateError((co.stderr or co.stdout or "git checkout failed").strip())
+    pull_proc = _run_git("pull", "--ff-only", "origin", branch)
+    realigned = False
+    if pull_proc.returncode != 0:
+        msg = (pull_proc.stderr or pull_proc.stdout or "git pull failed").strip()
+        # A fast-forward is impossible once upstream history has been rewritten: every
+        # local commit is a different hash, so git reports the branches as diverged even
+        # though the content matches. Only realign when nothing would actually be lost —
+        # a clean tree (checked above) and no local commit whose content is missing
+        # upstream. Anything else keeps the original error and the user's work.
+        unique = _unique_local_commits(branch)
+        if unique:
+            raise GitUpdateError(
+                f"{msg}\n\nThis checkout has {len(unique)} local commit(s) that are not on "
+                f"origin/{branch}. Push or move them first — updating would discard them.")
+        reset = _run_git("reset", "--hard", f"origin/{branch}")
+        if reset.returncode != 0:
+            raise GitUpdateError(msg)
+        realigned = True
+    after = _current_commit()
+    # Dependencies are part of the update. Done BEFORE the response, so the restart the
+    # caller schedules cannot race an install that is still running.
+    deps = None
+    if install_deps:
+        deps = install_requirements()       # a no-op unless something is missing; a branch switch's own requirements are not in this pull's diff
+    return {
+        "branch": branch,
+        "before": before,
+        "after": after,
+        "updated": before != after,
+        "requirements": deps,
+        # Surfaced so the update reads as what it was, not a silent jump to another commit.
+        "realigned": realigned,
+        "output": ((pull_proc.stdout or "").strip() if not realigned
+                   else f"Upstream history was rewritten — realigned to origin/{branch}. "
+                        "No local commits were lost."),
+    }
+
+
+def checkout(branch: str, *, pull_after: bool = True, install_deps: bool = False) -> dict:
+    """Switch branch, optionally pull, return combined result.
+
+    A dirty tree is auto-stashed rather than refused -- see _stash_if_dirty and
+    rollback()'s reasoning, which applies the same way here: whatever was left
+    uncommitted on the branch being LEFT is not why anyone pressed "switch",
+    and it comes back with `git stash pop` on whichever branch they return to.
+    Stashing happens before the checkout below, so pull()'s own dirty check
+    (still in force, unchanged) finds a clean tree and never raises FOR THAT
+    reason -- but pull() can still fail for others (diverged branches, a
+    failed fetch), same as the checkout step itself can, so both run inside
+    _disclosing() rather than only the checkout call being covered.
+    """
+    branch = (branch or "").strip()
+    if not branch:
+        raise GitUpdateError("Branch name is required.")
+    branches = _list_branches()
+    if branch not in branches:
+        raise GitUpdateError(f'Branch "{branch}" is not available locally or on origin.')
+    stashed = _stash_if_dirty(f"switching to {branch}")
+
+    def _do():
+        before_branch = _current_branch()
+        before_commit = _current_commit()
+        if branch != before_branch:
+            co = _run_git("checkout", branch)
+            if co.returncode != 0:
+                raise GitUpdateError((co.stderr or co.stdout or "git checkout failed").strip())
+        result = {"branch": branch, "before_branch": before_branch, "before": before_commit}
+        if pull_after:
+            # Runs inside the same wrapper: pull() can fail for its own
+            # reasons (diverged branches, a failed fetch) well after the
+            # checkout above succeeded, and that failure is exactly as
+            # capable of losing the stash disclosure as the checkout step
+            # itself was -- found by a second round of review, after the
+            # first fix only covered the checkout call directly above.
+            pulled = pull(branch, install_deps=install_deps)
+            result.update(pulled)
+        else:
+            result["after"] = _current_commit()
+            result["updated"] = result["before"] != result["after"]
+            if install_deps:
+                result["requirements"] = install_requirements()       # whatever the branch needs and this environment lacks
+        return result
+
+    result = _disclosing(stashed, _do)
+    if stashed:
+        result["stashed"] = stashed
+    return result

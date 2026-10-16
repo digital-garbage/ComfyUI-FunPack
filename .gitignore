@@ -21,3 +21,30 @@ refinements/
 
 # Never track saved ComfyUI workflow dumps — they carry whatever was typed in the graph.
 movie_editor/backend/reference/*.workflow.json
+
+# Dev-only: the app ships as plain ES modules, users never run npm.
+node_modules/
+
+# Playwright: browsers live in a shared cache, results and traces are per-run
+app/test-results/
+app/playwright-report/
+
+# User projects, and what they imported — their content, not ours. Rooted
+# (leading slash): a bare "media/" also matches modules/media/, this app's own
+# source code for loading media into the graph.
+/projects/
+/media/
+/shortcuts.json
+/markers.json
+/quarantine.json
+/addons.json
+/shortcut_categories.json
+/shortcut_revolver.json
+/prompt_composer_memory.json
+
+# Taste keys: what your ratings taught, per rental
+/taste/
+/block_influence.enabled
+/block_influence.latest.json
+/phrase_probe.enabled
+/phrase_probe.latest.json

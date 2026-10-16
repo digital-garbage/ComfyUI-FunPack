@@ -1,0 +1,163 @@
+import pytest
+
+from core import config, projects, shortcuts, suggestions
+
+
+@pytest.fixture(autouse=True)
+def _store(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    monkeypatch.setattr(config, "SHORTCUTS_FILE", tmp_path / "s.json")
+    monkeypatch.setattr(config, "SHORTCUT_CATEGORIES_FILE", tmp_path / "c.json")
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "p")
+
+
+def _project(*texts):
+    p = projects.Project(name="x", scenes=[projects.Scene(text=t) for t in texts])
+    projects.save(p)
+
+
+def test_pairs_follows_counts_come_from_typed_triggers_only():
+    for n in ("rain", "neon", "fox"):
+        shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
+    shortcuts.save({"name": "off", "triggers": ["dog"], "replacements": ["r"], "enabled": False})
+    _project("rain and neon here", "", "a fox, dog", "raining")        # "raining" is not "rain"
+    s = suggestions.stats()
+    assert s["scenes"] == 3 and s["counts"] == {"rain": 1, "neon": 1, "fox": 1}
+    assert s["pairs"] == [["neon", "rain", 1]] or s["pairs"] == [["rain", "neon", 1]]
+    assert sorted(map(tuple, s["follows"])) == [("neon", "fox", 1), ("rain", "fox", 1)]
+
+
+def test_no_projects_or_no_shortcuts_is_an_empty_answer():
+    assert suggestions.stats() == {"scenes": 0, "counts": {}, "pairs": [], "follows": [], "scores": {}, "rated_pairs": [],
+                                   "guess": {"ready": False, "right": 0, "of": 0, "prompts": 0, "weights": {}}}
+
+
+def test_excluded_scenes_and_sub_clips_are_skipped_and_follows_use_timeline_order():
+    for n in ("rain", "neon", "fox"):
+        shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
+    scenes = [projects.Scene(id="a", text="rain"), projects.Scene(id="b", text="neon"),
+              projects.Scene(id="c", text="fox", excluded=True),
+              projects.Scene(id="d", text="rain", gen_unit_id="a", cut_offset_frames=24)]
+    projects.save(projects.Project(name="x", scenes=scenes, timeline_order=["b", "a", "c", "d"]))
+    s = suggestions.stats()
+    assert s["scenes"] == 2 and s["counts"] == {"rain": 1, "neon": 1}
+    assert s["follows"] == [["neon", "rain", 1]]
+
+
+def test_auto_montage_pieces_are_not_shots_the_user_wrote():
+    for n in ("rain", "neon"):
+        shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
+    scenes = [projects.Scene(id="a", text="rain"), projects.Scene(id="b", text="neon"),
+              projects.Scene(id="p1", text="rain", gen_unit_id="p1", reused=True),
+              projects.Scene(id="p2", text="neon", gen_unit_id="p2", reused=True)]
+    projects.save(projects.Project(name="x", scenes=scenes, timeline_order=["a", "b", "p1", "p2"]))
+    s = suggestions.stats()
+    assert s["scenes"] == 2 and s["counts"] == {"rain": 1, "neon": 1} and s["follows"] == [["rain", "neon", 1]]
+
+
+def test_ratings_score_shortcuts_and_pairs_and_a_bad_image_blames_nothing():
+    for n in ("rain", "neon", "fox"):
+        shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
+    projects.save(projects.Project(name="x", scenes=[
+        projects.Scene(text="rain neon", rating="10"), projects.Scene(text="rain neon", rating="10|loved"),
+        projects.Scene(text="neon fox", rating="Disliked: bad composition"),
+        projects.Scene(text="fox", rating="Disliked: bad image"), projects.Scene(text="fox", rating="")]))
+    s = suggestions.stats()
+    assert s["scores"] == {"rain": 2.25, "neon": 1.125, "fox": 0.5}
+    assert sorted(map(tuple, s["rated_pairs"])) == [("fox", "neon", 0.5), ("neon", "rain", 2.25)]
+    assert [suggestions.vote(x) for x in ("1", "6", "5", "Disliked: bad image", "odd")] == [-1, 1, -1, 0, 0]
+
+
+def test_a_rating_counts_for_the_text_it_was_given_to_not_a_rewrite():
+    for n in ("rain", "neon"):
+        shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
+    projects.save(projects.Project(name="x", scenes=[projects.Scene(text="neon", rating="10", rated={"text": "rain", "at": 1})]))
+    s = suggestions.stats()
+    assert s["scores"] == {"rain": 1.5} and s["counts"] == {"neon": 1}
+    assert projects.Scene.from_dict({"rated": {"text": "rain", "at": 1}}).rated == {"text": "rain", "at": 1}
+
+
+def test_the_miner_finds_exactly_what_the_expander_replaces():
+    import random
+    words = ["rain", "golden", "hour", "fox", "tail", "neon-lit", "neon", "a", "the", "end", ",", "fox's", "\n", "raining", "GOLDEN"]
+    items = [shortcuts.Shortcut(name=f"n{i}", triggers=[w], replacements=[f"<{i}>"])
+             for i, w in enumerate(["rain", "golden hour", "golden", "fox", "fox tail", "neon-lit", "a", "the end"])]
+    fired, rng = shortcuts.matcher(items), random.Random(7)
+    for _ in range(500):
+        text = " ".join(rng.choice(words) for _ in range(12))
+        out = shortcuts.expand(text, shortcuts=items, seed=1)
+        assert fired(text) == {f"n{i}" for i in range(len(items)) if f"<{i}>" in out}, text
+
+
+def test_ratings_outlive_a_regenerate_a_cleared_text_and_a_left_out_clip():
+    for n in ("rain", "neon", "fox"):
+        shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
+    shown = {"media": {"filename": "3.mp4"}, "promptId": "p3"}
+    projects.save(projects.Project(name="x", scenes=[
+        projects.Scene(id="a", text="fox", rating=""),
+        projects.Scene(id="b", text="", rating="10", rated={"text": "neon"}),
+        projects.Scene(id="c", text="fox", rating="10", rated={"text": "fox"}, excluded=True)],
+        scene_renders={"a": shown},
+        scene_variants={"a": [{"media": {"filename": "1.mp4"}, "promptId": "p1", "rating": "1", "rated": {"text": "rain"}},
+                              {**shown, "rating": "10", "rated": {"text": "fox"}}]}))   # the take on the clip: its head speaks for it
+    assert suggestions.stats()["scores"] == {"rain": 0.5, "neon": 1.5, "fox": 1.5}
+
+
+def test_a_trigger_lower_reshapes_is_still_found_as_the_expander_finds_it():
+    items = [shortcuts.Shortcut(name="big", triggers=["İstanbul"], replacements=["<b>"]),
+             shortcuts.Shortcut(name="small", triggers=["istanbul"], replacements=["<s>"])]
+    out = shortcuts.expand("istanbul", shortcuts=items, seed=1)
+    assert shortcuts.matcher(items)("istanbul") == {"big" if "<b>" in out else "small"}
+
+
+def test_each_dislike_in_a_row_cuts_deeper_a_like_lifts_and_ends_the_run_and_nothing_reaches_zero():
+    shortcuts.save({"name": "fox", "triggers": ["fox"], "replacements": ["r"]})
+    rate = lambda label, at: projects.Scene(text="fox", rating=label, rated={"text": "fox", "at": at})
+    projects.save(projects.Project(name="x", scenes=[rate("1", 4), rate("10", 3), rate("1", 1), rate("1", 2)]))      # scene order is not time order
+    assert suggestions.stats()["scores"] == {"fox": 0.5 * 0.25 * 1.5 * 0.5}
+    assert suggestions.weigh([-1] * 100) > 0 and suggestions.weigh([-1] * 100 + [1]) > suggestions.weigh([-1] * 100)
+
+
+def test_the_miner_agrees_with_the_expander_on_overlapping_triggers_and_folded_letters():
+    cases = [(["a b", "b c b"], "a b c b c b"), (["smile"], "ſmile"), (["istanbul"], "İstanbul"), (["İstanbul", "istanbul"], "istanbul")]
+    for triggers, text in cases:
+        items = [shortcuts.Shortcut(name=f"n{i}", triggers=[t], replacements=[f"<{i}>"]) for i, t in enumerate(triggers)]
+        out = shortcuts.expand(text, shortcuts=items, seed=1)
+        assert shortcuts.matcher(items)(text) == {f"n{i}" for i in range(len(items)) if f"<{i}>" in out}, (triggers, text)
+
+
+def test_an_odd_rating_word_teaches_nothing_and_breaks_nothing():
+    assert suggestions.vote("²") == 0 and suggestions.vote("１０") == 0
+
+
+def test_a_rating_given_to_an_empty_prompt_does_not_follow_the_text_written_later():
+    shortcuts.save({"name": "neon", "triggers": ["neon"], "replacements": ["r"]})
+    projects.save(projects.Project(name="x", scenes=[projects.Scene(text="neon", rating="10", rated={"text": "", "at": 1})]))
+    assert suggestions.stats()["scores"] == {}
+
+
+def test_like_guess_turns_on_only_when_it_calls_held_out_prompts_right():
+    import random
+    rng = random.Random(1)
+    subjects = ["fox", "cat", "owl", "deer", "wolf", "crow", "hare", "seal", "lynx", "mole", "toad", "newt"]
+    clear = [(f"a {s} {mood}", 1 if mood == "neon" else -1) for s in subjects for mood in ("neon", "fog") for _ in range(2)]
+    g = suggestions.guess(clear)
+    assert g["ready"] and g["prompts"] == 24 and g["weights"]["neon"] > 0 > g["weights"]["fog"]
+    assert abs(g["weights"].get("fox", 0)) < g["weights"]["neon"]
+    # One prompt rated over and over: seeds, not words. Never on, however many.
+    assert not suggestions.guess([("a fox, neon", rng.choice((1, -1))) for _ in range(60)])["ready"]
+    # Votes that ignore the words: off (no weights sent either).
+    for seed in range(200):
+        r = random.Random(seed)
+        noise = suggestions.guess([(f"a {s} {m}", r.choice((1, -1))) for s in subjects for m in ("neon", "fog", "sun")])
+        assert not noise["ready"] and noise["weights"] == {}, seed
+    assert not suggestions.guess(clear[:8])["ready"]           # too few prompts to tell
+    assert suggestions.guess([])["of"] == 0
+
+
+def test_stats_feeds_the_like_guess_the_rated_text():
+    p = projects.Project(name="x", scenes=[projects.Scene(text="now", rating="10", rated={"text": "then", "at": 1}),
+                                           projects.Scene(text="b", rating="Disliked: bad image")])
+    projects.save(p)
+    g = suggestions.stats()["guess"]
+    assert (g["of"], g["prompts"]) == (1, 1)

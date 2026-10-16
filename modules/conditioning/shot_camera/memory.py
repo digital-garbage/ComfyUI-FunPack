@@ -1,0 +1,483 @@
+"""Which words a user's prompts keep dwelling on, for choosing where a camera move aims.
+
+Each candidate target already gets a score from its own prompt (an owned part beats a bare
+object, objects of a verb beat doers). This adds a second: how many DIFFERENT prompts the word
+turned up in. "It keeps coming back, so it matters" is fused into the first score as a bonus.
+Silent until MIN_PROMPTS prompts have been seen: one prompt's words are not a habit. A prompt
+seen again counts nothing, so regenerating does not inflate a word.
+
+Self-contained: no dependency on the host pack. One store per user, at
+`<ComfyUI user dir>/shot_camera/focus_memory.json` (else `~/.shot_camera/focus_memory.json`);
+the SHOT_CAMERA_MEMORY environment variable names another file. Delete the file to forget.
+"""
+
+import json
+import math
+import functools
+import os
+import threading
+
+MIN_PROMPTS = 3
+FREQ_W = 0.6            # max bonus: reorders near-equals, never outranks an owned part
+MAX_HASHES = 300
+PICK_W = 0.9            # bonus a word the user has chosen grows toward (tanh of picks)
+REJECT_W = 0.6          # penalty a word the rewriter proposed and the user replaced grows toward
+MIN_SHOTS_FOR_RATE = 10 # shots reviewed before "how often the user wants a move" is trusted
+WORD_RATE_W = 0.5       # max bonus/penalty a word earns from the ratings of runs that aimed at it
+
+
+def _path():
+    override = os.environ.get("SHOT_CAMERA_MEMORY")
+    if override:
+        return override
+    try:
+        import folder_paths
+        base = folder_paths.get_user_directory()
+    except Exception:  # noqa: BLE001 — not inside ComfyUI, or an older one
+        base = os.path.join(os.path.expanduser("~"), ".shot_camera")
+        return os.path.join(base, "focus_memory.json")
+    return os.path.join(base, "shot_camera", "focus_memory.json")
+
+
+_LOCK = threading.RLock()      # the worker thread (observe, record_run) and the rating route write the same file
+_DICTS = ("picks", "rejects", "seen", "views", "arms", "runs", "rated", "details", "lessons")
+
+
+def _locked(fn):
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        with _LOCK:
+            return fn(*args, **kwargs)
+    return run
+
+
+def _read():
+    try:
+        with open(_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    for key in _DICTS:                     # a hand-edited file of the wrong shape reads as "nothing learned there"
+        if key in data and not isinstance(data[key], dict):
+            data.pop(key)
+    for key in ("picks", "rejects", "seen"):
+        if key in data:
+            data[key] = {k: v for k, v in data[key].items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    if not isinstance(data.get("hashes", []), list):
+        data.pop("hashes")
+    return data
+
+
+def prior():
+    """{lemma: bonus}: words that keep coming back across prompts (once enough prompts were
+    seen), plus what the user's own choices said: up for words they picked over the rewriter's
+    proposal, down for the words they replaced."""
+    data = _read()
+    seen = data.get("seen") or {}
+    out = {}
+    if int(data.get("prompts", 0)) >= MIN_PROMPTS and seen:
+        top = math.log1p(max(seen.values()))
+        out = {lemma: FREQ_W * math.log1p(n) / top for lemma, n in seen.items()}
+    for lemma, n in (data.get("picks") or {}).items():
+        out[lemma] = out.get(lemma, 0.0) + PICK_W * math.tanh(n / 2.0)
+    for lemma, n in (data.get("rejects") or {}).items():
+        out[lemma] = out.get(lemma, 0.0) - REJECT_W * math.tanh(n / 2.0)
+    for key, (g, b) in arm_stats().items():       # what ratings taught about aiming at a word
+        if key.startswith("word:"):
+            lemma = key[5:]
+            out[lemma] = out.get(lemma, 0.0) + WORD_RATE_W * 2.0 * (arm_rate(key) - 0.5)
+    return out
+
+
+@_locked
+def learn(decisions):
+    """Remember what a person chose. `decisions`: [{"auto": lemma|None, "picked": lemma|None,
+    "mode": "auto"|"move"|"hold"|"none"}], one per shot shown. A picked word is reinforced; the
+    word the rewriter proposed instead is marked down when they differ; "none" counts against
+    moves in general (see move_rate). -> shots remembered."""
+    data = _read()
+    picks, rejects = data.get("picks") or {}, data.get("rejects") or {}
+    total, kept = int(data.get("shots", 0)), int(data.get("kept", 0))
+    n = 0
+    for d in decisions or []:
+        mode = d.get("mode") or "auto"
+        n += 1
+        total += 1
+        kept += mode != "none"
+        if mode == "none":
+            continue
+        picked, auto = d.get("picked"), d.get("auto")
+        picked = [picked] if isinstance(picked, str) else list(picked or [])
+        for word in picked:
+            picks[word] = picks.get(word, 0) + 1
+        if picked and auto and auto not in picked:
+            rejects[auto] = rejects.get(auto, 0) + 1
+    data.update(picks=picks, rejects=rejects, shots=total, kept=kept)
+    _save(data)
+    return n
+
+
+def view_stats():
+    """{key: (good, bad)} for each view and each "view@trait" the ratings and picks taught."""
+    return {k: (float(v[0]), float(v[1])) for k, v in (_read().get("views") or {}).items()
+            if isinstance(v, (list, tuple)) and len(v) == 2}
+
+
+def _bump_views(data, used, good, bad):
+    # a negative amount undoes an earlier one, never below zero
+    views = data.setdefault("views", {})
+    for u in used:
+        for key in [u["view"]] + [f"{u['view']}@{t}" for t in (u.get("traits") or ["none"])]:
+            g, b = views.get(key, [0.0, 0.0])
+            views[key] = [max(0.0, round(g + good, 4)), max(0.0, round(b + bad, 4))]
+
+
+@_locked
+def rate_views(used, sign, k=1.0):
+    """A rated generation: its views share the credit (sign > 0) or the blame (sign < 0), so a
+    run with four views does not punish each as hard as a run with one. `used`: [{"view",
+    "traits"}]. -> views rated."""
+    used = [u for u in used or [] if isinstance(u, dict) and u.get("view")]
+    if not used or not sign:
+        return 0
+    data = _read()
+    share = k / len(used)
+    _bump_views(data, used, share if sign > 0 else 0.0, share if sign < 0 else 0.0)
+    _save(data)
+    return len(used)
+
+
+@_locked
+def learn_views(decisions):
+    """What a person chose: [{"auto": view|None, "picked": view|None, "traits": [...]}]. A pick
+    counts as a good sign for that view; the view the rewriter proposed instead, as half a bad."""
+    data = _read()
+    n = 0
+    for d in decisions or []:
+        tr = d.get("traits") or []
+        picked = [d["picked"]] if isinstance(d.get("picked"), str) else list(d.get("picked") or [])
+        if picked:
+            for v in picked:
+                _bump_views(data, [{"view": v, "traits": tr}], 1.0 / len(picked), 0.0)
+            n += 1
+            if d.get("auto") and d["auto"] not in picked:
+                _bump_views(data, [{"view": d["auto"], "traits": tr}], 0.0, 0.5)
+    _save(data)
+    return n
+
+
+def arm_stats():
+    """{arm: (good, bad)} for what ratings taught about the camera's own choices: "move:yes" /
+    "move:no" (a shot got a move / was left alone), "style:hold|travel|k1|k2|k3", "word:<lemma>",
+    "split:yes|no" (a shortcut boundary inside a shot was cut / kept whole), "reframe:yes|no" (a kept
+    boundary turned the camera without a cut / did not)."""
+    return {k: (float(v[0]), float(v[1])) for k, v in (_read().get("arms") or {}).items()
+            if isinstance(v, (list, tuple)) and len(v) == 2}
+
+
+def arm_rate(key, stats=None):
+    """Smoothed good-rate of one arm: 0.5 until rated."""
+    g, b = (stats if stats is not None else arm_stats()).get(key, (0.0, 0.0))
+    return (g + 1.0) / (g + b + 2.0)
+
+
+@_locked
+def rate_arms(used, sign, k=1.0):
+    """A rated generation: every choice the camera made in it shares the credit (sign > 0) or
+    the blame (sign < 0), so a run with many choices does not punish each as hard as a run with
+    one. `used`: [arm key]. -> arms rated."""
+    used = [u for u in used or [] if isinstance(u, str) and u]
+    if not used or not sign:
+        return 0
+    if sign < 0:                       # a bad composition looks at the infused shots first: they take the blame alone
+        used = [u for u in used if u == "infuse:yes" or u.startswith("infused:")] or used
+    data = _read()
+    arms = data.setdefault("arms", {})
+    share = k / len(used)
+    for u in used:
+        g, b = arms.get(u, [0.0, 0.0])
+        arms[u] = [max(0.0, round(g + (share if sign > 0 else 0.0), 4)), max(0.0, round(b + (share if sign < 0 else 0.0), 4))]
+    _save(data)
+    return len(used)
+
+
+def _odds(chance, factor):
+    """The user's slider, tilted by what ratings taught. 1.0 is always and 0.0 is never, kept exactly; anything in
+    between is "occasionally" and stays in between: the tilt works on the odds, so it can lean toward an end but
+    never reach it (a plain `chance * factor` capped at 1 turned 0.6 into always)."""
+    chance = float(chance)
+    if chance <= 0.0 or chance >= 1.0:
+        return max(0.0, min(1.0, chance))
+    o = chance / (1.0 - chance) * max(float(factor), 1e-6)
+    return o / (1.0 + o)
+
+
+def detail_chance(chance, good, bad):
+    """The chance of adding one learned detail. 0 and 1 stay as the user set them. In between,
+    a detail that was liked is more likely and one that was blamed is less, gently: one vote
+    cannot flip it."""
+    rate = (float(good) + 1.0) / (float(good) + float(bad) + 2.0)
+    return _odds(chance, 2.0 * rate)
+
+
+def detail_bank():
+    """Details a like has taught, still allowed to be added: good at least once, and not
+    suppressed by bad-composition votes outrunning the likes."""
+    rows = []
+    for phrase, row in (_read().get("details") or {}).items():
+        if not isinstance(row, dict):
+            continue
+        good, bad = float(row.get("good") or 0), float(row.get("bad") or 0)
+        lemma = str(row.get("lemma") or "")
+        if good < 1 or not lemma or (bad >= 2 and bad > good):
+            continue
+        rows.append({"lemma": lemma, "phrase": str(phrase), "good": good, "bad": bad})
+    return rows
+
+
+def _detail_pairs(run, sign):
+    """What a like credits (details written in that prompt) or a dislike blames (details this
+    run actually added)."""
+    if sign > 0:
+        from . import engine
+        return engine.detail_phrases_in((run or {}).get("text") or "")
+    return [(d.get("lemma") or "", str(d.get("phrase") or "").strip().lower())
+            for d in (run or {}).get("details") or []
+            if isinstance(d, dict) and str(d.get("phrase") or "").strip()]
+
+
+def _apply_detail_lesson(run, sign, undo=False, pairs=None):
+    """Credit or blame the details of one run. `undo` takes that same lesson back: `pairs` is what was taught
+    then (stored by on_rating), so an undo never re-reads the text with a different tagger. -> phrases touched."""
+    if pairs is None:
+        pairs = [(lemma, phrase) for lemma, phrase in _detail_pairs(run, sign) if phrase]
+    pairs = [(lemma, phrase) for lemma, phrase in pairs if phrase]
+    if not pairs or not sign:
+        return 0
+    delta = -1.0 if undo else 1.0
+    field = "good" if sign > 0 else "bad"
+    data = _read()
+    store = data.setdefault("details", {})
+    for lemma, phrase in pairs:
+        row = store.setdefault(phrase, {"lemma": lemma or "", "good": 0.0, "bad": 0.0})
+        if lemma:
+            row["lemma"] = lemma
+        row[field] = max(0.0, round(float(row.get(field) or 0) + delta, 4))
+    _save(data)
+    return len(pairs)
+
+
+def summary(limit=40):
+    """What is remembered, for the person to read and prune: words (picked / replaced / merely
+    recurring) and views (good / bad, with the per-trait rows folded under their view)."""
+    data = _read()
+    picks, rejects, seen = (data.get("picks") or {}), (data.get("rejects") or {}), (data.get("seen") or {})
+    words = [{"word": w, "picks": int(picks.get(w, 0)), "rejects": int(rejects.get(w, 0)), "seen": int(seen.get(w, 0))}
+             for w in {*picks, *rejects, *seen}]
+    words.sort(key=lambda r: -(r["picks"] * 3 + r["rejects"] * 3 + r["seen"]))
+    views = [{"view": k, "good": g, "bad": b} for k, (g, b) in view_stats().items() if "@" not in k]
+    views.sort(key=lambda r: -(r["good"] + r["bad"]))
+    stats = arm_stats()
+    arms = [{"arm": k, "good": g, "bad": b} for k, (g, b) in stats.items() if not k.startswith(("word:", "infused:"))]
+    infusion = []
+    for lemma in {*seen, *(k[8:] for k in stats if k.startswith("infused:"))}:
+        g, b = stats.get(f"infused:{lemma}", (0.0, 0.0))
+        if seen.get(lemma, 0) >= 2 or g or b:
+            infusion.append({"word": lemma, "seen": int(seen.get(lemma, 0)), "good": g, "bad": b,
+                             "weight": round(seen.get(lemma, 0) * 2.0 * arm_rate(f"infused:{lemma}", stats), 2)})
+    infusion.sort(key=lambda r: (-(r["good"] + r["bad"]), -r["seen"], r["word"]))
+    arms.sort(key=lambda r: -(r["good"] + r["bad"]))
+    details = []
+    for phrase, row in (data.get("details") or {}).items():
+        if not isinstance(row, dict):
+            continue
+        good, bad = float(row.get("good") or 0), float(row.get("bad") or 0)
+        details.append({"phrase": phrase, "lemma": row.get("lemma") or "", "good": good, "bad": bad,
+                        "kept": good >= 1 and not (bad >= 2 and bad > good)})
+    details.sort(key=lambda r: (-(r["good"] + r["bad"]), r["phrase"]))
+    return {"words": words[:limit], "more": max(0, len(words) - limit), "views": views, "arms": arms, "infusion": infusion[:limit],
+            "details": details[:limit],
+            "prompts": int(data.get("prompts", 0)), "shots": int(data.get("shots", 0)),
+            "kept": int(data.get("kept", 0))}
+
+
+@_locked
+def forget(kind, name=None):
+    """Drop one remembered word (`kind="word"`), one view and its per-trait rows (`"view"`), or
+    everything (`"all"`). -> True if anything was removed."""
+    data = _read()
+    if kind == "all":
+        existed = bool(data)
+        data = {}
+    elif kind == "word":
+        existed = any(name in (data.get(k) or {}) for k in ("picks", "rejects", "seen"))
+        for k in ("picks", "rejects", "seen"):
+            (data.get(k) or {}).pop(name, None)
+        for row in (data.get("projects") or {}).values():
+            existed = (row.get("seen") or {}).pop(name, None) is not None or existed
+        existed = ((data.get("arms") or {}).pop(f"word:{name}", None) is not None) or existed
+        existed = ((data.get("arms") or {}).pop(f"infused:{name}", None) is not None) or existed
+    elif kind == "view":
+        views = data.get("views") or {}
+        gone = [k for k in views if k == name or k.startswith(f"{name}@")]
+        existed = bool(gone)
+        for k in gone:
+            views.pop(k)
+    elif kind == "arm":
+        existed = (data.get("arms") or {}).pop(name, None) is not None
+    elif kind == "detail":
+        existed = (data.get("details") or {}).pop(str(name or "").strip().lower(), None) is not None
+    else:
+        raise ValueError(f"unknown kind {kind!r}")
+    if existed:                       # a forgotten lesson must not be rebuilt by re-rating the run that taught it
+        data.pop("runs", None)
+        data.pop("rated", None)
+    _save(data)
+    return existed
+
+
+def effective_chance(chance):
+    """The configured chance of a move, pulled toward how often the user actually keeps one
+    (of the shots they reviewed) once enough were reviewed. 1.0 stays always."""
+    if chance <= 0.0 or chance >= 1.0:
+        return max(0.0, min(1.0, chance))
+    data = _read()
+    total, kept = int(data.get("shots", 0)), int(data.get("kept", 0))
+    if total >= MIN_SHOTS_FOR_RATE:
+        chance = (chance + kept / total) / 2.0
+    return _odds(chance, _lean("move:yes", "move:no"))
+
+
+def _lean(yes, no):
+    """Factor (0.5-2) that tilts an odds toward the arm the ratings liked more, 1 when unrated."""
+    stats = arm_stats()
+    ry, rn = arm_rate(yes, stats), arm_rate(no, stats)
+    return 2.0 * ry / (ry + rn)
+
+
+def split_chance(chance):
+    """The chance of cutting a shot in two, tilted by whether split runs were liked. 0 and 1 are the user's
+    never/always and are kept as set."""
+    return _odds(chance, _lean("split:yes", "split:no"))
+
+
+def length_chance(chance):
+    """The chance a shot's length is changed from an equal share, tilted by whether such runs were liked
+    (0 and 1 kept as set)."""
+    return _odds(chance, _lean("length:yes", "length:no"))
+
+
+def infuse_chance(chance):
+    """The chance a camera focus is replaced by a word the user's prompts keep returning to, tilted by whether
+    runs that did it were liked (0 and 1 kept as set)."""
+    return _odds(chance, _lean("infuse:yes", "infuse:no"))
+
+
+def infusion_bank(project=""):
+    """[(lemma, weight)]: words that turned up in at least two different prompts OF THIS PROJECT (once MIN_PROMPTS of
+    them were seen), weighted by how often, and by how the runs that aimed at them were rated: a disliked word is
+    drawn less but never drops to nothing, so one bad rating does not end it. No project, no bank."""
+    row = (_read().get("projects") or {}).get(project) if project else None
+    if not row or int(row.get("prompts", 0)) < MIN_PROMPTS:
+        return []
+    stats = arm_stats()
+    return [(lemma, n * 2.0 * arm_rate(f"infused:{lemma}", stats))
+            for lemma, n in (row.get("seen") or {}).items() if n >= 2]
+
+
+def reframe_chance(chance):
+    """The chance of reframing at a kept boundary, tilted by whether reframed runs were liked (0 and 1 kept as set)."""
+    return _odds(chance, _lean("reframe:yes", "reframe:no"))
+
+
+def _save(data):
+    path = _path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+MAX_PROJECTS = 24
+
+
+@_locked
+def observe(prompt_hash, lemmas, project=""):
+    """Count each of `lemmas` once for this prompt (and once for this prompt in `project`, whose words alone
+    feed focus infusion). -> prompts seen so far (0 = nothing kept)."""
+    if not lemmas:
+        return 0
+    data = _read()
+    key = f"{project}:{prompt_hash}" if project else prompt_hash
+    hashes = data.get("hashes") or []
+    if key in hashes:
+        return int(data.get("prompts", 0))
+    seen = data.get("seen") or {}
+    for lemma in set(lemmas):
+        seen[lemma] = seen.get(lemma, 0) + 1
+    data.update(seen=seen, prompts=int(data.get("prompts", 0)) + 1,
+                hashes=(hashes + [key])[-MAX_HASHES:])
+    if project:
+        projects = data.get("projects") or {}
+        row = projects.pop(project, None) or {"prompts": 0, "seen": {}}          # re-inserted last: the oldest projects go first
+        for lemma in set(lemmas):
+            row["seen"][lemma] = row["seen"].get(lemma, 0) + 1
+        row["prompts"] = int(row.get("prompts", 0)) + 1
+        projects[project] = row
+        data["projects"] = dict(list(projects.items())[-MAX_PROJECTS:])
+    _save(data)
+    return data["prompts"]
+
+
+MAX_RUNS = 64
+
+
+@_locked
+def record_run(prompt_id, chose):
+    """What one run chose ({"views": [...], "arms": [...]}), kept until it is rated."""
+    data = _read()
+    runs = data.get("runs") or {}
+    runs[str(prompt_id)] = chose
+    data["runs"] = dict(list(runs.items())[-MAX_RUNS:])
+    _save(data)
+
+
+def _sign(rating, axis):
+    """+1 liked; -1 disliked for the camera; 0 for no rating, or a dislike that blames the picture alone."""
+    return 1 if rating == "liked" else -1 if rating == "disliked" and axis != "image" else 0
+
+
+@_locked
+def on_rating(prompt_id, rating, axis=None):
+    """A clip was rated: the views and camera choices of the run that made it share the credit or the blame.
+    Changing or clearing the rating takes the earlier lesson back first, so the last word counts and a
+    forgotten rating leaves nothing behind. -> choices now rated."""
+    data = _read()
+    pid = str(prompt_id)
+    run = (data.get("runs") or {}).get(pid)
+    if not isinstance(run, dict):
+        return 0
+    before, sign = (data.get("rated") or {}).get(pid, 0), _sign(rating, axis)
+    if before == sign:
+        return 0
+    taught = [(lemma, phrase) for lemma, phrase in _detail_pairs(run, sign) if phrase] if sign else []
+    if before:
+        rate_views(run.get("views"), before, -1.0)
+        rate_arms(run.get("arms"), before, -1.0)
+        _apply_detail_lesson(run, before, undo=True, pairs=(data.get("lessons") or {}).get(pid))
+    n = (rate_views(run.get("views"), sign) + rate_arms(run.get("arms"), sign)
+         + _apply_detail_lesson(run, sign, pairs=taught)) if sign else 0
+    data = _read()
+    lessons = data.setdefault("lessons", {})
+    if taught:
+        lessons[pid] = [list(p) for p in taught]          # the phrases this rating taught, kept for its undo
+    else:
+        lessons.pop(pid, None)
+    data["lessons"] = dict(list(lessons.items())[-MAX_RUNS:])
+    data.setdefault("rated", {})[pid] = sign
+    data["rated"] = dict(list(data["rated"].items())[-MAX_RUNS:])
+    _save(data)
+    return n

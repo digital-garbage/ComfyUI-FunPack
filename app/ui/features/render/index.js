@@ -1,0 +1,42 @@
+// Render: stitch the cut into one file and keep it in the media bin.
+import { offer } from "../../shell/actions.js";
+import { composer as c } from "../../composer/composer.js";
+import { call } from "../../shell/api.js";
+import { clipSpecs } from "./clips.js";
+import { RENDER, runJob } from "./job.js";
+
+export default {
+  id: "render",
+  mount: "timeline.actions",
+  needs: ["project"],
+  modules: ["render"],
+  setup({ host, app }) {
+    const p = app.project;
+    let busy = false, node = null;
+    const tell = (text) => c.toast.warn({ text });
+
+    async function render() {
+      const open = p.project, { clips, missing } = clipSpecs(open);
+      if (!clips.length) return tell("Nothing to render: generate at least one clip first.");
+      if (missing) tell(`${missing} scene(s) have no render yet and are left out.`);
+      busy = true; draw();
+      try {
+        await p.flush();
+        const state = await runJob(`${RENDER}/projects/${open.id}/render`, { clips });
+        if (state.state !== "done") return tell(state.detail || "The render failed.");
+        const { media } = await call("POST", `${RENDER}/import-clip`, { clip: state.media, name: `${open.name}.mp4` });
+        if (app.say) app.say("media");                   // the bin shows it now
+        c.toast.good({ text: `Rendered: saved to the media bin as ${media.name}.` });
+      } catch (err) { tell(err.message); } finally { busy = false; draw(); }
+    }
+    function draw() {
+      const next = c.button.sm({ label: busy ? "Rendering…" : "⧉ Render", tone: "render", title: "Join the generated clips into one video and save it in the media bin", disabled: busy || !p.project, onClick: render }).node;
+      if (node) node.replaceWith(next); else host.append(next);
+      node = next;
+    }
+    draw();
+    const offered = offer(app, { id: "render-final", label: "Render", icon: "⧉", run: () => { if (!busy && p.project) render(); } });
+    const off = app.on(() => { if (Boolean(p.project) === node.disabled) draw(); });
+    return () => { off(); offered(); };
+  },
+};

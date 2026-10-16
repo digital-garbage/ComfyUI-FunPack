@@ -1,0 +1,168 @@
+{
+ "id": "99ed9b523999",
+ "name": "Fixture",
+ "anchor": "a wolf",
+ "global_prompt": "",
+ "negative_prompt": "",
+ "postfix": "cinematic",
+ "postfix_enabled": true,
+ "intro_transition": "",
+ "scenes": [
+  {
+   "id": "s1abc",
+   "text": "on a ridge",
+   "transition_to_next": "cut",
+   "transition_frames": 12,
+   "video_transition": "crossfade",
+   "effects": {
+    "blur": 0.2,
+    "fade_in": 0.5,
+    "zoom": "in",
+    "zoom_ratio": 0.2,
+    "flip_h": true,
+    "crop_inset": 0.1,
+    "fit": "fill"
+   },
+   "audio_volume": 0.5,
+   "audio_separated": false,
+   "frames": 121,
+   "fps": 24,
+   "frames_mode": "timeline",
+   "fps_mode": "custom",
+   "width": null,
+   "height": null,
+   "source": {
+    "type": "carry",
+    "media_ref": null,
+    "frame_ref": null,
+    "target": null,
+    "guide_strength": null
+   },
+   "rating": "10",
+   "excluded": false,
+   "gen_unit_id": null,
+   "cut_offset_frames": 0,
+   "guides": [],
+   "source_in": 1.25,
+   "source_dur": 3.0,
+   "scene_archive": null,
+   "gap_after_sec": 0.5,
+   "removed_from_plan": false
+  },
+  {
+   "id": "s2xyz",
+   "text": "howls",
+   "transition_to_next": "",
+   "transition_frames": null,
+   "video_transition": "",
+   "effects": {},
+   "audio_volume": 1.0,
+   "audio_separated": false,
+   "frames": null,
+   "fps": null,
+   "frames_mode": "project",
+   "fps_mode": "project",
+   "width": null,
+   "height": null,
+   "source": {
+    "type": "carry",
+    "media_ref": null,
+    "frame_ref": null,
+    "target": null,
+    "guide_strength": null
+   },
+   "rating": "",
+   "excluded": true,
+   "gen_unit_id": "s1abc",
+   "cut_offset_frames": 48,
+   "guides": [],
+   "source_in": 0.0,
+   "source_dur": null,
+   "scene_archive": null,
+   "gap_after_sec": 0.0,
+   "removed_from_plan": false
+  }
+ ],
+ "seed": 1,
+ "num_frames_per_scene": 97,
+ "frame_rate": 25,
+ "width": 768,
+ "height": 512,
+ "max_scenes": 8,
+ "conditioning_slot": "funpack",
+ "sampler_slot": "funpack",
+ "generation_mode": "i2v",
+ "studio_inputs": {},
+ "sampler_inputs": {},
+ "variables": [
+  {
+   "name": "w",
+   "value": "wolf"
+  }
+ ],
+ "h3_references": [],
+ "references": [],
+ "prompt_templates": [],
+ "active_prompt_template": "",
+ "refinement_key": "default",
+ "keep_original_audio": true,
+ "audio_tracks": [
+  {
+   "id": "a1b",
+   "kind": "overlay",
+   "media_ref": "0123456789ab",
+   "start_sec": 1.0,
+   "volume": 0.8
+  }
+ ],
+ "overlay_lanes": [
+  {
+   "id": "l1",
+   "label": "Lane 1"
+  }
+ ],
+ "overlay_tracks": [
+  {
+   "id": "o1",
+   "lane_id": "l1",
+   "kind": "text",
+   "start_sec": 0,
+   "duration_sec": 2,
+   "x": 0.5,
+   "y": 0.5,
+   "text": "hi"
+  }
+ ],
+ "models": {
+  "slots": [
+   {
+    "id": "x",
+    "role": "loader"
+   }
+  ]
+ },
+ "guide_settings": {},
+ "continuity_settings": {},
+ "editor_settings": {},
+ "generation_meta": {},
+ "scene_renders": {
+  "s1abc": {
+   "media": {
+    "filename": "x.mp4",
+    "subfolder": "",
+    "type": "temp",
+    "kind": "videos"
+   },
+   "inSec": 0,
+   "promptId": "p1"
+  }
+ },
+ "scene_ghosts": [],
+ "timeline_order": [
+  "s2xyz",
+  "s1abc"
+ ],
+ "timeline_manually_ordered": true,
+ "created_at": 1790944022.1413682,
+ "updated_at": 1790944022.141369
+}

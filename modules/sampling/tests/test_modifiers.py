@@ -1,0 +1,363 @@
+"""Modifiers: chosen, filtered, installed, and never accumulating.
+
+Run against real ComfyUI ModelPatcher objects. No weights are needed: a patcher
+around an empty nn.Module carries the same wrapper machinery a real one does.
+"""
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _needs_comfy(comfyui):
+    """Everything here touches comfy."""
+
+
+@pytest.fixture
+def patcher():
+    import torch
+    from comfy.model_patcher import ModelPatcher
+
+    class Stub(torch.nn.Module):
+        pass
+
+    return ModelPatcher(Stub(), load_device=torch.device("cpu"),
+                        offload_device=torch.device("cpu"))
+
+
+def _spec(module_id, install, requires=(), settings=None, stage="sampling"):
+    from core.contract import ModuleSpec
+    return ModuleSpec(id=module_id, title=module_id, mount="", stage=stage,
+                      requires=list(requires), settings=settings or {},
+                      provides={"modifier": install})
+
+
+@pytest.fixture
+def registry(monkeypatch):
+    """A REAL Registry holding only what a test puts in it.
+
+    Not a hand-rolled stand-in. One of those was missing `providers()` and every
+    test using it passed until the code started calling that method -- a fixture
+    cleaner than the real thing tests the fixture, not the code.
+    """
+    from core import registry as registry_mod
+
+    empty = registry_mod.Registry()
+    monkeypatch.setattr(registry_mod, "current", lambda rescan=False: empty)
+    return empty
+
+
+# --- installing ------------------------------------------------------------
+
+def test_a_modifier_installs_on_the_model_and_is_reported(registry, patcher):
+    from comfy.patcher_extension import WrappersMP
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    def install(target, values, key):
+        target.add_wrapper_with_key(WrappersMP.SAMPLER_SAMPLE, key, lambda e, *a, **k: e(*a, **k))
+        return "on"
+
+    registry.specs["m"] = _spec("m", install)
+    out = FunPackLoadModifiers.execute(patcher)
+    model, status = out.result
+
+    assert "m: on" in status
+    assert any("funpack.m" in keys for keys in model.wrappers.get(WrappersMP.SAMPLER_SAMPLE, {}))
+
+
+def test_installing_never_touches_the_model_everyone_else_holds(registry, patcher):
+    """The fault this makes impossible: v4 registered hooks on shared blocks and
+    removed them only on a scene change, so every run stacked another set and
+    only a restart cleared them. Installing on a clone means the original is
+    untouched, so there is nothing to accumulate and nothing to clean up."""
+    from comfy.patcher_extension import WrappersMP
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    def install(target, values, key):
+        target.add_wrapper_with_key(WrappersMP.SAMPLER_SAMPLE, key, lambda e, *a, **k: e(*a, **k))
+        return "on"
+
+    registry.specs["m"] = _spec("m", install)
+
+    before = len(patcher.wrappers.get(WrappersMP.SAMPLER_SAMPLE, {}))
+    for _ in range(50):
+        FunPackLoadModifiers.execute(patcher)
+
+    after = patcher.wrappers.get(WrappersMP.SAMPLER_SAMPLE, {})
+    assert len(after) == before == 0, (
+        f"fifty runs left {len(after)} wrapper(s) on the shared model")
+
+
+def test_a_modifier_that_says_it_is_off_installs_nothing(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    def install(target, values, key):
+        return None                      # the module's own decision, not core's
+
+    registry.specs["m"] = _spec("m", install)
+    _model, status = FunPackLoadModifiers.execute(patcher).result
+    assert "0 modifier(s) applied" in status
+
+
+def test_one_broken_modifier_does_not_stop_the_others(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    def explodes(target, values, key):
+        raise RuntimeError("boom")
+
+    def works(target, values, key):
+        return "on"
+
+    registry.specs["a_broken"] = _spec("a_broken", explodes)
+    registry.specs["b_works"] = _spec("b_works", works)
+
+    _model, status = FunPackLoadModifiers.execute(patcher).result
+    assert "b_works: on" in status
+    assert "failed to install" in status and "boom" in status
+
+
+def test_modifiers_install_in_declared_order(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+    from core.contract import ModuleSpec
+
+    seen = []
+
+    def make(name):
+        def install(target, values, key):
+            seen.append(name)
+            return "on"
+        return install
+
+    # "first" declares that it runs before "second", so filesystem/alphabetical
+    # order must not decide this.
+    registry.specs["zzz_first"] = ModuleSpec(
+        id="zzz_first", title="", mount="", before=["aaa_second"],
+        provides={"modifier": make("zzz_first")})
+    registry.specs["aaa_second"] = ModuleSpec(
+        id="aaa_second", title="", mount="", provides={"modifier": make("aaa_second")})
+
+    FunPackLoadModifiers.execute(patcher)
+    assert seen == ["zzz_first", "aaa_second"]
+
+
+# --- filtering by what the model actually is -------------------------------
+
+def test_a_modifier_needing_an_absent_trait_is_absent_and_says_why(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    def install(target, values, key):
+        raise AssertionError("an incompatible modifier was installed")
+
+    registry.specs["needs_audio"] = _spec("needs_audio", install, requires=["audio_stream"])
+    _model, status = FunPackLoadModifiers.execute(patcher).result
+
+    assert "needs_audio: needs audio_stream" in status
+    assert "0 modifier(s) applied" in status
+
+
+def test_a_modifier_declaring_no_traits_runs_on_anything(registry, patcher):
+    """Narrowing, not opting in -- the property that lets a modifier reach models
+    FunPack has never heard of."""
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+    registry.specs["plain"] = _spec("plain", lambda t, v, key: "on")
+    _model, status = FunPackLoadModifiers.execute(patcher).result
+    assert "plain: on" in status
+
+
+# --- the settings payload --------------------------------------------------
+
+def test_values_reach_the_modifier_that_declared_them(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    got = {}
+
+    def install(target, values, key):
+        got.update(values)
+        return "on"
+
+    registry.specs["m"] = _spec("m", install, settings={
+        "strength": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "label": "S"},
+    })
+    FunPackLoadModifiers.execute(patcher, settings={"m": {"strength": 0.8}})
+    assert got == {"strength": 0.8}
+
+
+def test_a_modifier_with_no_values_gets_its_declared_defaults(registry, patcher):
+    """A headless run must match a run with the panel open, because both read the
+    same declaration."""
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    got = {}
+    registry.specs["m"] = _spec("m", lambda t, v, key: got.update(v) or "on", settings={
+        "strength": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "label": "S"},
+    })
+    FunPackLoadModifiers.execute(patcher)
+    assert got == {"strength": 0.5}
+
+
+def test_running_a_model_through_the_loader_twice_does_not_double_the_modifier(registry, patcher):
+    """The first version protected the ORIGINAL model and not its own output.
+    `add_wrapper_with_key` appends, and a clone carries the list, so chaining two
+    of these -- two passes, a flattened subgraph -- installed the same wrapper
+    twice and ran it twice per step at double strength, reporting "1 modifier
+    applied" both times."""
+    from comfy.patcher_extension import WrappersMP
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    def install(target, values, key):
+        target.add_wrapper_with_key(WrappersMP.SAMPLER_SAMPLE, key, lambda e, *a, **k: e(*a, **k))
+        return "on"
+
+    registry.specs["alg"] = _spec("alg", install)
+
+    once = FunPackLoadModifiers.execute(patcher).result[0]
+    twice = FunPackLoadModifiers.execute(once).result[0]
+
+    installed = twice.wrappers.get(WrappersMP.SAMPLER_SAMPLE, {}).get("funpack.alg", [])
+    assert len(installed) == 1, f"the modifier is installed {len(installed)} times"
+
+
+def test_chaining_says_that_it_replaced_the_earlier_pass(registry, patcher):
+    from comfy.patcher_extension import WrappersMP
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    def install(target, values, key):
+        target.add_wrapper_with_key(WrappersMP.SAMPLER_SAMPLE, key, lambda e, *a, **k: e(*a, **k))
+        return "on"
+
+    registry.specs["alg"] = _spec("alg", install)
+    once = FunPackLoadModifiers.execute(patcher).result[0]
+    _model, status = FunPackLoadModifiers.execute(once).result
+    assert "replaced 1 modifier" in status
+
+
+def test_stripping_leaves_wrappers_this_pack_did_not_install(registry, patcher):
+    """Namespaced keys exist so cleanup is surgical. Removing someone else's
+    wrapper would be a worse fault than the one being fixed."""
+    from comfy.patcher_extension import WrappersMP
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    patcher.add_wrapper_with_key(WrappersMP.SAMPLER_SAMPLE, "someone_else",
+                                 lambda e, *a, **k: e(*a, **k))
+    registry.specs["m"] = _spec("m", lambda t, v, key: "on")
+
+    out = FunPackLoadModifiers.execute(patcher).result[0]
+    assert "someone_else" in out.wrappers.get(WrappersMP.SAMPLER_SAMPLE, {})
+
+
+def test_a_settings_payload_of_the_wrong_shape_is_refused_clearly(registry, patcher):
+    """The socket type is a string match, so anything can arrive on it. An
+    AttributeError traceback is not the error reporting the rest of this uses."""
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+    registry.specs["m"] = _spec("m", lambda t, v, key: "on")
+
+    with pytest.raises(RuntimeError, match="keyed by module id"):
+        FunPackLoadModifiers.execute(patcher, settings=["not", "a", "dict"])
+
+
+def test_values_are_checked_where_they_are_used_not_only_where_they_were_made(registry, patcher):
+    """The settings socket is typed by a string tag, so a dict can reach this
+    node without passing through FunPackModifierSettings. Validating only at the
+    producer guards one of two doors, and NaN walked through the other: sigma >
+    nan is False at every step, so the modifier became a permanent no-op while
+    reporting that it had been applied."""
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    registry.specs["alg"] = _spec("alg", lambda t, v, key: "on", settings={
+        "until_sigma": {"type": "float", "default": 0.6, "min": 0.0, "max": 1.0, "label": "T"},
+    })
+
+    with pytest.raises(RuntimeError, match="finite"):
+        FunPackLoadModifiers.execute(patcher, settings={"alg": {"until_sigma": float("nan")}})
+
+
+def test_an_out_of_range_value_is_refused_at_this_node_too(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+    registry.specs["alg"] = _spec("alg", lambda t, v, key: "on", settings={
+        "strength": {"type": "float", "default": 4.0, "min": 1.0, "max": 16.0, "label": "S"},
+    })
+    with pytest.raises(RuntimeError, match="above its maximum"):
+        FunPackLoadModifiers.execute(patcher, settings={"alg": {"strength": 99.0}})
+
+
+def test_a_setting_no_module_declares_is_skipped_and_said_at_this_node_too(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+    registry.specs["alg"] = _spec("alg", lambda t, v, key: "on", settings={
+        "strength": {"type": "float", "default": 4.0, "min": 1.0, "max": 16.0, "label": "S"},
+    })
+    from core import log as _log
+    _log._reset()
+    FunPackLoadModifiers.execute(patcher, settings={"alg": {"strenght": 4.0}})          # the run goes on
+    assert any("strenght" in r["message"] and "ignored" in r["message"] for r in _log.history())
+
+
+def test_a_module_id_no_module_has_is_skipped_and_said_at_this_node_too(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+    from core import log as _log
+    _log._reset()
+    FunPackLoadModifiers.execute(patcher, settings={"ghost_module": {"x": 1}})          # the node that runs in generation
+    assert any("'ghost_module'" in r["message"] and "no module with that id is loaded" in r["message"] for r in _log.history())
+
+
+# --- full control turns off the refusals too --------------------------------
+
+def _full_control(registry):
+    """The real module, so the capability is the one the product uses."""
+    from core.contract import ModuleSpec
+    from modules.system import full_control
+    registry.specs["full_control"] = ModuleSpec(
+        id="full_control", title="Full control", mount="settings.general",
+        settings=full_control.SETTINGS, provides=full_control.PROVIDES)
+
+
+def test_full_control_lets_an_out_of_range_value_through(registry, patcher):
+    """The stated intent: a one-step schedule, a width the model cannot use --
+    let them, and say the consequences are theirs."""
+    from core import log
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    got = {}
+    registry.specs["m"] = _spec("m", lambda t, v, key: got.update(v) or "on", settings={
+        "amount": {"type": "float", "default": 0.4, "min": -1.0, "max": 1.0, "label": "A"},
+    })
+    _full_control(registry)
+
+    log._reset()
+    FunPackLoadModifiers.execute(patcher, settings={
+        "m": {"amount": 999.0},
+        "full_control": {"enabled": True},
+    })
+
+    assert got["amount"] == 999.0, "the value was refused with full control on"
+    assert any("consequences are yours" in r["message"] for r in log.history())
+
+
+def test_without_full_control_the_same_value_is_still_refused(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    registry.specs["m"] = _spec("m", lambda t, v, key: "on", settings={
+        "amount": {"type": "float", "default": 0.4, "min": -1.0, "max": 1.0, "label": "A"},
+    })
+    _full_control(registry)
+
+    with pytest.raises(RuntimeError, match="above its maximum"):
+        FunPackLoadModifiers.execute(patcher, settings={
+            "m": {"amount": 999.0}, "full_control": {"enabled": False}})
+
+
+def test_full_control_is_never_silent_about_what_it_allowed(registry, patcher):
+    """A run made without the guards has to be identifiable as one afterwards,
+    because the consequences land later than the choice."""
+    from core import log
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    registry.specs["m"] = _spec("m", lambda t, v, key: "on", settings={
+        "amount": {"type": "float", "default": 0.4, "min": -1.0, "max": 1.0, "label": "A"},
+    })
+    _full_control(registry)
+
+    log._reset()
+    FunPackLoadModifiers.execute(patcher, settings={
+        "m": {"amount": 999.0}, "full_control": {"enabled": True}})
+
+    said = [r for r in log.history() if r["level"] == log.WARNING]
+    assert said, "nothing was said about a value that was let through"

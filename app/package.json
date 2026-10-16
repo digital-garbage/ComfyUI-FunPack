@@ -1,0 +1,13 @@
+{
+  "name": "funpack-app",
+  "private": true,
+  "type": "module",
+  "description": "Dev-only. Users never run npm: the app is served as plain ES modules with no build step.",
+  "scripts": {
+    "test": "node --test --test-timeout=30000"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "jsdom": "^30.0.1"
+  }
+}
