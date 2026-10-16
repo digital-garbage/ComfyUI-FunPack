@@ -11,6 +11,7 @@ from . import log
 
 _runs = {}
 _END = ("execution_success", "execution_error", "execution_interrupted")
+STEPS = 3          # a node that reports at least this many steps gets a per-step line
 TAG = "_funpack_node_timing"
 
 
@@ -22,8 +23,14 @@ def observe(event, data, now=None):
         _runs[pid] = {"start": now, "node": "(before the first node)", "at": now, "spent": {}}
         return
     run = _runs.get(pid)
-    if run is None or (event != "executing" and event not in _END):
+    if run is None:
         return
+    if event == "progress":
+        run.setdefault("marks", []).append(now)
+        return
+    if event != "executing" and event not in _END:
+        return
+    _steps(run, now)
     run["spent"][run["node"]] = run["spent"].get(run["node"], 0.0) + now - run["at"]
     if event == "executing" and data.get("node") is not None:
         run["node"], run["at"] = str(data.get("display_node") or data["node"]), now
@@ -33,6 +40,18 @@ def observe(event, data, now=None):
         parts = sorted(run["spent"].items(), key=lambda kv: -kv[1])
         shown = " · ".join(f"{name} {secs:.1f}s" for name, secs in parts if secs >= 0.3)
         log.info("FunPack Timing", f"{now - run['start']:.1f}s in nodes: {shown or 'nothing over 0.3s'}")
+
+
+def _steps(run, now):
+    """The sampler's own step times, once its node is over: how long until step 1 was done (loading and
+    first-call setup included), how long step 2 took, and what the later steps average."""
+    marks, run["marks"] = run.get("marks") or [], []
+    if len(marks) < STEPS:
+        return
+    first, second = marks[0] - run["at"], marks[1] - marks[0]
+    rest = (marks[-1] - marks[1]) / (len(marks) - 2)
+    log.info("FunPack Timing", f"{run['node']}: step 1 done {first:.1f}s after the node started, step 2 took "
+             f"{second:.1f}s, the {len(marks) - 2} after that average {rest:.1f}s")
 
 
 def install(server):
