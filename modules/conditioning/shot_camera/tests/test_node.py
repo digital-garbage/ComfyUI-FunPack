@@ -162,3 +162,13 @@ def test_a_bad_composition_dislike_blames_the_camera_choices(tmp_path, monkeypat
     assert memory.arm_stats()["style:travel"] == (0.0, 0.5)          # two camera choices share one blame
     assert memory.view_stats()["low angle"] == (0.0, 1.0)
     assert memory.split_chance(0.5) == 0.5 and memory.effective_chance(0.7) < 0.7      # the next run moves the camera less often
+
+
+def test_a_node_that_will_not_rewrite_does_not_invalidate_what_comes_after_it(monkeypatch):
+    """"Always changed" also re-runs the prompt/reference encode downstream (~7s on H3) on every run."""
+    import math
+    shots = "[Shot 1] A woman walks.\n[Shot 2] She sits."
+    monkeypatch.setattr(nodes, "_values", lambda settings: dict(settings or {}))
+    assert nodes.FunPackShotCamera.fingerprint_inputs(text=shots, settings={}) == ""
+    assert nodes.FunPackShotCamera.fingerprint_inputs(text="no shots here", settings={"camera_moves": True}) == ""
+    assert math.isnan(nodes.FunPackShotCamera.fingerprint_inputs(text=shots, settings={"camera_moves": True}))

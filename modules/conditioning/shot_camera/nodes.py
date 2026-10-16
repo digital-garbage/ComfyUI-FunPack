@@ -96,6 +96,12 @@ def rewrite(text, values, seconds=None, pieces=None, project=""):
                                    "text": text if values.get("detail_notes") else None}
 
 
+def _rewrites(values, text):
+    """Whether this node will change the prompt: a switch is on and the text has [Shot N] blocks."""
+    on = any(values.get(k) for k in ("camera_moves", "shot_cuts", "shot_views", "cut_same_shot", "reframe_same_shot", "detail_notes"))
+    return bool(on and engine.SHOT.search(text or ""))
+
+
 class FunPackShotCamera(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -115,13 +121,20 @@ class FunPackShotCamera(io.ComfyNode):
     @classmethod
     def fingerprint_inputs(cls, **kwargs):
         # Only the seed changes between takes, so ComfyUI would reuse this node's output and never note the
-        # new run, and a rating of that take would find nothing to learn from. Cheap, so it just runs every time.
+        # new run, and a rating of that take would find nothing to learn from: so a node that is going to
+        # rewrite runs every time. One that will hand the text back untouched must NOT: "always changed"
+        # also re-runs everything downstream of it (the H3 prompt/reference encode is ~7s) on every run.
+        try:
+            if not _rewrites(_values(kwargs.get("settings")), kwargs.get("text")):
+                return ""
+        except Exception:                                      # noqa: BLE001 -- unsure: run, as before
+            pass
         return float("nan")
 
     @classmethod
     def execute(cls, text: str, length: int, frame_rate: float, settings=None, project: str = "") -> io.NodeOutput:
         values = _values(settings)
-        if not any(values.get(k) for k in ("camera_moves", "shot_cuts", "shot_views", "cut_same_shot", "reframe_same_shot", "detail_notes")) or not engine.SHOT.search(text or ""):
+        if not _rewrites(values, text):
             return io.NodeOutput(text, "unchanged")
         try:
             out, said, chose = rewrite(text, values, seconds=length / frame_rate if frame_rate else None, project=project)
