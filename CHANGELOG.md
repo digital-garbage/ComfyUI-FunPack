@@ -19,8 +19,8 @@ A rewrite from scratch, not an update of 4.x. Same idea (a studio for video insi
 
 ### Features
 
-- **Proven**: prompt markup, empty latent, second pass (the H3 preset for it is held back), loaders (diffusion model, CLIP, VAE, LoRA, checkpoint, media), cut opening, decode, save video, anchor de-staticking (ALG), randomizer, DynaShift, first-step seed search, modifiers, sampler, detail.
-- **Experimental**: shot camera, continuity, identity transfer, negative erase, prompt enhancer, Render, taste modules (slider, guidance, prompt nudge, attention, REINS, early guidance), shot memory, decisiveness, late-branch guidance, camera move, context windows, block influence, block repeat, phrase probe, shadow negative, momentum, velocity bias, video detail, temporal style, massive-activation steering, video-to-audio coupling.
+- **Proven**: prompt markup, empty latent, second pass (the H3 preset for it is held back), loaders (diffusion model, CLIP, VAE, LoRA, checkpoint, media), cut opening, decode, save video, anchor de-staticking (ALG), randomizer, DynaShift, first-step seed search, modifiers, sampler, detail, shot camera, prompt enhancer, Render, taste modules (slider, guidance, prompt nudge, attention, REINS, early guidance), shot memory, decisiveness, late-branch guidance, momentum, velocity bias.
+- **Experimental**: continuity, identity transfer, negative erase, camera move, context windows, block influence, block repeat, phrase probe, shadow negative, video detail, temporal style, massive-activation steering, video-to-audio coupling.
 - **Prompt enhancer**: a language model rewrites each finished prompt. Has its own encoder pick (Composer ▸ Enhance ▸ Encoder), because H3's own encoder cannot write prose. Verified with Gemma 4.
 - **Auto Montage**: builds a new cut at the end of the timeline from your rendered clips; originals stay untouched, and the pieces are never regenerated or rated.
 - **Upscale** a finished render with an upscale model (`.safetensors`) or NVIDIA RTX Super Resolution.
