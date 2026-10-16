@@ -1,8 +1,6 @@
 # ComfyUI-FunPack v5 "Cunning Cranberry"
 
-**FunPack is a browser studio for video inside ComfyUI: a timeline with one clip per scene, a Composer for prompts ($variables, templates, shortcuts), pipeline cards instead of graphs, and modules that learn from your ratings - all on the regular ComfyUI backend.**
-
-v5 is a rewrite from scratch, not an update of 4.x: every feature is a module that announces itself, so a failing feature module is left out while the run carries on. Classic FunPack (4.x) lives on the [`v4-classic`](https://github.com/digital-garbage/ComfyUI-FunPack/tree/v4-classic) branch.
+**FunPack v5 is here. It is a browser studio for video inside ComfyUI: a timeline with one clip per scene, a Composer for your prompts, pipeline cards instead of graphs, and modules that learn from your ratings - all on the regular ComfyUI backend.**
 
 <p align="left">
   <a href="https://ko-fi.com/M4M61MBGIT"><img src="https://img.shields.io/badge/Support%20me%20on%20Ko--fi-FF5E5B?style=for-the-badge&amp;logo=kofi&amp;logoColor=white" alt="Ko-fi" height="36"></a>&nbsp;
@@ -14,45 +12,24 @@ v5 is a rewrite from scratch, not an update of 4.x: every feature is a module th
 > FunPack is a hobby project maintained by a single person. It's crafted for my personal needs mostly, and I can't test every single possible variant of usage to confirm it's bug-free and working as intended.
 > If you had found a bug or you want to request a new feature, feel free to add an entry to Issues - that would be the most appreciated.
 
-## FunPack v5 "Cunning Cranberry"
+## What v5 is
 
-FunPack v4.0.0 was the last release of classic FunPack. v5 is the next milestone, a full rework.
+A rewrite from scratch, not an update of 4.x. Every feature is a module that announces itself, so nothing can be forgotten in the UI, no wire can be missed, and a module that fails to load is simply left out while the run carries on. Open it at `/funpack/` in your browser.
 
-Maintenance of current FunPack became a mess — forgetting to add or remove buttons from/to UI, finding functions that don't do anything but still present in the code absolutely randomly, trying to keep the UI neat while it has no strict boundaries on how it should look like, and of course — making it easy for users to understand how FunPack operates and how you can operate it — this is all time, money and token-consuming.
+- **Timeline studio**: one clip per scene, media bin, preview, takes, rating, Export, Render, a project wizard and a guided tour.
+- **Composer**: write the story in one box, with a cut word, templates, `$variables` and shortcuts.
+- **Models & Pipeline**: the pipeline as cards, not a graph. Pick files, swap or add nodes (any installed custom node), wire outputs to inputs, import a ComfyUI workflow. The server refuses what would not build and says why.
+- **Modules**: switch each feature on or off in Settings. A pipeline runs without an optional node whose module is missing, and tells you so.
+- **Learning from ratings**: rate a clip and the guidance, steering and prompt modules start acting on your taste once they have enough ratings.
+- **Auto Montage**: builds a new cut from your rendered clips; the originals stay untouched.
 
-General idea behind the FunPack v5 rework is writing it from scratch, with a new architecture where a feature can't be forgotten, where a wire can't be missed, where one failing module never stops whole process from executing. Loaders and features would tell the UI by themselves what sorts of inputs they need and where to put it — and UI will compose them according to design guidelines it would have. Samplers would become independent from features — if a feature is available and enabled, sampler would call it. If it's not — it gets skipped and doesn't even appear in the UI so it won't confuse you.
-
-Most of this comes from a FunUI backend draft that got shelved after understanding on how much time has to be invested into polishing it. Without a community support and wide usage it would become another dead project only one person in the world needs but no one else.
-
-Come to think of it, FunPack already became something alike, with an exception — this project is more than alive, and while I can, I will support it.
-
-Final goal is to make FunPack an ultimate answer for a novice's question "I don't know how to generate — what do I install and how do I start?" and for a professional's question "I need a UI with all the cutting edge techniques available on day 0 — which one?"
-
-**FunPack v5.0 "Cunning Cranberry" is out.**
-
-## What's new in FunPack 4
-
-- One app instead of two. Easy Gen is now Simple mode of Cutting Room, and both live at `/funpack/`. The Hub is gone.
-- Light and dark themes, picked in Settings -> Appearance.
-- Project Setup Wizard on first run, ending in the Interactive Guide.
-- Models are cards on a shelf now, not a list. Nothing saves until you close the editor, and Cancel really cancels.
-- FunPack's own diffusion, CLIP and VAE loaders, with weight/compute dtype and an attention backend per model.
-- MiniMax H3 support, including its audio stream, keyframe pins and reference images.
-- Settings live in one window. Three of them can be pinned to the toolbar.
-- Clip effects on the timeline - flip, crop, fill, reverse - with preview matching the render.
-- Export settings as a picture, so you can tell later what produced a video.
-
-Experimental features that never proved out have been removed in this release. The full list is in [CHANGELOG.md](CHANGELOG.md).
-
-Since v4.0.0 all updates will target ONLY Cutting Room editor. Nodes will receive updates but their compatibility and proper display inside regular ComfyUI frontend won't be guaranteed and/or tested.
+The full list of features, and what is proven and what is experimental, is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Installation
 
 With git, inside your `ComfyUI/custom_nodes` directory:
 
 `git clone https://github.com/digital-garbage/ComfyUI-FunPack`
-
-(Want classic 4.x? Add `-b v4-classic`.)
 
 `comfy-cli` (`comfy node install ComfyUI-FunPack`) and ComfyUI-Manager install what is published on Comfy Registry. They give you 5.0 only once it is published there: check Settings > About FunPack after installing.
 
@@ -77,6 +54,10 @@ FunPack uses your existing ComfyUI/PyTorch install.
 Start with [How to start generating with FunPack](docs/how-to-start.md). The app also has a guided tour: Help -> Start tour.
 
 Version history is available in [CHANGELOG.md](CHANGELOG.md).
+
+## Classic FunPack (4.x)
+
+FunPack 4 was a different app: Cutting Room, with Easy Gen as its simple mode, and no modules. It is no longer developed, but it is kept for anyone who prefers it: `git clone -b v4-classic https://github.com/digital-garbage/ComfyUI-FunPack`, or browse the [`v4-classic`](https://github.com/digital-garbage/ComfyUI-FunPack/tree/v4-classic) branch.
 
 ## Feedback
 
