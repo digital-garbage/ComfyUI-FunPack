@@ -1,4 +1,7 @@
-# ComfyUI-FunPack
+# ComfyUI-FunPack (classic 4.x)
+
+> [!NOTE]
+> This is the classic FunPack 4.x, kept for anyone who needs the older UI. The newer UI is **FunPack v5** (the `main` branch): modules, pipeline cards, a timeline studio. If you do not have a reason to stay on 4.x, use v5. If you want the older UI without modules and the other v5 complications, you can stay here or switch to it. It receives no new features.
 
 **FunPack is a UI that unlocks novel conditioning and sampling enhancements, wires cutting-edge techniques and allows simple non-linear video montage - all while using regular ComfyUI backend.**
 Graphs replaced with neat cards, get/set replaced with Linked inputs, and simple text fields leveled up to Composer - prefix, prompt, postfix, $variables, Ideas button, shortcuts and splits - for your prompting comfort.
@@ -55,7 +58,8 @@ FunPack is available on Comfy Registry and can be installed in any of these ways
 1. With `comfy-cli`:
    `comfy node install ComfyUI-FunPack`
 2. With git, inside your `ComfyUI/custom_nodes` directory:
-   `git clone https://github.com/digital-garbage/ComfyUI-FunPack`
+   `git clone -b v4-classic https://github.com/digital-garbage/ComfyUI-FunPack`
+   (`comfy-cli` and ComfyUI-Manager install the latest published release, which is v5 once it is published; use git with `-b v4-classic` for this classic version.)
 3. With ComfyUI-Manager:
    Open `Custom Nodes Manager`, search for `ComfyUI-FunPack`, and click `Install`.
 
