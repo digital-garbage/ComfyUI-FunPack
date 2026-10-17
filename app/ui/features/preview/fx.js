@@ -37,6 +37,7 @@ export default {
     const p = app.project, head = app.playhead;
     function draw() {
       const open = p.project;
+      if (!app.monitor.look) return;        // no monitor on screen: nothing to draw on
       const seg = open && segments(open).find((s) => s.kind === "scene" && head.at >= s.start - 1e-6 && head.at < s.start + s.dur - 1e-6);
       const st = fxStyle(seg ? seg.scene.effects : {}, seg ? head.at - seg.start : 0, seg ? seg.dur : 0, seg ? num(seg.scene.fps_mode === "project" ? open.frame_rate : seg.scene.fps, 25) || 25 : 25);
       app.monitor.look({ transform: st.transform, filter: st.filter, fit: st.objectFit, opacity: st.opacity === "" ? null : st.opacity });

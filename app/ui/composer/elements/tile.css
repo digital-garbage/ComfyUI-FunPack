@@ -2,12 +2,12 @@
 .cx-grid-pair { grid-template-columns: 1fr 1fr; gap: var(--sp-4); margin-block-start: var(--sp-5); }
 .cx-grid-cards { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
 
-.cx-tile { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-2); padding: var(--sp-5) var(--sp-6); border: 0; border-radius: var(--r-5); background: var(--elev-2); color: var(--text); text-align: left; cursor: pointer; }
+.cx-tile { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-1); padding: var(--sp-5) var(--sp-6); border: 0; border-radius: var(--r-5); background: var(--elev-2); color: var(--text); text-align: left; cursor: pointer; }
 .cx-tile:hover { background: var(--hover); }
 .cx-tile-title { font-size: var(--fs-4); font-weight: var(--fw-medium); }
 .cx-tile-sub { font-size: var(--fs-6); color: var(--muted); }
 
-.cx-tile-node { min-block-size: 84px; padding: var(--sp-6) var(--sp-6) var(--sp-5); }
+.cx-tile-node { gap: var(--sp-2); min-block-size: 84px; padding: var(--sp-6) var(--sp-6) var(--sp-5); }
 .cx-tile-node .cx-tile-title { font-weight: var(--fw-semibold); padding-inline-end: var(--sp-6); }
 .cx-tile-node .cx-tile-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-inline-size: 100%; }
 .cx-tile-state { position: absolute; inset-block-start: var(--sp-6); inset-inline-end: var(--sp-6); inline-size: 8px; block-size: 8px; border-radius: var(--r-pill); background: var(--good); }

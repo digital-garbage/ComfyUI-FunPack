@@ -128,7 +128,7 @@ export default {
       if (s && !(head.at >= s.start && head.at < s.start + s.dur)) head.set(s.start); else sync();
     };
     sync();
-    app.monitor = { look: (look) => viewer.setLook(look) };          // the effects feature draws on the picture through this
+    app.monitor.look = (look) => viewer.setLook(look);          // the effects feature draws on the picture through this
     const off = [head.on(sync), app.on((what) => {
       if (what === "select") onSelect();
       else if (what === "play.toggle") (playing ? pause() : start());
@@ -138,6 +138,6 @@ export default {
       else if (what === "open") { pause(); head.set(0); }          // another project: nothing carries over
       else sync();
     })];
-    return () => { clearInterval(walk); off.forEach((f) => f()); delete app.monitor; viewer.destroy(); };
+    return () => { clearInterval(walk); off.forEach((f) => f()); delete app.monitor.look; viewer.destroy(); };
   },
 };

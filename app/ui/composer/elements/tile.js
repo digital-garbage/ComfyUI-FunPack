@@ -6,7 +6,7 @@ import { setText } from "../internals/text.js";
 /** Related fields on one rounded card. Takes handles, like a stack. */
 define("card", "default", ({ children = [], gap = "md" } = {}) => {
   const stack = lookup("region", "stack")({ children, gap });
-  stack.node.classList.add("cx-card");
+  stack.node.classList.add("cx-fieldcard");
   return stack;
 });
 

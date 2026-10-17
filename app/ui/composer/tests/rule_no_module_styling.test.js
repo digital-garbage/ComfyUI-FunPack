@@ -76,3 +76,23 @@ test("a url containing a hash is not a colour", () => {
   assert.deepEqual(scanSource('export const a = "#abc";', MODULE_RULES).map((v) => v.rule),
     ["hardcoded-colour"], "a real colour is caught");
 });
+
+test("the feature rules catch the page, the frame's classes and styling, and let prose and imports through", () => {
+  const bad = `
+    const a = document.createElement("div");
+    window.addEventListener("resize", f);
+    node.classList.add("x"); node.style.left = "1px";
+    q.closest(".cx-panel-head"); el.className = "fp-card";
+    box.innerHTML = "x"; const c = "#ff0066";
+  `;
+  const caught = new Set(scanSource(bad, FEATURE_RULES).map((v) => v.rule));
+  for (const rule of ["document", "reaching-for-globals", "class-manipulation", "inline-style", "class-name", "markup", "hardcoded-colour", "hardcoded-size"]) {
+    assert.ok(caught.has(rule), `not caught: ${rule}`);
+  }
+  const fine = `
+    import { open } from "./window.js";
+    const text = "Check the Log window. Wrong look? Open the document, then close it.";
+    localStorage.setItem("k", "1"); app.dom.onPage("focusin", f);
+  `;
+  assert.deepEqual(scanSource(fine, FEATURE_RULES), []);
+});

@@ -18,3 +18,14 @@ test("a bin tile dropped on a matching target reaches the handler; files and oth
   off();
   assert.deepEqual(Object.keys(doc.l), []);
 });
+
+test("a target can be named, and the handler is told which clip is under the drop and which row the target is", () => {
+  const lanes = [{}, {}, {}], clip = { dataset: { id: "s3" } };
+  const doc = { ...fake(), querySelectorAll: () => lanes };
+  const got = [];
+  onMediaDrop("lane:video", (item, el, e, where) => got.push([el === lanes[1], where.clipId, where.row]), doc);
+  const e = ev({ id: "m", kind: "image" }, lanes[1]);
+  e.target.closest = (sel) => (sel.includes("cx-nle-clip") ? clip : lanes[1]);
+  doc.l.drop(e);
+  assert.deepEqual(got, [[true, "s3", 1]]);
+});
