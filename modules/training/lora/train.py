@@ -186,7 +186,7 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
                 grad_accumulation_steps=[cfg["grad_accumulation"]], learning_rate=[cfg["learning_rate"]], rank=[cfg["rank"]],
                 optimizer=[cfg["optimizer"]], loss_function=[cfg["loss"]], seed=[cfg["seed"]], training_dtype=[cfg["training_dtype"]],
                 lora_dtype=[cfg["lora_dtype"]], quantized_backward=[False], algorithm=[cfg["algorithm"]],
-                gradient_checkpointing=[cfg["gradient_checkpointing"]], checkpoint_depth=[1], offloading=[cfg["offloading"]],
+                gradient_checkpointing=[cfg["gradient_checkpointing"]], checkpoint_depth=[(adapt or {}).get("checkpoint_depth", 1)], offloading=[cfg["offloading"]],
                 existing_lora=["[None]"], bucket_mode=[False], bypass_mode=[cfg["bypass"]])
         lora = (out.result if hasattr(out, "result") else out)[0]
         file = _save(lora, cfg["name"], folder_paths, safetensors.torch, set_name, cfg)

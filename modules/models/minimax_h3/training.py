@@ -71,5 +71,6 @@ def adapt(model):
     if not is_h3(model):
         return None
     return {"name": "H3", "step": SPATIAL_STEP, "video": True, "batch_limit": 1, "fps": FPS,
+            "checkpoint_depth": 2,                              # one checkpoint per block and one for the text refiner: depth 1 would be the whole model as a single piece
             "frames": lambda n: align_frame_count(max(5, int(n))),
             "temporal": temporal_shape, "shims": shims, "pack": pack, "silence": silence_latent}

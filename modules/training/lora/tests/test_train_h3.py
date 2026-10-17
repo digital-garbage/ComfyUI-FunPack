@@ -262,3 +262,14 @@ def test_the_trainer_loads_the_model_file_once_and_its_copy_is_that_model(monkey
         train.load_model("m.gguf")
     with pytest.raises(ValueError, match="no model"):
         train.load_model("")
+
+
+def test_h3_is_checkpointed_one_block_at_a_time_not_as_a_whole(run_env):
+    import comfy_extras.nodes_train as nt
+    from modules.models.minimax_h3 import training
+    patcher = tiny_h3_patcher()
+    depth = training.adapt(patcher)["checkpoint_depth"]
+    net = patcher.model.diffusion_model
+    pieces = nt.find_modules_at_depth(net, depth=depth)
+    assert depth == 2 and len(pieces) > len(net.blocks) and all(b in pieces for b in net.blocks)
+    assert net not in pieces
