@@ -97,3 +97,32 @@ def test_routes_make_and_edit_a_set(tmp_path, monkeypatch):
     assert bad == 400 and made == 200 and added["added"] == 1
     assert bulk["changed"] == 1 and bulk["set"]["items"][0]["caption"] == "cat"
     assert missing == 404 and plan_off == 409 and gone == {"deleted": True}
+
+
+def test_rated_results_list_only_the_videos_that_are_still_here(tmp_path, monkeypatch):
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from core import config, projects
+    from modules.training import lora
+    from modules.training.lora import train
+    (tmp_path / "here.mp4").write_bytes(b"x")
+    doc = {"scenes": [{"id": "a", "rating": "10"}, {"id": "b", "rating": "10"}],
+           "scene_renders": {"a": {"media": {"type": "output", "subfolder": "", "filename": "here.mp4"}},
+                             "b": {"media": {"type": "output", "subfolder": "", "filename": "gone.mp4"}}}}
+
+    class Project:
+        def to_dict(self):
+            return doc
+    monkeypatch.setattr(config, "TRAINING_DIR", tmp_path)
+    monkeypatch.setattr(projects, "listing", lambda: [{"id": "p"}])
+    monkeypatch.setattr(projects, "get", lambda _id: Project())
+    monkeypatch.setattr(train, "roots", lambda: {"output": str(tmp_path)})
+
+    async def go():
+        app, table = web.Application(), web.RouteTableDef()
+        lora.routes(table, "/m", web)
+        app.add_routes(table)
+        async with TestClient(TestServer(app)) as c:
+            return await (await c.get("/m/rated")).json()
+    got = asyncio.run(go())
+    assert [r["media"]["filename"] for r in got["results"]] == ["here.mp4"] and got["counts"]["liked"] == 1

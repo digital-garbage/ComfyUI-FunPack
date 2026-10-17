@@ -109,6 +109,8 @@ def routes(table, base, web):
                 docs.append({**project.to_dict(), "id": entry["id"]})
         parts = [p for p in (req.rel_url.query.get("include") or "main").split(",") if p in rated.INCLUDE]
         found = rated.scan(docs, lambda t: shortcuts.expand(t, seed=1), shortcuts.resolve_variables, parts)
+        roots = train.roots()
+        found = [r for r in found if store.resolve({"kind": "output", **r["media"]}, roots, train.bin_path)]      # a rating is not a video: only results still on this machine
         want = req.rel_url.query.get("label")
         if want:
             found = [r for r in found if r["label"] == want]
