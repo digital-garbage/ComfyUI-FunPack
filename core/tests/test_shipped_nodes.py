@@ -74,6 +74,7 @@ FROZEN = {
         "model", "clip", "vae", "audio_vae", "set_name", "name", "use", "steps", "learning_rate", "rank", "algorithm",
         "optimizer", "loss", "batch_size", "grad_accumulation", "resolution", "aspect_buckets", "frames", "fps", "start",
         "trigger", "seed", "training_dtype", "lora_dtype", "gradient_checkpointing", "offloading", "bypass",
+        "model_name", "weight_dtype", "compute_dtype",
     ],
     "FunPackEmptyLatent": ["model", "width", "height", "length", "batch_size", "audio_vae", "frame_rate"],
     "FunPackDiffusionModelLoader": [

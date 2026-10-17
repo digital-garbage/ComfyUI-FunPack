@@ -47,6 +47,15 @@ def _upstream(slots, roots):
     return [s for s in slots if s["id"] in keep]
 
 
+def _model_file(slot):
+    """The file and dtypes a plain diffusion model loader slot names, or {} when the slot is anything else."""
+    given = slot.get("inputs") or {}
+    name = given.get("model_name")
+    if slot.get("node") != "FunPackDiffusionModelLoader" or not isinstance(name, str) or not name or name == "None":
+        return {}
+    return {"model_name": name, "weight_dtype": given.get("weight_dtype", "default"), "compute_dtype": given.get("compute_dtype", "default")}
+
+
 def assemble(slots, set_name: str, values: dict, schemas=None):
     """(prompt, problems). `values` are the training node's settings; the loaders come from `slots`."""
     schemas = schemas or graph.from_comfyui()
@@ -57,8 +66,13 @@ def assemble(slots, set_name: str, values: dict, schemas=None):
     missing = [n for n in ("model", "clip", "vae") if n not in found]
     if missing:
         return {}, [f"the pipeline has no {', '.join(missing)} loader: training needs the model, the text encoder and the VAE"]
-    kept = _upstream([s for s in slots if not s.get("bypassed")], found.values())
     trainer = {"id": "train_lora", "node": NODE, "inputs": {"set_name": set_name, **values}}
+    by_id = {s["id"]: s for s in slots}
+    path = _model_file(by_id[found["model"]])
+    if path:                                              # the trainer loads this file itself, once: no loader node runs in front of it
+        trainer["inputs"].update(path)
+        found = {n: sid for n, sid in found.items() if n != "model"}
+    kept = _upstream([s for s in slots if not s.get("bypassed")], found.values())
     for name, sid in found.items():
         trainer["inputs"][name] = [sid, 0]
     return graph.build(kept + [trainer], schemas)

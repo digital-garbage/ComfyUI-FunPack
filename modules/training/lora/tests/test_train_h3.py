@@ -236,3 +236,29 @@ def test_a_dynamic_model_is_copied_as_a_plain_one_for_the_trainer():
     p = Plain()
     train._train_on_a_plain_copy(p)
     assert "clone" not in vars(p)
+
+
+def test_the_trainer_loads_the_model_file_once_and_its_copy_is_that_model(monkeypatch):
+    import comfy.sd
+    import folder_paths
+    import torch
+    from modules.training.lora import train
+    seen = {}
+
+    class Patcher:
+        def set_model_compute_dtype(self, dtype):
+            seen["compute"] = dtype
+
+    def load(path, model_options=None, disable_dynamic=False):
+        seen.update(path=path, options=model_options, dynamic=disable_dynamic, loads=seen.get("loads", 0) + 1)
+        return Patcher()
+    monkeypatch.setattr(comfy.sd, "load_diffusion_model", load)
+    monkeypatch.setattr(folder_paths, "get_full_path_or_raise", lambda kind, name: f"/models/{name}")
+    model = train.load_model("m.safetensors", "bf16", "fp32")
+    assert seen["path"] == "/models/m.safetensors" and seen["options"] == {"dtype": torch.bfloat16} and seen["dynamic"] and seen["compute"] == torch.float32
+    factory, args = model.cached_patcher_init
+    assert factory(*args, disable_dynamic=True) is model and seen["loads"] == 1       # the trainer's copy reads nothing again
+    with pytest.raises(ValueError, match="GGUF"):
+        train.load_model("m.gguf")
+    with pytest.raises(ValueError, match="no model"):
+        train.load_model("")

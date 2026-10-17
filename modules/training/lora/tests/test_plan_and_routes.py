@@ -35,7 +35,25 @@ def test_the_trainer_is_fed_by_the_pipelines_loaders(monkeypatch):
     built, problems = plan.assemble(pipeline(), "mine", {"steps": 10}, Schemas())
     assert problems == []
     inputs = built["train_lora"]["inputs"]
-    assert inputs["model"] == ["model", 0] and inputs["audio_vae"] == ["audio_vae", 0] and inputs["set_name"] == "mine" and inputs["steps"] == 10
+    assert "model" not in inputs and inputs["model_name"] == "x.safetensors" and inputs["weight_dtype"] == "default"    # the file, not a loader node
+    assert "model" not in built                                                                                  # and no loader node runs in front of the trainer
+    assert inputs["clip"] == ["clip", 0] and inputs["audio_vae"] == ["audio_vae", 0] and inputs["set_name"] == "mine" and inputs["steps"] == 10
+
+
+def test_a_model_slot_that_is_not_a_plain_loader_is_still_linked(monkeypatch):
+    from core import graph
+    from modules.training.lora import plan
+    monkeypatch.setattr(graph, "build", lambda slots, schemas=None, optional=None: ({s["id"]: s for s in slots}, []))
+    slots = pipeline()
+    slots[0]["inputs"] = {}                                   # no file named: the loader node itself has to run
+    class Schemas:
+        def outputs(self, node):
+            return {"FunPackDiffusionModelLoader": ["MODEL"], "FunPackCLIPLoader": ["CLIP"], "FunPackVAELoader": ["VAE"], "FunPackLoraLoader": ["MODEL"]}[node]
+
+        def inputs(self, node):
+            return {"FunPackLoraLoader": {"model": "MODEL"}}.get(node, {})
+    built, _ = plan.assemble(slots, "mine", {}, Schemas())
+    assert built["train_lora"]["inputs"]["model"] == ["model", 0] and "model" in built
     assert "lora" not in built, "a patch on the model is not part of the training graph"
 
 

@@ -124,6 +124,8 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
     from ..._core import registry
     run_id = jobs.begin(set_name, cfg["name"], cfg["steps"], cfg, prompt_id)        # first, so a refusal below is shown in the window and not only in ComfyUI's log
     try:
+        if model is None:
+            model = load_model(cfg.get("model_name"), cfg.get("weight_dtype", "default"), cfg.get("compute_dtype", "default"))
         adapt = registry.current().ask("training_adapt", model)
         items, problems = plan_items(set_name, cfg["use"])
         if problems and not items:
@@ -207,6 +209,29 @@ class _nothing:
 
     def __exit__(self, *exc):
         return False
+
+
+_WEIGHT = {"fp8_e4m3fn": "float8_e4m3fn", "fp8_e5m2": "float8_e5m2", "fp16": "float16", "bf16": "bfloat16", "fp32": "float32"}
+
+
+def load_model(name, weight_dtype="default", compute_dtype="default"):
+    """The model file, read once and never moved to the card here. The trainer's own copy shares it, so one model is in memory."""
+    import torch
+    import comfy.sd
+    import folder_paths
+    if not name:
+        raise ValueError("no model to train on: the pipeline's model loader names no file")
+    if str(name).lower().endswith(".gguf"):
+        raise ValueError("a GGUF model cannot be trained: pick a .safetensors file in the model loader")
+    path = folder_paths.get_full_path_or_raise("diffusion_models", name)
+    options = {}
+    if weight_dtype in _WEIGHT:
+        options["dtype"] = getattr(torch, _WEIGHT[weight_dtype])
+    model = comfy.sd.load_diffusion_model(path, model_options=options, disable_dynamic=True)
+    if compute_dtype in _WEIGHT and hasattr(model, "set_model_compute_dtype"):
+        model.set_model_compute_dtype(getattr(torch, _WEIGHT[compute_dtype]))
+    model.cached_patcher_init = (lambda *args, **kwargs: model, ())      # the trainer's "fresh copy" is this model: no second read of the file
+    return model
 
 
 def _train_on_a_plain_copy(model):
