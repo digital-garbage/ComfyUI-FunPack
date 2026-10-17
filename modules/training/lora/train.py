@@ -179,7 +179,7 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
         losses = _loss_hook(nt, cfg["steps"] * cfg["grad_accumulation"])
         jobs.say("Training", "training")
         shim = adapt["shims"]() if adapt and adapt.get("shims") else _nothing()
-        with shim, losses:
+        with shim, losses, _watch(nt, mm, torch):
             out = nt.TrainLoraNode.execute(
                 model=[model], latents=payload, positive=conds, batch_size=[batch], steps=[cfg["steps"]],
                 grad_accumulation_steps=[cfg["grad_accumulation"]], learning_rate=[cfg["learning_rate"]], rank=[cfg["rank"]],
@@ -242,6 +242,36 @@ def _card(when, mm, torch):
         log.info("FunPack LoRA training", f"card {when}: tensors {torch.cuda.memory_allocated(device) / gib:.1f} GiB, free {mm.get_free_memory(device) / gib:.1f} GiB, loaded models: {loaded}")
     except Exception as exc:                              # noqa: BLE001 -- a report must never stop a run
         log.info("FunPack LoRA training", f"card {when}: not readable ({type(exc).__name__})")
+
+
+class _watch:
+    """While open, a Log line after each stage of the trainer's setup, so an out-of-memory says which stage filled the card."""
+    STAGES = ("_prepare_latents_and_count", "_setup_lora_adapters", "_setup_lora_adapters_bypass", "_create_optimizer")
+
+    def __init__(self, nt, mm, torch):
+        self.nt, self.mm, self.torch, self.put = nt, mm, torch, []
+
+    def __enter__(self):
+        def wrap(owner, name, label):
+            original = getattr(owner, name, None)
+            if original is None:
+                return
+
+            def watched(*args, **kwargs):
+                out = original(*args, **kwargs)
+                _card(f"after {label}", self.mm, self.torch)
+                return out
+            setattr(owner, name, watched)
+            self.put.append((owner, name, original))
+        for name in self.STAGES:
+            wrap(self.nt, name, name.strip("_").replace("_", " "))
+        wrap(self.mm, "load_models_gpu", "loading the model")
+        return self
+
+    def __exit__(self, *exc):
+        for owner, name, original in reversed(self.put):
+            setattr(owner, name, original)
+        return False
 
 
 def _free_the_card(mm, torch):
