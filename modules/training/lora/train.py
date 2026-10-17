@@ -171,6 +171,7 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
         else:
             payload = [{"samples": v} for v in videos]
 
+        _sizes(payload, conds)
         _card("before freeing", mm, torch)
         del vae, clip, audio_vae                          # their work is done; the trainer copies the model next and needs the room
         _free_the_card(mm, torch)
@@ -231,6 +232,21 @@ def load_model(name, weight_dtype="default", compute_dtype="default"):
         model.set_model_compute_dtype(getattr(torch, _WEIGHT[compute_dtype]))
     model.cached_patcher_init = (lambda *args, **kwargs: model, ())      # the trainer's "fresh copy" is this model: no second read of the file
     return model
+
+
+def _sizes(payload, conds):
+    """One Log line: the shape of the first item's latent and of its text, to tell a run that is too big from one that is not."""
+    def shape(x):
+        tensors = getattr(x, "tensors", None)
+        if tensors is not None:
+            return " + ".join(str(list(t.shape)) for t in tensors)
+        return str(list(x.shape)) if hasattr(x, "shape") else type(x).__name__
+    try:
+        first = payload[0]["samples"] if isinstance(payload[0], dict) else payload[0]
+        text = conds[0][0] if isinstance(conds[0], (list, tuple)) else conds[0]
+        log.info("FunPack LoRA training", f"{len(conds)} text(s); first latent {shape(first)}, first text {shape(text)}")
+    except Exception as exc:                              # noqa: BLE001 -- a report must never stop a run
+        log.info("FunPack LoRA training", f"sizes: not readable ({type(exc).__name__})")
 
 
 def _card(when, mm, torch):
