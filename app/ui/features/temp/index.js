@@ -5,7 +5,7 @@ export default {
   mount: "settings",
   needs: ["dom"],
   setup: ({ host, app }) => host.add({
-    id: "temp", group: "System", title: "Temp Files", subtitle: "Where a file went when it did not land in the bin.",
-    keywords: "temp files output directory", icon: "▥", mount: (ctx) => mount({ ...ctx, dom: app.dom }),
+    id: "temp", group: "System", title: "Saved & Temp Files", subtitle: "Your saved videos and pictures, and where a file went when it did not land in the bin.",
+    keywords: "gallery saved temp files output directory videos pictures delete", icon: "▥", mount: (ctx) => mount({ ...ctx, dom: app.dom }),
   }),
 };

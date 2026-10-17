@@ -1,39 +1,85 @@
-// Where a file went when it did not land in the bin. ComfyUI wipes its temp folder on restart, so
-// this is a place to FIND something (opens in a new tab), not to manage it.
+// Two places a file can be found: the gallery (what was saved, and stays) and the temp folder (what ComfyUI wipes on restart).
+// Clicking a file looks at it here; it can be opened in its own tab, or deleted after a question.
 import { composer } from "../../composer/composer.js";
 
 const ICON = { image: "▦", video: "▶", audio: "♪" };
-const url = (f) => `/view?${new URLSearchParams({ filename: f.filename, subfolder: f.subfolder || "", type: "temp" })}`;
+const PLACES = [{ value: "output", label: "Saved" }, { value: "temp", label: "Temp files" }];
+const EMPTY = { output: "Nothing saved yet", temp: "Nothing in the temp directory" };
+const url = (f, where) => `/view?${new URLSearchParams({ filename: f.filename, subfolder: f.subfolder || "", type: where })}`;
 const size = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+const when = (t) => new Date((Number(t) || 0) * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+const id = (f) => `${f.subfolder}/${f.filename}`;
 
 export function mount({ dom, setFooter, close }) {
-  const body = composer.region.stack({ gap: "sm", fill: true, label: "Temp files" });
+  let where = "output", files = [], payload = {}, looking = null;
+  const body = composer.region.stack({ gap: "md", fill: true, label: "Files" });
+  const content = composer.region.stack({ gap: "sm", fill: true, label: "Files in this folder" });
+  const viewer = composer.viewer.cover({ onClose: () => { looking = null; content.node.hidden = false; footer(); } });
+  const tabs = composer.tabs.underline({ label: "Where to look", value: where, tabs: PLACES, onChange: (v) => { where = v; viewer.close(); load(); } });
+  body.set([tabs, content, viewer]);
 
-  async function load() {
-    body.set([composer.hint.default({ text: "Looking…" })]);
-    let payload;
+  function look(f) {
+    looking = f;
+    content.node.hidden = true;                // the grid would show through below the picture
+    viewer.show({ src: url(f, where), kind: f.kind });
+    footer();
+  }
+
+  async function remove(f) {
+    const ok = await composer.modal.dialogue({ title: "Delete file", tone: "danger", confirmLabel: "Delete",
+      message: `Delete “${f.filename}” from ${where === "output" ? "your saved files" : "the temp folder"} for good? It does not go to the trash.` }).result;
+    if (!ok) return;
     try {
-      payload = await (await fetch("/funpack/api/temp", { cache: "no-store" })).json();
+      const res = await fetch("/funpack/api/temp/delete", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ where, filename: f.filename, subfolder: f.subfolder || "" }) });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out.deleted) throw new Error(out.detail || `HTTP ${res.status}`);
     } catch (err) {
-      body.set([composer.banner.danger({ text: `Could not read the temp directory: ${err.message}` })]);
-      return;
+      return composer.toast.warn({ text: `Could not delete it: ${err.message}` });
     }
-    const files = payload.files || [];
-    const id = (f) => `${f.subfolder}/${f.filename}`;
-    body.set([files.length
-      ? composer.gallery.list({
-          items: files.map((f) => ({
-            id: id(f), label: f.filename, icon: ICON[f.kind] || "▦", badge: f.kind === "image" ? null : f.kind,
-            hint: `${f.kind} · ${size(Number(f.size) || 0)} · ${new Date((Number(f.mtime) || 0) * 1000).toLocaleTimeString()}`,
-            thumb: f.kind === "image" ? url(f) : null,
-          })),
-          onActivate: (cell) => dom.openTab(url(files.find((f) => id(f) === cell.id))),
-        })
-      : composer.emptyState.default({ icon: "▤", title: "Nothing in the temp directory", hint: payload.detail || "" })]);
+    viewer.close();
+    composer.toast.good({ text: `Deleted ${f.filename}.` });
+    load();
+  }
+
+  function footer() {
     setFooter({ note: payload.path || "", actions: [
-      composer.button.md({ label: "Refresh", onClick: load }),
+      ...(looking ? [
+        composer.button.md({ label: "Open in a tab", onClick: () => dom.openTab(url(looking, where)) }),
+        composer.button.md({ label: "Delete", tone: "danger", onClick: () => remove(looking) }),
+      ] : [composer.button.md({ label: "Refresh", onClick: load })]),
       composer.button.md({ label: "Close", tone: "primary", onClick: close }),
     ] });
+  }
+
+  async function load() {
+    looking = null;
+    content.set([composer.hint.default({ text: "Looking…" })]);
+    try {
+      payload = await (await fetch(`/funpack/api/temp?where=${where}`, { cache: "no-store" })).json();
+    } catch (err) {
+      payload = {};
+      content.set([composer.banner.danger({ text: `Could not read the folder: ${err.message}` })]);
+      return footer();
+    }
+    files = payload.files || [];
+    content.set([files.length
+      ? composer.gallery.adaptive({
+          id: "files", cols: 4,
+          items: files.map((f) => ({
+            id: id(f), label: f.filename, icon: ICON[f.kind] || "▦", badge: f.kind === "image" ? null : f.kind,
+            hint: `${f.kind} · ${size(Number(f.size) || 0)} · ${when(f.mtime)}`,
+            thumb: f.kind === "image" ? url(f, where) : null,
+          })),
+          onActivate: (cell) => look(files.find((f) => id(f) === cell.id)),
+          onContext: (cell, e) => {
+            const f = files.find((x) => id(x) === cell.id);
+            composer.menu.context({ x: e.clientX, y: e.clientY, items: [{ id: "look", label: "Look at it" }, { id: "tab", label: "Open in a tab" }, { separator: true }, { id: "del", label: "Delete…", danger: true }],
+              onPick: (pick) => ({ look: () => look(f), tab: () => dom.openTab(url(f, where)), del: () => remove(f) })[pick]?.() });
+          },
+        })
+      : composer.emptyState.default({ icon: "▤", title: EMPTY[where], hint: payload.detail || "" })]);
+    footer();
   }
 
   load();

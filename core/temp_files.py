@@ -1,8 +1,10 @@
-"""What ComfyUI has in its temp directory.
+"""What ComfyUI has in its temp directory, and what it has saved in its output directory.
 
-Previews and other transient outputs land there, and they are wiped when the
+Previews and other transient outputs land in temp, and they are wiped when the
 server restarts -- so "where did that go?" has an answer for as long as the
-server has been up, and this is where it is.
+server has been up, and this is where it is. Saved videos and pictures land in
+output and stay, which makes that the gallery: the same listing, and the one
+thing temp does not need, a way to delete.
 
 Only media, and only what can be shown: a temp directory also fills with
 whatever any node felt like writing, and a browser listing 400 .pt files is not
@@ -42,7 +44,21 @@ def temp_dir() -> str | None:
         return None
 
 
-def listing(limit: int = MAX_FILES) -> dict:
+def output_dir() -> str | None:
+    """ComfyUI's output directory, or None when ComfyUI is not here to ask."""
+    try:
+        import folder_paths
+        return folder_paths.get_output_directory()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def base_of(where: str) -> str | None:
+    """The folder `where` ("temp" or "output") names; anything else names nothing."""
+    return {"temp": temp_dir, "output": output_dir}.get(where, lambda: None)()
+
+
+def listing(limit: int = MAX_FILES, where: str = "temp") -> dict:
     """`{files, path, detail}`, newest first.
 
     `detail` carries the reason there is nothing rather than leaving an empty
@@ -50,13 +66,14 @@ def listing(limit: int = MAX_FILES) -> dict:
     "this is not a ComfyUI install" and from "the directory was wiped".
     """
     limit = max(1, min(int(limit or MAX_FILES), MAX_FILES))
-    base = temp_dir()
+    saved = where == "output"
+    base = base_of(where)
     if not base:
         return {"files": [], "path": None,
-                "detail": "ComfyUI is not here to ask where its temp files go."}
+                "detail": f"ComfyUI is not here to ask where its {'saved' if saved else 'temp'} files go."}
     if not os.path.isdir(base):
         return {"files": [], "path": base,
-                "detail": "The temp directory does not exist yet. It is made when "
+                "detail": f"The {'output' if saved else 'temp'} directory does not exist yet. It is made when "
                           "something is first written to it."}
 
     found: list[dict] = []
@@ -80,5 +97,30 @@ def listing(limit: int = MAX_FILES) -> dict:
             })
 
     found.sort(key=lambda f: f.get("mtime", 0), reverse=True)
-    detail = "" if found else "Nothing here. Temp files are wiped when ComfyUI restarts."
+    detail = "" if found else ("Nothing saved yet. A saved video or picture lands here." if saved
+                                else "Nothing here. Temp files are wiped when ComfyUI restarts.")
     return {"files": found[:limit], "path": base, "detail": detail}
+
+
+def delete(filename, subfolder="", where: str = "output") -> dict:
+    """Remove one media file from `where`. `{deleted: True}`, or `{deleted: False, detail}` saying why not.
+
+    The name is resolved the way /view resolves it and must stay inside that folder; and only
+    what the listing would show can go, so this cannot be turned on a model, a workflow or any
+    other file that happens to live next to the pictures.
+    """
+    base = base_of(where)
+    if not base or not isinstance(filename, str) or not filename or not kind_of(filename):
+        return {"deleted": False, "detail": "Name a saved picture, video or sound."}
+    base = os.path.realpath(base)
+    full = os.path.realpath(os.path.join(base, subfolder if isinstance(subfolder, str) else "",
+                                         os.path.basename(filename)))
+    if os.path.commonpath((full, base)) != base or full == base:
+        return {"deleted": False, "detail": "That file is not in this folder."}
+    try:
+        os.remove(full)
+    except FileNotFoundError:
+        return {"deleted": False, "detail": "That file is already gone."}
+    except OSError as err:
+        return {"deleted": False, "detail": f"Could not delete it: {err.strerror or err}"}
+    return {"deleted": True}

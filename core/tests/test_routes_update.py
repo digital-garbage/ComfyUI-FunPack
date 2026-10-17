@@ -664,3 +664,35 @@ def test_requirements_route_refuses_during_a_generation(server, monkeypatch):
                         lambda: (_ for _ in ()).throw(AssertionError("must not install during a generation")))
     status, body = _request(server["port"], "POST", "/funpack/api/requirements")
     assert status == 409 and "generation" in body["detail"]
+
+
+# --- the gallery: saved files, and deleting them -------------------------------
+
+def test_saved_files_are_listed_from_the_output_folder(server, monkeypatch, tmp_path):
+    from core import temp_files
+    (tmp_path / "FunPack_00001_.mp4").write_bytes(b"x")
+    monkeypatch.setattr(temp_files, "output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(temp_files, "temp_dir", lambda: None)
+    status, body = _request(server["port"], "GET", "/funpack/api/temp?where=output")
+    assert [f["filename"] for f in body["files"]] == ["FunPack_00001_.mp4"]
+    status, body = _request(server["port"], "GET", "/funpack/api/temp")
+    assert body["files"] == [], "temp and saved were mixed up"
+
+
+def test_delete_removes_a_media_file_and_nothing_else(server, monkeypatch, tmp_path):
+    from core import temp_files
+    out = tmp_path / "out"
+    (out / "sub").mkdir(parents=True)
+    pic, weights, outside = out / "sub" / "a.png", out / "model.safetensors", tmp_path / "secret.png"
+    for f in (pic, weights, outside):
+        f.write_bytes(b"x")
+    monkeypatch.setattr(temp_files, "output_dir", lambda: str(out))
+    port = server["port"]
+    ask = lambda **kw: _request(port, "POST", "/funpack/api/temp/delete", {"where": "output", **kw})
+
+    assert ask(filename="a.png", subfolder="sub")[0] == 200 and not pic.exists()
+    assert ask(filename="model.safetensors")[0] == 400 and weights.exists(), "a non-media file was deleted"
+    assert ask(filename="secret.png", subfolder="..")[0] == 400 and outside.exists(), "left the folder"
+    assert ask(filename="../secret.png")[0] == 400 and outside.exists()
+    assert ask(filename="a.png", subfolder="sub")[0] == 400, "a second delete should say it is gone"
+    assert _request(port, "POST", "/funpack/api/temp/delete", {"where": "input", "filename": "a.png"})[0] == 400

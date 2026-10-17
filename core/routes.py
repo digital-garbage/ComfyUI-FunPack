@@ -754,7 +754,21 @@ def register(routes, prefix=None):
             limit = int(req.query.get("limit", temp_files.MAX_FILES))
         except (TypeError, ValueError):
             limit = temp_files.MAX_FILES
-        return web.json_response(await asyncio.to_thread(temp_files.listing, limit))
+        where = "output" if req.query.get("where") == "output" else "temp"
+        return web.json_response(await asyncio.to_thread(temp_files.listing, limit, where))
+
+    @routes.post(P + "/api/temp/delete")
+    async def _temp_delete(req):
+        """Delete one saved or temp media file: {"where", "filename", "subfolder"}."""
+        import asyncio
+        try:
+            body = await req.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict) or body.get("where") not in ("temp", "output"):
+            return web.json_response({"detail": "Say which folder: temp or output."}, status=400)
+        out = await asyncio.to_thread(temp_files.delete, body.get("filename"), body.get("subfolder") or "", body["where"])
+        return web.json_response(out, status=200 if out["deleted"] else 400)
 
     # --- node packs -----------------------------------------------------------
     #
