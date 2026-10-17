@@ -2,8 +2,10 @@
 
 H3's latent is a video part and a sound part packed as one nested tensor, on a 17k+5 frame
 grid at 24 fps, and its picture-and-sound forward uses a fused op that has no gradient in
-comfy-kitchen 0.2.38. ComfyUI's own trainer knows none of that, so the two small repairs it
-needs live here, applied only for the length of a training run and only when probed to be needed.
+comfy-kitchen 0.2.38. Its blocks also modulate the stream in place, which makes every checkpointed
+block keep its recompute alive through the whole backward pass (about 4 GiB a block at 37k positions;
+measured flat once the two modulation helpers work out of place). ComfyUI's own trainer knows none of that,
+so the small repairs it needs live here, applied only for the length of a training run and only when probed to be needed.
 Proven on a tiny H3 on CPU (the loss moves, a LoRA comes out). NOT yet run on the real weights.
 """
 
@@ -29,11 +31,27 @@ def _differentiable() -> bool:
         return False
 
 
+def _scale_shift(h, shift, scale, segments):
+    """`_mod_scale_shift` without writing into its input: the same numbers, nothing left for autograd to keep alive."""
+    from comfy.ldm.minimax import model as m
+    parts = [h[a:b] * (1.0 + m._mod_row(scale, row, h.dtype)) + m._mod_row(shift, row, h.dtype) for a, b, row in segments]
+    return parts[0] if len(parts) == 1 else torch.cat(parts)
+
+
+def _gate(x, gate, other, segments):
+    """`_mod_gate` without writing into the stream."""
+    from comfy.ldm.minimax import model as m
+    parts = [x[a:b] + other[a:b] * m._mod_row(gate, row, x.dtype) for a, b, row in segments]
+    return parts[0] if len(parts) == 1 else torch.cat(parts)
+
+
 @contextlib.contextmanager
 def shims():
-    """The two repairs, put back afterwards: the trainer accepts a nested latent, and the rotary op is differentiable."""
+    """The repairs, put back afterwards: the trainer accepts a nested latent, the rotary op is differentiable, the block modulation is out of place."""
     import comfy_extras.nodes_train as nt
     from comfy import quant_ops
+    from comfy.ldm.minimax import model as minimax
+    original_mod = (minimax._mod_scale_shift, minimax._mod_gate)
     original_count = nt._prepare_latents_and_count
     original_rope = quant_ops.ck.rms_rope_split_half
 
@@ -43,6 +61,7 @@ def shims():
         return original_count(latents, dtype, bucket_mode)
 
     nt._prepare_latents_and_count = count
+    minimax._mod_scale_shift, minimax._mod_gate = _scale_shift, _gate
     try:
         if not _differentiable():
             from comfy_kitchen.backends.eager import rope
@@ -50,6 +69,7 @@ def shims():
         yield
     finally:
         nt._prepare_latents_and_count = original_count
+        minimax._mod_scale_shift, minimax._mod_gate = original_mod
         quant_ops.ck.rms_rope_split_half = original_rope
 
 

@@ -331,3 +331,23 @@ def test_a_tiny_h3_trains_with_block_swap_on(run_env):
     file = train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=2, gradient_checkpointing=True, swap_blocks=1))
     snap = jobs.snapshot()
     assert file.endswith(".safetensors") and snap["state"] == "done" and all(x == x for x in snap["loss"])
+
+
+def test_block_modulation_is_out_of_place_while_training_and_put_back_after():
+    import torch
+    from comfy.ldm.minimax import model as m
+    from modules.models.minimax_h3 import training
+    before = (m._mod_scale_shift, m._mod_gate)
+    segs = [(0, 3, 0), (3, 5, 1)]
+    shift, scale, gate = (torch.randn(2, 4) for _ in range(3))
+    x, other = torch.randn(5, 4), torch.randn(5, 4)
+    want_h = m._mod_scale_shift(x.clone(), shift, scale, segs)
+    want_x = m._mod_gate(x.clone(), gate, other, segs)
+    with training.shims():
+        assert m._mod_scale_shift is not before[0]
+        x0 = x.clone()
+        assert torch.allclose(m._mod_scale_shift(x0, shift, scale, segs), want_h)
+        assert torch.equal(x0, x)                           # the input is left alone
+        assert torch.allclose(m._mod_gate(x0, gate, other, segs), want_x)
+        assert torch.equal(x0, x)
+    assert (m._mod_scale_shift, m._mod_gate) == before
