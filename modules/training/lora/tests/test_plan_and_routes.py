@@ -126,3 +126,33 @@ def test_rated_results_list_only_the_videos_that_are_still_here(tmp_path, monkey
             return await (await c.get("/m/rated")).json()
     got = asyncio.run(go())
     assert [r["media"]["filename"] for r in got["results"]] == ["here.mp4"] and got["counts"]["liked"] == 1
+
+
+def test_a_finished_run_can_be_downloaded_and_only_its_own_file(tmp_path, monkeypatch):
+    import folder_paths
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from core import config
+    from modules.training import lora
+    from modules.training.lora import jobs
+    monkeypatch.setattr(config, "TRAINING_DIR", tmp_path)
+    loras = tmp_path / "loras"
+    loras.mkdir()
+    (loras / "cats.safetensors").write_bytes(b"weights")
+    (tmp_path / "secret.safetensors").write_bytes(b"no")
+    monkeypatch.setattr(folder_paths, "get_folder_paths", lambda kind: [str(loras)])
+    runs = jobs._dir()
+    import json
+    for run, name in (("aaaaaaaaaaaa", "cats.safetensors"), ("bbbbbbbbbbbb", "../secret.safetensors"), ("cccccccccccc", "gone.safetensors"), ("dddddddddddd", "")):
+        (runs / f"{run}.json").write_text(json.dumps({"run": run, "lora": name}))
+
+    async def go():
+        app, table = web.Application(), web.RouteTableDef()
+        lora.routes(table, "/m", web)
+        app.add_routes(table)
+        async with TestClient(TestServer(app)) as c:
+            ok = await c.get("/m/runs/aaaaaaaaaaaa/lora")
+            return ok.status, ok.headers.get("Content-Disposition"), await ok.read(), [(await c.get(f"/m/runs/{r}/lora")).status for r in ("bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd", "eeeeeeeeeeee")]
+    status, disposition, body, refused = asyncio.run(go())
+    assert status == 200 and body == b"weights" and "attachment" in disposition and "cats.safetensors" in disposition
+    assert refused == [404, 404, 404, 404]

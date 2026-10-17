@@ -29,7 +29,18 @@ export function resultsStep({ app, ui }) {
       rec && rec.error ? c.inlineError.default({ text: rec.error }) : null,
       rec && rec.resumable && ["error", "stopped"].includes(rec.state) ? c.banner.info({ text: `The state at step ${rec.steps || 0} or earlier is kept. Restore and continue picks the training up from it with the Train step's current settings.` }) : null,
       chart, c.hint.default({ text: settings }),
-      c.toolbar.default({ items: rec && rec.resumable && !ui.run.active && !["training", "queued", "previewing", "paused"].includes(ui.run.state) ? [c.button.sm({ label: "Restore and continue", tone: "primary", title: "Carry on from the saved state", onClick: async () => { await ui.restore(chosen.run); } })] : [], trailing: [c.button.sm({ label: "Delete this record", tone: "ghost", title: "Removes the record only, not the LoRA file", onClick: async () => { await app.api.trainForgetRun(chosen.run); ui.chosenRun = ""; await ui.loadRuns(); ui.redraw(); } })] }),
+      c.toolbar.default({ items: [...(rec && rec.lora ? [download(app, rec)] : []), ...(rec && rec.resumable && !ui.run.active && !["training", "queued", "previewing", "paused"].includes(ui.run.state) ? [c.button.sm({ label: "Restore and continue", tone: "primary", title: "Carry on from the saved state", onClick: async () => { await ui.restore(chosen.run); } })] : [])], trailing: [c.button.sm({ label: "Delete this record", tone: "ghost", title: "Removes the record only, not the LoRA file", onClick: async () => { await app.api.trainForgetRun(chosen.run); ui.chosenRun = ""; await ui.loadRuns(); ui.redraw(); } })] }),
     ].filter(Boolean) })] }),
   ] });
+}
+
+/** Saves the finished LoRA through the browser, to wherever the person keeps files: an instance's own disk is gone when it is. */
+function download(app, rec) {
+  return c.button.sm({ label: "Download LoRA", tone: "primary", title: `Save ${rec.lora} to this computer`, onClick: async () => {
+    try {
+      const res = await fetch(app.api.trainLoraUrl(rec.run));
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).why || `The server refused (${res.status}).`);
+      app.dom.saveBlob(await res.blob(), rec.lora);
+    } catch (err) { c.toast.warn({ text: err.message }); }
+  } });
 }

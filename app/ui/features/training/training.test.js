@@ -410,3 +410,26 @@ test("Train step: the preset picked stays picked when a setting is changed after
   assert.ok(!("preset" in plan[2]));
   off();
 });
+
+test("Results: a finished run has a Download LoRA button that saves the file under its own name", async () => {
+  const f = fake();
+  const saved = [];
+  f.app.dom.saveBlob = (blob, name) => saved.push(name);
+  f.api.trainLoraUrl = (id) => `/lora/${id}`;
+  f.api.trainRuns = async () => [{ run: "r5", name: "cats", set: "cats", state: "done", steps: 10, total: 10, lora: "cats_lora.safetensors" }];
+  f.api.trainRunRecord = async () => ({ run: "r5", state: "done", steps: 10, total: 10, set: "cats", loss: [0.2], lora: "cats_lora.safetensors", settings: {} });
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => (String(url) === "/lora/r5" ? { ok: true, blob: async () => new Blob(["w"]) } : realFetch(url));
+  try {
+    const { button, off } = await open(f);
+    button.click();
+    await wait(60);
+    tab("Results").click();
+    await wait(80);
+    assert.ok(click("Download LoRA"));
+    click("Download LoRA").click();
+    await wait(60);
+    assert.deepEqual(saved, ["cats_lora.safetensors"]);
+    off();
+  } finally { globalThis.fetch = realFetch; }
+});

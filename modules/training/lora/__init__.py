@@ -233,6 +233,24 @@ def routes(table, base, web):
         rec = jobs.record(req.match_info["run"])
         return web.json_response({**rec, "resumable": loop.has_checkpoint(rec.get("run"))}) if rec else _bad(web, "There is no such run.", 404)
 
+    @table.get(base + "/runs/{run}/lora")
+    async def _download(req):
+        from pathlib import Path
+        from urllib.parse import quote
+        rec = jobs.record(req.match_info["run"])
+        name = (rec or {}).get("lora") or ""
+        if not name or Path(name).name != name or not name.endswith(".safetensors"):
+            return _bad(web, "This run has no saved LoRA file.", 404)
+        try:
+            import folder_paths
+            folders = [Path(f) for f in folder_paths.get_folder_paths("loras")]
+        except Exception:                                  # noqa: BLE001 -- no ComfyUI folders here
+            folders = []
+        path = next((f / name for f in folders if (f / name).is_file()), None)
+        if path is None:
+            return _bad(web, f"{name} is no longer in your loras folder.", 404)
+        return web.FileResponse(path, headers={"Content-Type": "application/octet-stream", "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
+
     @table.delete(base + "/runs/{run}")
     async def _forget(req):
         run = req.match_info["run"]

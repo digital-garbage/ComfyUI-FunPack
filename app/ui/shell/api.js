@@ -101,6 +101,7 @@ export const api = {
   trainStop: () => call("POST", `${TRAIN}/run/stop`, {}),
   trainRuns: () => call("GET", `${TRAIN}/runs`).then((d) => d.runs || []),
   trainRunRecord: (id) => call("GET", `${TRAIN}/runs/${encodeURIComponent(id)}`),
+  trainLoraUrl: (id) => `${BASE}${TRAIN}/runs/${encodeURIComponent(id)}/lora`,
   trainForgetRun: (id) => call("DELETE", `${TRAIN}/runs/${encodeURIComponent(id)}`),
   /** Any graph as a ComfyUI job. -> the prompt id. */
   async queueGraph(graph) {
