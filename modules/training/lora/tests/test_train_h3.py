@@ -246,6 +246,9 @@ def test_the_trainer_loads_the_model_file_once_and_its_copy_is_that_model(monkey
     seen = {}
 
     class Patcher:
+        def __init__(self):
+            self.weight = torch.zeros(2)                  # made where the loader runs: inference mode must not reach it
+
         def set_model_compute_dtype(self, dtype):
             seen["compute"] = dtype
 
@@ -254,7 +257,9 @@ def test_the_trainer_loads_the_model_file_once_and_its_copy_is_that_model(monkey
         return Patcher()
     monkeypatch.setattr(comfy.sd, "load_diffusion_model", load)
     monkeypatch.setattr(folder_paths, "get_full_path_or_raise", lambda kind, name: f"/models/{name}")
-    model = train.load_model("m.safetensors", "bf16", "fp32")
+    with torch.inference_mode():
+        model = train.load_model("m.safetensors", "bf16", "fp32")
+    assert not model.weight.is_inference()
     assert seen["path"] == "/models/m.safetensors" and seen["options"] == {"dtype": torch.bfloat16} and seen["dynamic"] and seen["compute"] == torch.float32
     factory, args = model.cached_patcher_init
     assert factory(*args, disable_dynamic=True) is model and seen["loads"] == 1       # the trainer's copy reads nothing again
@@ -273,3 +278,26 @@ def test_h3_is_checkpointed_one_block_at_a_time_not_as_a_whole(run_env):
     pieces = nt.find_modules_at_depth(net, depth=depth)
     assert depth == 2 and len(pieces) > len(net.blocks) and all(b in pieces for b in net.blocks)
     assert net not in pieces
+
+
+def test_what_was_made_in_inference_mode_is_copied_for_the_backward_pass():
+    import torch
+    from modules.training.lora import train
+    with torch.inference_mode():
+        made = [(torch.ones(2), {"k": torch.zeros(1), "n": 3})], [torch.ones(1)]
+    assert made[1][0].is_inference()
+    got = train._normal(made)
+    assert not got[1][0].is_inference() and not got[0][0][0].is_inference() and not got[0][0][1]["k"].is_inference() and got[0][0][1]["n"] == 3
+    x = got[1][0].requires_grad_(False)
+    (x * torch.ones(1, requires_grad=True)).sum().backward()             # a saved-for-backward use no longer fails
+
+
+def test_a_tiny_h3_trains_when_run_the_way_comfyui_runs_a_node(run_env):
+    """ComfyUI runs every node in inference mode, and the models, text and latents here are made inside it."""
+    import torch
+    from modules.training.lora import train
+    _, jobs = run_env
+    with torch.inference_mode():
+        patcher = tiny_h3_patcher()
+        train.run(patcher, FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=2))
+    assert jobs.snapshot()["state"] == "done"

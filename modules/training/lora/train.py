@@ -163,6 +163,7 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
                 videos.append(latent.clone())
                 sounds.append(None if sound is None else sound.clone())
                 conds.append(_encode_text(clip, text))
+        videos, sounds, conds = _normal(videos), _normal(sounds), _normal(conds)         # made in inference mode: copies a backward pass can use
         if adapt and adapt.get("pack") and audio_vae is not None and all(s is not None for s in sounds):
             latents = adapt["pack"](videos, sounds)
             payload = [latents]
@@ -229,11 +230,27 @@ def load_model(name, weight_dtype="default", compute_dtype="default"):
     options = {}
     if weight_dtype in _WEIGHT:
         options["dtype"] = getattr(torch, _WEIGHT[weight_dtype])
-    model = comfy.sd.load_diffusion_model(path, model_options=options, disable_dynamic=True)
+    with torch.inference_mode(False):                    # ComfyUI runs nodes in inference mode; weights made there cannot take part in a backward pass
+        model = comfy.sd.load_diffusion_model(path, model_options=options, disable_dynamic=True)
     if compute_dtype in _WEIGHT and hasattr(model, "set_model_compute_dtype"):
         model.set_model_compute_dtype(getattr(torch, _WEIGHT[compute_dtype]))
     model.cached_patcher_init = (lambda *args, **kwargs: model, ())      # the trainer's "fresh copy" is this model: no second read of the file
     return model
+
+
+def _normal(value):
+    """Tensors made in inference mode, copied so autograd may save them; lists, tuples and dicts are walked."""
+    import torch
+    if isinstance(value, torch.Tensor):
+        with torch.inference_mode(False):
+            return value.clone() if value.is_inference() else value
+    if isinstance(value, list):
+        return [_normal(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_normal(v) for v in value)
+    if isinstance(value, dict):
+        return {k: _normal(v) for k, v in value.items()}
+    return value
 
 
 def _fit_frames(cfg, adapt, items):
