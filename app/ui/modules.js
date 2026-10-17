@@ -44,4 +44,5 @@ export default [
   "./features/welcome/index.js",
   "./features/addons/index.js",
   "./features/temp/index.js",
+  "./features/training/index.js",
 ].map((path) => new URL(path, import.meta.url).href);

@@ -20,11 +20,12 @@ A rewrite from scratch, not an update of 4.x. Same idea (a studio for video insi
 ### Features
 
 - **Proven**: prompt markup, empty latent, second pass (the H3 preset for it is held back), loaders (diffusion model, CLIP, VAE, LoRA, checkpoint, media), cut opening, decode, save video, anchor de-staticking (ALG), randomizer, DynaShift, first-step seed search, modifiers, sampler, detail, shot camera, prompt enhancer, Render, taste modules (slider, guidance, prompt nudge, attention, REINS, early guidance), shot memory, decisiveness, late-branch guidance, momentum, velocity bias.
-- **Experimental**: continuity, identity transfer, negative erase, camera move, context windows, block influence, block repeat, phrase probe, shadow negative, video detail, temporal style, massive-activation steering, video-to-audio coupling.
+- **Experimental**: continuity, identity transfer, negative erase, camera move, context windows, block influence, block repeat, phrase probe, shadow negative, video detail, temporal style, massive-activation steering, video-to-audio coupling, **LoRA training**.
 - **Prompt enhancer**: a language model rewrites each finished prompt. Has its own encoder pick (Composer ▸ Enhance ▸ Encoder), because H3's own encoder cannot write prose. Verified with Gemma 4.
 - **Auto Montage**: builds a new cut at the end of the timeline from your rendered clips; originals stay untouched, and the pieces are never regenerated or rated.
 - **Upscale** a finished render with an upscale model (`.safetensors`) or NVIDIA RTX Super Resolution.
-- **Add-ons** (spaCy for automatic camera and focus, nvidia-vfx) install on the next start after you switch them on.
+- **LoRA training** (add-on, Settings > Modules): a Training window with four steps. Data (optional): drop files, pick from your Bin, or take your rated results (Liked, Disliked, Bad composition, Bad image, All). Tags: a caption editor beside every picture, a tag cloud, bulk edits and automatic tagging with downloadable tagger models. Train: all the settings, a live loss graph, Stop. Results: past runs. It trains on ComfyUI's own trainer, using the loaders in your pipeline, and supports H3 (picture and sound together). **Experimental, and UNTESTED on real models or GPUs**: proven only on tiny stand-in models on CPU.
+- **Add-ons** (spaCy for automatic camera and focus, nvidia-vfx, onnxruntime for LoRA training) install on the next start after you switch them on.
 
 ### Not carried over
 

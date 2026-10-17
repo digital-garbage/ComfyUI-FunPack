@@ -1,5 +1,6 @@
 // The server's routes, one line each. An error carries the sentence the server gave, not a bare status.
 const BASE = "/funpack";
+const TRAIN = "/api/m/training_lora";
 
 function why(res, payload) {
   const p = payload && typeof payload === "object" ? payload : {};
@@ -76,6 +77,38 @@ export const api = {
     if (res.status === 409) return { exists: true };
     if (!res.ok) throw new Error((payload && payload.why) || `HTTP ${res.status}`);
     return payload;
+  },
+  // LoRA training (the add-on module): training sets, rated results, taggers, and a run.
+  trainState: () => call("GET", `${TRAIN}/state`),
+  trainSets: () => call("GET", `${TRAIN}/sets`),
+  trainCreateSet: (name) => call("POST", `${TRAIN}/sets`, { name }),
+  trainSet: (name) => call("GET", `${TRAIN}/sets/${encodeURIComponent(name)}`),
+  trainSaveSet: (name, doc) => call("PUT", `${TRAIN}/sets/${encodeURIComponent(name)}`, doc),
+  trainDeleteSet: (name) => call("DELETE", `${TRAIN}/sets/${encodeURIComponent(name)}`),
+  trainAdd: (name, entries) => call("POST", `${TRAIN}/sets/${encodeURIComponent(name)}/add`, { entries }),
+  trainBulk: (name, body) => call("POST", `${TRAIN}/sets/${encodeURIComponent(name)}/bulk`, body),
+  trainRated: (label) => call("GET", `${TRAIN}/rated${label ? `?label=${encodeURIComponent(label)}` : ""}`),
+  trainTaggers: () => call("GET", `${TRAIN}/taggers`),
+  trainDownloadTagger: (tagger) => call("POST", `${TRAIN}/taggers/download`, { tagger }),
+  trainRemoveTagger: (tagger) => call("POST", `${TRAIN}/taggers/remove`, { tagger }),
+  trainAutotag: (body) => call("POST", `${TRAIN}/autotag`, body),
+  trainAutotagState: () => call("GET", `${TRAIN}/autotag`),
+  trainAutotagCancel: () => call("POST", `${TRAIN}/autotag/cancel`, {}),
+  trainPlan: (set, slots, settings) => call("POST", `${TRAIN}/plan`, { set, slots, settings }),
+  trainRun: (since) => call("GET", `${TRAIN}/run?since=${since || 0}`),
+  trainStop: () => call("POST", `${TRAIN}/run/stop`, {}),
+  trainRuns: () => call("GET", `${TRAIN}/runs`).then((d) => d.runs || []),
+  trainRunRecord: (id) => call("GET", `${TRAIN}/runs/${encodeURIComponent(id)}`),
+  trainForgetRun: (id) => call("DELETE", `${TRAIN}/runs/${encodeURIComponent(id)}`),
+  /** Any graph as a ComfyUI job. -> the prompt id. */
+  async queueGraph(graph) {
+    const res = await fetch("/prompt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: graph }) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.prompt_id) {
+      const nodes = Object.values(body.node_errors || {}).flatMap((n) => (n.errors || []).map((x) => x.message));
+      throw new Error([(body.error || {}).message, ...nodes].filter(Boolean).join("; ") || `ComfyUI refused the job (HTTP ${res.status})`);
+    }
+    return body.prompt_id;
   },
   upscaleModels: () => call("GET", "/api/m/render/upscale_models"),
   /** The upscale is an ordinary ComfyUI job: queued on /prompt, read back from /history. -> the prompt id. */

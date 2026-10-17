@@ -1,0 +1,155 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { setupDom, teardownDom } from "../../composer/tests/_dom.js";
+import { bulk, frequency, joinTags, splitTags } from "./captions.js";
+
+let feature;
+test.before(async () => { setupDom(); feature = (await import("./index.js")).default; });
+test.after(() => teardownDom());
+
+const wait = (ms = 20) => new Promise((r) => setTimeout(r, ms));
+
+function fake({ enabled = true } = {}) {
+  const calls = [];
+  const doc = { name: "cats", trigger: "", settings: {}, items: [
+    { id: "aaaaaaaaaaaa", src: { kind: "bin", id: "bbbbbbbbbbbb" }, media_kind: "image", label: "own", caption: "cat, grey", name: "a.png" },
+    { id: "cccccccccccc", src: { kind: "output", type: "output", subfolder: "", filename: "v.mp4" }, media_kind: "video", label: "liked", caption: "", name: "v.mp4" },
+  ] };
+  const run = { run: "", state: "idle", loss: [], loss_from: 0, step: 0, total: 0 };
+  const api = {
+    trainState: async () => ({ enabled }),
+    trainSets: async () => ({ sets: [{ name: "cats", count: 2 }] }),
+    trainSet: async () => structuredClone(doc),
+    trainSaveSet: async (name, d) => { calls.push(["save", name, d]); return d; },
+    trainAdd: async () => ({ set: doc, added: 0 }),
+    trainRated: async () => ({ results: [], counts: { liked: 3 } }),
+    trainTaggers: async () => ({ taggers: [{ id: "wd_vit_v3", title: "WD ViT v3", state: "absent", hint: "", done: 0, total: 0 }] }),
+    trainAutotagState: async () => ({ state: "idle" }),
+    trainRun: async () => ({ ...run }),
+    trainRuns: async () => [],
+    trainPlan: async (set, slots, settings) => { calls.push(["plan", set, settings]); return { prompt: { 1: { class_type: "FunPackTrainLora", inputs: {} } }, problems: [] }; },
+    queueGraph: async (g) => { calls.push(["queue", g]); return "pid"; },
+    trainStop: async () => { calls.push(["stop"]); return { stopped: true }; },
+    media: async () => ({ media: [{ id: "bbbbbbbbbbbb", name: "a.png", kind: "image" }, { id: "dddddddddddd", name: "s.wav", kind: "audio" }] }),
+    uploadMedia: async () => ({ media: [], problems: [] }),
+  };
+  const app = { api, dom: {}, pipeline: { slots: () => [{ id: "model" }] }, say: () => {}, on: () => () => {} };
+  return { api, app, calls, doc, run };
+}
+
+const open = async (f) => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const off = feature.setup({ host, app: f.app });
+  await wait();
+  const button = [...host.querySelectorAll("button")].find((b) => b.textContent.includes("Training"));
+  return { host, button, off };
+};
+const text = () => document.body.textContent;
+const click = (label, root = document) => [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
+
+test("captions: tags are trimmed and unique, counts are per caption, bulk edits only the chosen", () => {
+  assert.deepEqual(splitTags(" a,B ,, a\nc "), ["a", "B", "c"]);
+  assert.equal(joinTags(["x", "X", " y "]), "x, y");
+  assert.deepEqual(frequency([{ caption: "a, b" }, { caption: "a, a" }, { caption: "c" }]).map((x) => [x.tag, x.count]), [["a", 2], ["b", 1], ["c", 1]]);
+  const items = [{ id: "x", caption: "cat, dog" }, { id: "y", caption: "cat" }];
+  assert.equal(bulk(items, "remove", "cat", "", new Set(["x"])), 1);
+  assert.deepEqual(items.map((i) => i.caption), ["dog", "cat"]);
+  assert.equal(bulk(items, "replace", "cat", "lion"), 1);
+  assert.equal(bulk(items, "prepend", "zq"), 2);
+  assert.equal(items[1].caption, "zq, lion");
+  assert.equal(bulk(items, "add", ""), 0);
+});
+
+test("the window is hidden while the add-on is off", async () => {
+  const f = fake({ enabled: false });
+  const { button, off } = await open(f);
+  assert.ok(button.hidden);
+  off();
+});
+
+test("the Data step lists the sets, offers the three sources and can be skipped", async () => {
+  const f = fake();
+  const { button, off } = await open(f);
+  assert.ok(!button.hidden);
+  button.click();
+  await wait(60);
+  const t = text();
+  for (const word of ["Drop pictures or clips here", "Choose in your Bin", "Liked results", "Bad composition results", "Bad image results", "Skip to training", "Next: tags"]) assert.ok(t.includes(word), word);
+  assert.ok(t.includes("2 in \"cats\""), "the open set is summarised");
+  assert.ok(document.querySelectorAll(".cx-cell").length === 1, "only pictures and clips are offered from the Bin, not sound");
+  off();
+});
+
+test("Tags step: a card per item; editing a caption saves the set", async () => {
+  const f = fake();
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Next: tags").click();
+  await wait(20);
+  assert.equal(document.querySelectorAll(".cx-captioned").length, 2);
+  document.querySelector(".cx-captioned .cx-tag-x").click();                       // takes "cat" off the first item
+  await wait(700);
+  const saved = f.calls.filter((c) => c[0] === "save").pop();
+  assert.equal(saved[2].items[0].caption, "grey");
+  off();
+});
+
+test("Train step: Start sends the settings and the pipeline to the plan and queues the graph", async () => {
+  const f = fake();
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Skip to training").click();
+  await wait(20);
+  assert.ok(text().includes("Start training"));
+  click("Start training").click();
+  await wait(40);
+  const plan = f.calls.find((c) => c[0] === "plan");
+  assert.equal(plan[1], "cats");
+  assert.equal(plan[2].steps, 500);
+  assert.ok(f.calls.some((c) => c[0] === "queue"));
+  off();
+});
+
+test("a refused plan shows the reason and starts nothing", async () => {
+  const f = fake();
+  f.api.trainPlan = async () => ({ prompt: {}, problems: ["the pipeline has no clip loader"] });
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Skip to training").click();
+  await wait(20);
+  click("Start training").click();
+  await wait(40);
+  assert.ok(text().includes("no clip loader"));
+  assert.ok(!f.calls.some((c) => c[0] === "queue"));
+  off();
+});
+
+test("a run in progress draws its loss, then reports the saved file; Stop asks the server", async () => {
+  const f = fake();
+  let n = 0;
+  f.api.trainRun = async (since) => {
+    n += 1;
+    if (n < 3) return { run: "", state: "idle", loss: [], loss_from: 0 };
+    if (n === 3) return { run: "r1", state: "training", step: 2, total: 5, elapsed: 4, message: "", loss: [0.9, 0.7], loss_from: since };
+    return { run: "r1", state: "done", step: 5, total: 5, elapsed: 9, message: "", loss: [0.5, 0.4, 0.3].slice(0, 5 - since), loss_from: since, lora: "cats_lora.safetensors" };
+  };
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Skip to training").click();
+  await wait(20);
+  click("Start training").click();
+  await wait(1200);
+  assert.ok(text().includes("Step 2 of 5"), "progress is shown");
+  assert.ok(document.querySelector(".cx-chart path.cx-chart-line"), "the loss is drawn");
+  click("Stop").click();
+  await wait(20);
+  assert.ok(f.calls.some((c) => c[0] === "stop"));
+  await wait(1200);
+  assert.ok(text().includes("cats_lora.safetensors"));
+  off();
+});

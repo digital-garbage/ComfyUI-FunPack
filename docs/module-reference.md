@@ -148,6 +148,7 @@ A capability is a name in `PROVIDES`. Core defines none: the contract is between
 | `anchor_pin` | `(kwargs, transform) -> kwargs` or `None` | |
 | `rescale_conditioning` | `(conditioning, height, width) -> (conditioning, count)` or `None` | |
 | `latent_upscaler` | `(state_dict) -> object with funpack_latent_upscale(x, scale)` or `None` | |
+| `training_adapt` | `(model) -> {name, step, video, batch_limit, fps, frames, pack, shims, silence}` or `None` | what LoRA training must know about a model whose latent is not a plain tensor (H3 packs picture and sound). `shims()` is a context manager that applies the repairs only for the length of a run |
 
 ### Learning
 
@@ -157,6 +158,25 @@ A capability is a name in `PROVIDES`. Core defines none: the contract is between
 | `taste_kind` | `taste` | `(key, kind) -> Kind` for one kind of one key |
 | `taste_latest_key` | `taste` | `() -> the key the most recent capture went to, or None` |
 | `on_rating` | `taste` calls every module that provides it | `(prompt_id, rating, axis) -> None` |
+
+## An add-on module: LoRA training
+
+`modules/training/lora/` is announced as `training_lora` and switched on in Settings > Modules (the `lora_training` add-on, which asks for `onnxruntime`, needed only by the automatic tagger). It is a node-and-routes module with no settings of its own: the window passes every value to the node.
+
+| File | What it holds |
+|---|---|
+| `store.py` | Training sets as JSON under `training/sets/`. An item points at a Bin file or an output file; the path is resolved at run time, inside its root. |
+| `rated.py` | Finds rated results in the saved projects and maps a rating to `liked`, `disliked`, `bad_composition` or `bad_image`. |
+| `captions.py` | Tag text helpers, shared in spirit with `app/ui/features/training/captions.js`. |
+| `taggers.py` | WD tagger models (ONNX) downloaded from Hugging Face on request, or any repo with `model.onnx` and `selected_tags.csv`; one tagging job at a time. |
+| `media_io.py`, `frames.py` | Pictures and clips as tensors, fitted to a size bucket. |
+| `plan.py` | Builds the graph a run is queued as: the pipeline's own loaders (ids `model`, `clip`, `vae`, `audio_vae`, or the first of each kind) feed `FunPackTrainLora`. |
+| `train.py`, `nodes.py` | The run, on ComfyUI's own Train LoRA node. Latents and conditioning are built from the set; each step's loss goes to `jobs.py`; Stop and ComfyUI's interrupt end it at the next step. |
+| `jobs.py` | The run in progress and finished run records under `training/runs/`. |
+
+"Learn what I like" trains on liked results and your own media; "learn what to avoid" trains on the disliked ones, for a LoRA applied at negative strength. This is not VADER (reward gradients), which stays parked.
+
+The diffusion model loader sets `cached_patcher_init` for a plain file, because the trainer clones the model from it. An H3 run uses the repairs in `modules/models/minimax_h3/training.py`. **UNTESTED on real weights or hardware**: proven only on a tiny H3 and a stand-in text encoder and VAEs, on CPU.
 
 ## Helpers a module may import from `_core`
 

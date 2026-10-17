@@ -38,6 +38,7 @@ These run with the rest and fail the build if you break them.
 | `core/tests/test_loads_as_comfyui_does.py` | The pack loads the way ComfyUI loads it. |
 | `core/tests/test_log_call_sites.py` | Log calls use the right level and shape. |
 | `core/tests/test_control.py` | Quarantine and `Unavailable` behave as described in [Architecture](architecture.md). |
+| `modules/training/lora/tests/test_train_h3.py` | A whole LoRA training run on a tiny real H3 on CPU, with a stand-in text encoder and VAEs. It proves our side (sets, latents, repairs, loss stream, saved file), nothing about real weights or hardware. |
 
 ### Environment-dependent failures
 
