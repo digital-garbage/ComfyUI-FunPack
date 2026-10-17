@@ -154,23 +154,26 @@ test("a run in progress draws its loss, then reports the saved file; Stop asks t
   off();
 });
 
-test("rated results are added with their prompts as captions, or without when that is switched off", async () => {
+test("rated results are added with the captions the server built, and changing what to include asks again", async () => {
   const f = fake();
-  f.api.trainRated = async () => ({ results: [{ label: "liked", media: { type: "output", subfolder: "", filename: "x.mp4" }, caption: "a red fox" }], counts: { liked: 1 } });
+  const asked = [];
+  f.api.trainRated = async (include) => { asked.push(include); return { results: [{ label: "liked", media: { type: "output", subfolder: "", filename: "x.mp4" }, caption: include.includes("postfix") ? "a red fox 35mm" : "a red fox" }], counts: { liked: 1 } }; };
   const added = [];
   f.api.trainAdd = async (name, entries) => { added.push(entries); return { set: f.doc, added: entries.length }; };
   const { button, off } = await open(f);
   button.click();
   await wait(60);
+  assert.deepEqual(asked[0], ["main"], "the main prompt alone is the default");
   click("Add these results").click();
   await wait(40);
   assert.equal(added[0][0].caption, "a red fox");
   assert.equal(added[0][0].media_kind, "video");
-  const sw = [...document.querySelectorAll("input[role=switch]")].find((i) => /prompts as captions/.test(i.closest(".cx-toggle-row").textContent));
-  sw.click();
-  await wait(10);
+  const box = [...document.querySelectorAll(".cx-checklist .cx-check-row")].find((r) => r.textContent.includes("Postfix")).querySelector("input");
+  box.click();
+  await wait(40);
+  assert.deepEqual(asked[asked.length - 1].sort(), ["main", "postfix"]);
   click("Add these results").click();
   await wait(40);
-  assert.equal(added[1][0].caption, "");
+  assert.equal(added[1][0].caption, "a red fox 35mm");
   off();
 });

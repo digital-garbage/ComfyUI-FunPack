@@ -89,9 +89,16 @@ def test_buckets_share_one_shape_or_follow_the_picture():
     assert len(set(media_io.buckets_for([1.0, 2.0, 0.5], 512, 64, False))) == 3
 
 
-def test_a_rated_prompt_becomes_a_caption_with_shortcuts_expanded_and_variables_dropped():
-    assert rated.prompt_caption("  a fox\n runs $hero  home ", lambda t: t.replace("fox", "red fox")) == "a red fox runs home"
-    assert rated.prompt_caption("", lambda t: "x") == "" and rated.prompt_caption(None) == ""
+def test_a_rated_prompt_becomes_a_caption_from_the_parts_asked_for():
+    doc = {"anchor": "cinematic", "postfix": "35mm", "postfix_enabled": True, "variables": [{"name": "hero", "value": "Ann"}]}
+    expand = lambda t: t.replace("fox", "red fox")
+    resolve = lambda t, v: t.replace("$hero", "Ann")
+    ask = lambda *include: rated.prompt_caption("  a fox\n runs $hero  home ", doc, include, expand, resolve)
+    assert ask("main") == "a red fox runs $hero home", "variables stay as written unless asked for"
+    assert ask("main", "variables") == "a red fox runs Ann home"
+    assert ask("prefix", "main", "postfix", "variables") == "cinematic a red fox runs Ann home 35mm"
+    assert ask() == ""
+    assert rated.prompt_caption("x", {**doc, "postfix_enabled": False}, ("main", "postfix")) == "x"
     media = {"filename": "a.mp4", "subfolder": "", "type": "output"}
-    doc = {"id": "p", "scenes": [{"id": "s", "rating": "10", "rated": {"text": "a $hero fox"}}], "scene_renders": {"s": {"media": media}}}
-    assert rated.scan([doc], lambda t: t.replace("fox", "red fox"))[0]["caption"] == "a red fox"
+    project = {"id": "p", "anchor": "A", "scenes": [{"id": "s", "rating": "10", "rated": {"text": "a $hero fox"}}], "scene_renders": {"s": {"media": media}}}
+    assert rated.scan([project], expand, resolve, ("prefix", "main"))[0]["caption"] == "A a $hero red fox"

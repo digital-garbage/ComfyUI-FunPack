@@ -107,7 +107,8 @@ def routes(table, base, web):
             project = projects.get(entry["id"])
             if project is not None:
                 docs.append({**project.to_dict(), "id": entry["id"]})
-        found = rated.scan(docs, lambda t: shortcuts.expand(t, seed=1))
+        parts = [p for p in (req.rel_url.query.get("include") or "main").split(",") if p in rated.INCLUDE]
+        found = rated.scan(docs, lambda t: shortcuts.expand(t, seed=1), shortcuts.resolve_variables, parts)
         want = req.rel_url.query.get("label")
         if want:
             found = [r for r in found if r["label"] == want]

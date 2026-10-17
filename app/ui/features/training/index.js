@@ -25,7 +25,7 @@ export default {
     const api = app.api;
     const session = makeSession(api);
     const ui = {
-      tab: "data", picked: new Set(), bin: [], rated: { results: [], counts: {} }, ratedKind: "liked", useCaptions: true, selected: new Set(), filter: "all", tag: "", limit: 48,
+      tab: "data", picked: new Set(), bin: [], rated: { results: [], counts: {} }, ratedKind: "liked", include: ["main"], selected: new Set(), filter: "all", tag: "", limit: 48,
       tagger: { id: "wd_vit_v3", list: [], job: null, general: 0.35, limit: 0, characters: false, mode: "add", scope: "untagged" },
       advanced: false, runs: [], chosenRun: "", record: null,
       run: { shown: false, active: false, state: "idle", loss: [], smooth: [], step: 0, total: 0, elapsed: 0, message: "", error: "", lora: "", before: "" },
@@ -65,7 +65,7 @@ export default {
     // --- the Bin and rated results, read when the window opens
     async function loadSources() {
       try { ui.bin = (await api.media()).media || []; } catch { ui.bin = []; }
-      try { ui.rated = await api.trainRated(); } catch { ui.rated = { results: [], counts: {} }; }
+      try { ui.rated = await api.trainRated(ui.include); } catch { ui.rated = { results: [], counts: {} }; }
       draw();
     }
     async function loadRuns() { try { ui.runs = await api.trainRuns(); } catch { ui.runs = []; } if (ui.runs.length) loadRecord(ui.chosenRun || ui.runs[0].run); }

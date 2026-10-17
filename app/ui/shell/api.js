@@ -87,7 +87,7 @@ export const api = {
   trainDeleteSet: (name) => call("DELETE", `${TRAIN}/sets/${encodeURIComponent(name)}`),
   trainAdd: (name, entries) => call("POST", `${TRAIN}/sets/${encodeURIComponent(name)}/add`, { entries }),
   trainBulk: (name, body) => call("POST", `${TRAIN}/sets/${encodeURIComponent(name)}/bulk`, body),
-  trainRated: (label) => call("GET", `${TRAIN}/rated${label ? `?label=${encodeURIComponent(label)}` : ""}`),
+  trainRated: (include) => call("GET", `${TRAIN}/rated${include && include.length ? `?include=${encodeURIComponent(include.join(","))}` : ""}`),
   trainTaggers: () => call("GET", `${TRAIN}/taggers`),
   trainDownloadTagger: (tagger) => call("POST", `${TRAIN}/taggers/download`, { tagger }),
   trainRemoveTagger: (tagger) => call("POST", `${TRAIN}/taggers/remove`, { tagger }),

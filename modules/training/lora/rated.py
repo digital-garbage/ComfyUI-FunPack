@@ -8,8 +8,6 @@ one disliked, and "Disliked: bad image" / "Disliked: bad composition" say which 
 
 from __future__ import annotations
 
-import re
-
 from .store import kind_of
 
 FORGET = "-Just forget it-"
@@ -39,25 +37,37 @@ def _media(raw):
     return {"filename": name, "subfolder": str(raw.get("subfolder") or ""), "type": raw.get("type") if raw.get("type") in ("output", "temp", "input") else "output"}
 
 
-_VARIABLE = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
+INCLUDE = ("prefix", "main", "postfix", "variables")
 
 
-def prompt_caption(text, expand=None) -> str:
-    """A rated result's prompt as a caption: the scene's own words with shortcuts expanded, and nothing else.
+def prompt_caption(text, doc=None, include=("main",), expand=None, resolve=None) -> str:
+    """A rated result's prompt as a caption, from the parts asked for.
 
-    `expand(text)` is the app's shortcut expansion. `$variables` are dropped, not filled in, and the project's
-    anchor and postfix were never part of the stored text, so they are not here either.
+    `include` names the parts: prefix and postfix are the project's anchor and postfix, main is the scene's own words,
+    variables fills in `$name` (left as written when not asked for). `expand(text)` is the app's shortcut
+    expansion; `resolve(text, variables)` fills the variables in.
     """
-    text = " ".join(str(text or "").split())
-    if expand and text:
-        text = " ".join(str(expand(text)).split())
-    return " ".join(_VARIABLE.sub(" ", text).split())
+    doc = doc if isinstance(doc, dict) else {}
+    want = set(include or ())
+    parts = []
+    if "prefix" in want:
+        parts.append(doc.get("anchor"))
+    if "main" in want:
+        parts.append(text)
+    if "postfix" in want and doc.get("postfix_enabled") is not False:
+        parts.append(doc.get("postfix"))
+    joined = " ".join(" ".join(str(p or "").split()) for p in parts).strip()
+    if expand and joined:
+        joined = " ".join(str(expand(joined)).split())
+    if "variables" in want and resolve:
+        joined = resolve(joined, doc.get("variables"))
+    return " ".join(joined.split())
 
 
-def scan(projects, expand=None) -> list[dict]:
+def scan(projects, expand=None, resolve=None, include=("main",)) -> list[dict]:
     """[{project, project_name, label, rating, media, caption}] for every rated result in these project documents.
 
-    The caption is the prompt that made the result, run through `prompt_caption` with `expand`.
+    The caption is the prompt that made the result, built by `prompt_caption` from the parts in `include`.
     """
     out, seen = [], set()
 
@@ -70,7 +80,7 @@ def scan(projects, expand=None) -> list[dict]:
             return
         seen.add(key)
         out.append({"project": doc.get("id", ""), "project_name": doc.get("name", ""), "label": label, "rating": str(rating),
-                    "media": media, "caption": prompt_caption(caption, expand)})
+                    "media": media, "caption": prompt_caption(caption, doc, include, expand, resolve)})
 
     for doc in projects:
         if not isinstance(doc, dict):
