@@ -97,6 +97,7 @@ export const api = {
   trainAutotagCancel: () => call("POST", `${TRAIN}/autotag/cancel`, {}),
   trainPlan: (set, slots, settings) => call("POST", `${TRAIN}/plan`, { set, slots, settings }),
   trainRun: (since) => call("GET", `${TRAIN}/run?since=${since || 0}`),
+  trainPause: () => call("POST", `${TRAIN}/run/pause`, {}),
   trainStop: () => call("POST", `${TRAIN}/run/stop`, {}),
   trainRuns: () => call("GET", `${TRAIN}/runs`).then((d) => d.runs || []),
   trainRunRecord: (id) => call("GET", `${TRAIN}/runs/${encodeURIComponent(id)}`),

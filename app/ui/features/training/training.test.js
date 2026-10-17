@@ -285,3 +285,63 @@ test("Tags step: a clip's frame count and rate show beside its label", async () 
   assert.ok(text().includes("124 f · 24 fps"));
   off();
 });
+
+test("a preview step pauses the run, the pipeline makes a preview with the LoRA so far, and training carries on", async () => {
+  const f = fake();
+  const previews = [];
+  f.app.runner = { preview: async (o) => { previews.push(o); return { image: { filename: "pv.mp4", subfolder: "", type: "output" } }; } };
+  let queued = 0, polls = 0;
+  f.api.queueGraph = async (g) => { queued += 1; f.calls.push(["queue", g]); return "pid"; };
+  f.api.trainRun = async () => {
+    polls += 1;
+    if (queued === 0) return { run: "", state: "idle", loss: [], loss_from: 0 };
+    if (queued === 1) return polls % 2 ? { run: "r1", state: "training", step: 2, total: 6, elapsed: 3, message: "", loss: [0.9, 0.8], loss_from: 0 }
+      : { run: "r1", state: "paused", step: 2, total: 6, elapsed: 3, message: "", loss: [], loss_from: 2, paused: { reason: "preview", step: 2, preview: "cats_preview.safetensors", checkpoint: true } };
+    if (polls % 3 === 0) return { run: "r1", state: "paused", step: 2, total: 6, message: "", loss: [], loss_from: 2, paused: { reason: "preview", step: 2, preview: "cats_preview.safetensors", checkpoint: true } };   // the record still shows the pause until the new run begins
+    return { run: "r1", state: "done", step: 6, total: 6, elapsed: 9, message: "", loss: [0.7, 0.6, 0.5, 0.4], loss_from: 2, lora: "cats_lora.safetensors" };
+  };
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Skip to training").click();
+  await wait(20);
+  click("Start training").click();
+  await wait(3600);
+  assert.equal(previews.length, 1);
+  assert.equal(previews[0].lora, "cats_preview.safetensors");
+  assert.equal(queued, 2, "training was queued again to carry on");
+  const plans = f.calls.filter((c) => c[0] === "plan");
+  assert.equal(plans[1][2].resume, "r1");
+  assert.ok(text().includes("Step 2"), "the preview is shown with its step");
+  await wait(3000);
+  assert.ok(text().includes("cats_lora.safetensors"));
+  off();
+});
+
+test("Pause asks the server, a paused run offers Resume, Preview now and Stop, and Stop ends it", async () => {
+  const f = fake();
+  f.app.runner = { preview: async () => ({ error: "x" }) };
+  let phase = 0;
+  f.api.trainPause = async () => { f.calls.push(["pause"]); phase = 2; return { paused: true }; };
+  f.api.queueGraph = async () => { phase = 1; return "pid"; };
+  f.api.trainRun = async () => phase === 0 ? { run: "", state: "idle", loss: [], loss_from: 0 }
+    : phase === 1 ? { run: "r2", state: "training", step: 1, total: 6, elapsed: 1, message: "", loss: [0.9], loss_from: 0 }
+    : { run: "r2", state: "paused", step: 2, total: 6, message: "", loss: [0.8], loss_from: 1, paused: { reason: "user", step: 2, preview: "cats_preview.safetensors", checkpoint: true } };
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Skip to training").click();
+  await wait(20);
+  click("Start training").click();
+  await wait(1400);
+  click("Pause").click();
+  await wait(1400);
+  assert.ok(f.calls.some((c) => c[0] === "pause"));
+  assert.ok(text().includes("Paused at step 2"));
+  assert.ok(click("Resume") && !click("Resume").hidden && !click("Preview now").hidden);
+  click("Stop").click();
+  await wait(40);
+  assert.ok(f.calls.some((c) => c[0] === "stop"));
+  assert.ok(text().includes("Stopped"));
+  off();
+});

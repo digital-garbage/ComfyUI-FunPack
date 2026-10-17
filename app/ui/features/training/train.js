@@ -1,9 +1,10 @@
 // Step 3, Train: the settings, Start and Stop, and the loss graph while it runs.
 import { composer as c } from "../../composer/composer.js";
+import { stillOf } from "./state.js";
 
 /** The node's own defaults. A set remembers what was changed from them. */
 export const DEFAULTS = {
-  name: "funpack_lora", use: "normal", steps: 500, learning_rate: 0.0001, rank: 16, algorithm: "LoRA", optimizer: "AdamW", loss: "MSE",
+  name: "funpack_lora", use: "all", preview_every: 0, steps: 500, learning_rate: 0.0001, rank: 16, algorithm: "LoRA", optimizer: "AdamW", loss: "MSE",
   batch_size: 1, grad_accumulation: 1, resolution: 512, aspect_buckets: false, frames: 33, fps: 0, start: "start", seed: 0,
   training_dtype: "bf16", lora_dtype: "bf16", gradient_checkpointing: true, offloading: false, bypass: false, swap_blocks: 0,
 };
@@ -12,15 +13,10 @@ export const PRESETS = [
   { value: "standard", label: "Standard", steps: 500, rank: 16 },
   { value: "long", label: "Thorough", steps: 2000, rank: 32 },
 ];
-const USES = [
-  { value: "normal", label: "Learn what I like" },
-  { value: "avoid", label: "Learn what to avoid" },
-  { value: "all", label: "Learn from everything" },
-];
 const opts = (list) => list.map((v) => ({ value: v, label: v }));
 
 /** The settings for a run: the defaults, then what the set remembers. */
-export const settingsOf = (doc) => ({ ...DEFAULTS, ...((doc && doc.settings) || {}) });
+export const settingsOf = (doc) => ({ ...DEFAULTS, ...((doc && doc.settings) || {}), use: "all" });      // the Data step decides what is in; a set made before that remembers an old choice
 
 const fmt = (n) => (Number.isFinite(n) ? (Math.abs(n) >= 0.01 ? n.toFixed(4) : n.toPrecision(3)) : "");
 const clock = (s) => { s = Math.round(s || 0); return s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min` : s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`; };
@@ -36,7 +32,7 @@ export function trainStep({ app, session, go, ui }) {
   const flag = (key, label, hint) => c.toggle.default({ label, hint, checked: v[key], onChange: set(key) });
 
   const items = doc.items;
-  const used = items.filter((i) => (v.use === "normal" ? ["own", "liked"] : v.use === "avoid" ? ["disliked", "bad_composition", "bad_image"] : Object.keys({ own: 1, liked: 1, disliked: 1, bad_composition: 1, bad_image: 1 })).includes(i.label));
+  const used = items;
   const slots = (app.pipeline && app.pipeline.slots && app.pipeline.slots()) || [];
   const hasAudioVae = slots.some((s) => s.id === "audio_vae");
   const caption = used.filter((i) => i.caption.trim()).length;
@@ -66,20 +62,28 @@ export function trainStep({ app, session, go, ui }) {
   const run = ui.run;
   const live = c.region.stack({ gap: "md", children: [monitor(ui)] });      // redrawn on its own while a run goes on: the settings above stay as they are
   ui.monitorBox = live;
-  const busy = run.active;
-  const start = c.button.lg({ label: busy ? "Training…" : "Start training", tone: "primary", disabled: busy || !used.length, onClick: () => ui.start() });
+  const waiting = run.state === "paused" || run.state === "previewing";       // between steps: nothing is training, the run is still open
+  const busy = run.active || run.state === "previewing";
+  const start = c.button.lg({ label: busy ? "Training…" : "Start training", tone: "primary", disabled: busy || waiting || !used.length, onClick: () => ui.start() });
+  start.node.hidden = waiting;
   const stop = c.button.lg({ label: "Stop", tone: "danger", onClick: () => ui.stop() });
-  stop.node.hidden = !busy;
+  stop.node.hidden = !busy && !waiting;
+  const pause = c.button.lg({ label: run.state === "previewing" ? "Stay paused" : "Pause", tone: "neutral", disabled: ui.holdPause && run.state !== "paused", onClick: () => ui.pause() });
+  pause.node.hidden = !(run.state === "training" || run.state === "previewing");
+  const resume = c.button.lg({ label: "Resume", tone: "primary", onClick: () => ui.resume() });
+  resume.node.hidden = run.state !== "paused";
+  const previewNow = c.button.lg({ label: "Preview now", tone: "neutral", title: "Make a picture or clip with the LoRA so far", onClick: () => ui.previewNow() });
+  previewNow.node.hidden = !(run.state === "paused" && run.paused && run.paused.preview);
 
   return c.region.stack({ gap: "md", children: [
     c.hint.default({ text: used.length ? `${used.length} item${used.length > 1 ? "s" : ""} will be learned from (${caption} with tags). ${used.length - caption ? "Items without a caption are learned from with only the prefix and postfix." : ""}`.trim()
-      : `Nothing in "${session.name}" fits "${(USES.find((u) => u.value === v.use) || {}).label}". Add media or change the choice below.` }),
+      : `"${session.name}" is empty. Add media in the Data step.` }),
     hasAudioVae ? c.banner.info({ text: "This pipeline has an audio VAE, so it trains picture and sound together (H3). One clip at a time, so training is slow and needs a lot of memory. musubi-tuner's H3 recipe: learning rate 0.0001, rank 16, batch 1, bf16, gradient checkpointing, plus block swap. Its plain flow-matching loss undoes the few-step quality of a distilled (turbo) model; musubi adds a training adapter, guidance loss or teacher matching for that, which this trainer does not have." }) : null,
     c.group.default({ label: "Basics", rows: [name, preset,
-      pickOf("use", "What to learn", "Liked results and your own media teach what you want. Disliked results teach what to avoid: apply that LoRA at a negative strength.", USES),
       num("steps", "Steps", "More steps learn more and can overdo it.", { min: 1, max: 100000, step: 10 }),
       num("learning_rate", "Learning rate", "How big each step is. Lower is safer and slower.", { min: 0.0000001, max: 1, step: 0.0001, precision: 7 }),
-      num("rank", "Rank", "How much it can learn. Higher holds more detail and makes a bigger file.", { min: 1, max: 128, step: 1 })] }),
+      num("rank", "Rank", "How much it can learn. Higher holds more detail and makes a bigger file.", { min: 1, max: 128, step: 1 }),
+      num("preview_every", "Preview every (steps)", "0 never. Otherwise training waits every this many steps while your pipeline makes a picture or clip with the LoRA so far (the picked scene, the project's own settings), then carries on. Needs a LoRA loader in the pipeline; each wait loads the models again.", { min: 0, max: 100000, step: 10 })] }),
     c.group.default({ label: "Pictures and clips", rows: [
       num("resolution", "Size", "Pixels per side. Everything is fitted to about this area.", { min: 64, max: 2048, step: 32 }),
       flag("aspect_buckets", "Keep each shape", "A few size groups instead of one shape for all. Not used for H3."),
@@ -87,7 +91,7 @@ export function trainStep({ app, session, go, ui }) {
       num("fps", "Frames per second", "0 uses each clip's own rate (H3: 24).", { min: 0, max: 120, step: 0.5 }),
       pickOf("start", "Take frames from", "", [{ value: "start", label: "The start of the clip" }, { value: "middle", label: "The middle" }])] }),
     advanced,
-    c.toolbar.default({ items: [c.button.md({ label: "Back", tone: "ghost", onClick: () => go("tags") })], trailing: [stop, start] }),
+    c.toolbar.default({ items: [c.button.md({ label: "Back", tone: "ghost", onClick: () => go("tags") })], trailing: [stop, pause, previewNow, resume, start] }),
     live,
   ].filter(Boolean) });
 }
@@ -103,11 +107,17 @@ export function monitor(ui) {
     run.state === "training" || run.state === "queued" ? `Step ${done} of ${total}${run.elapsed ? ` · ${clock(run.elapsed)}` : ""}${done && run.elapsed ? ` · about ${clock((run.elapsed / done) * (total - done))} left` : ""}` : null,
     run.message || null,
   ].filter(Boolean);
-  return c.group.default({ label: run.state === "done" ? "Finished" : run.state === "error" ? "Stopped with an error" : run.state === "stopped" ? "Stopped" : "Training", rows: [
+  const previews = ui.previews && ui.previews.length ? c.gallery.adaptive({ id: "training-previews", cols: 3, selection: [],
+    items: ui.previews.map((p) => ({ id: p.id, label: `Step ${p.step}`, thumb: stillOf(p), badge: p.media_kind })),
+    onActivate: (item) => ui.peek(ui.previews.find((p) => p.id === item.id)) }) : null;
+  const heading = { done: "Finished", error: "Stopped with an error", stopped: "Stopped", paused: `Paused at step ${done}`, previewing: `Making a preview at step ${done}` }[run.state] || "Training";
+  return c.group.default({ label: heading, rows: [
+    run.state === "previewing" ? c.progress.indeterminate({ label: "Making a preview" }) : null,
     run.state === "training" ? c.progress.bar({ value: done, max: total, label: "Training progress" }) : run.state === "queued" ? c.progress.indeterminate({ label: "Waiting for ComfyUI" }) : null,
     lines.length ? c.hint.default({ text: lines.join(" · ") }) : null,
     run.error ? c.inlineError.default({ text: run.error }) : null,
     run.lora ? c.banner.info({ text: `Saved as ${run.lora}. Pick it in a LoRA loader to try it.` }) : null,
+    previews,
     chart,
     run.loss.length ? c.hint.default({ text: `Latest loss ${fmt(run.loss[run.loss.length - 1])}. It should fall at first, then wobble; a LoRA is rarely better after the wobble stops shrinking.` }) : null,
   ].filter(Boolean) });

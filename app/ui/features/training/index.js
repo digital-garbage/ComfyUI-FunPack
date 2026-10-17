@@ -7,6 +7,8 @@ import { monitor, settingsOf, trainStep } from "./train.js";
 import { resultsStep } from "./results.js";
 import { makeSession, srcKey } from "./state.js";
 
+const VIDEO = /\.(mp4|webm|mov|mkv)$/i;
+
 const TABS = [{ value: "data", label: "1  Data" }, { value: "tags", label: "2  Tags" }, { value: "train", label: "3  Train" }, { value: "results", label: "Results" }];
 const POLL = 1000;
 const QUEUE_WAIT = 60000;
@@ -21,7 +23,7 @@ const smooth = (values) => {                       // a gentle moving average, s
 export default {
   id: "training",
   mount: "timeline.status",
-  needs: ["api", "dom", "pipeline"],
+  needs: ["api", "dom", "pipeline", "project", "generate"],
   setup({ host, app }) {
     const api = app.api;
     const session = makeSession(api);
@@ -29,7 +31,9 @@ export default {
       tab: "data", openBin: false, openRated: false, clips: {}, picked: new Set(), ratedPicked: new Set(), bin: [], rated: { results: [], counts: {} }, ratedKind: "liked", include: ["main"], selected: new Set(), filter: "all", tag: "", limit: 48,
       tagger: { id: "wd_vit_v3", list: [], job: null, general: 0.35, limit: 0, characters: false, mode: "add", scope: "untagged" },
       advanced: false, runs: [], chosenRun: "", record: null,
-      run: { shown: false, active: false, state: "idle", loss: [], smooth: [], step: 0, total: 0, elapsed: 0, message: "", error: "", lora: "", before: "" },
+      run: { shown: false, active: false, state: "idle", loss: [], smooth: [], step: 0, total: 0, elapsed: 0, message: "", error: "", lora: "", before: "", runId: "", paused: null },
+      previews: [], holdPause: false, awaitStart: false, peek: (item) => peek(item),
+      pause: () => pause(), resume: () => launch(ui.run.runId), previewNow: () => previewNow(),
       monitorBox: null, redraw: () => draw(), pollTaggers: () => pollTaggers(true), loadRecord: (id) => loadRecord(id), loadRuns: () => loadRuns(),
       start: () => start(), stop: () => stop(),
       /** Ask for the frame counts of clips not known yet; `then` runs when new numbers arrived. */
@@ -103,25 +107,31 @@ export default {
 
     // --- a run
     const setRun = (patch) => Object.assign(ui.run, patch);
-    async function start() {
+    const start = () => launch("");
+    async function launch(resumeId) {
       const doc = session.doc;
       if (!doc) return;
       await session.flush();
       const settings = settingsOf(doc);
       settings.trigger = doc.trigger || "";
       settings.postfix = doc.postfix || "";
-      setRun({ shown: true, active: true, state: "queued", loss: [], smooth: [], step: 0, total: settings.steps, elapsed: 0, message: "Checking the pipeline", error: "", lora: "" });
+      if (resumeId) settings.resume = resumeId;
+      else { ui.previews = []; settings.resume = ""; }
+      ui.holdPause = false;
+      setRun(resumeId ? { shown: true, active: true, state: "queued", message: "Carrying on. The models load again first.", error: "", paused: null }
+        : { shown: true, active: true, state: "queued", loss: [], smooth: [], step: 0, total: settings.steps, elapsed: 0, message: "Checking the pipeline", error: "", lora: "", runId: "", paused: null });
       draw();
       let before = "";
-      try { before = (await api.trainRun(0)).run || ""; } catch { /* first run */ }
+      if (!resumeId) { try { before = (await api.trainRun(0)).run || ""; } catch { /* first run */ } }
       try {
         const plan = await api.trainPlan(session.name, app.pipeline.slots(), settings);
         if (plan.problems && plan.problems.length) throw new Error(plan.problems.join("; "));
-        setRun({ message: "Sent to ComfyUI. It loads the models first, which can take a while." });
+        setRun({ message: resumeId ? "Sent to ComfyUI. It loads the models again, which can take a while." : "Sent to ComfyUI. It loads the models first, which can take a while." });
         draw();
         await api.queueGraph(plan.prompt);
-      } catch (err) { setRun({ active: false, state: "error", error: err.message, message: "" }); draw(); return; }
+      } catch (err) { setRun({ active: false, state: resumeId ? "paused" : "error", error: err.message, message: "" }); draw(); return; }
       ui.before = before;
+      ui.awaitStart = Boolean(resumeId);              // until the new run begins, the record still shows the pause it is carrying on from
       watch();
     }
     function watch() {
@@ -135,9 +145,16 @@ export default {
         }
         let snap = null;
         try { snap = await api.trainRun(ui.run.loss.length); } catch { /* try again */ }
-        if (snap && snap.run && snap.run !== ui.before) {
+        if (snap && snap.run && snap.run !== ui.before && !(ui.awaitStart && snap.state === "paused")) {
+          ui.awaitStart = false;
           const loss = snap.loss_from === ui.run.loss.length ? ui.run.loss.concat(snap.loss) : ui.run.loss;
-          setRun({ state: snap.state, step: snap.step, total: snap.total || ui.run.total, elapsed: snap.elapsed, message: snap.message, loss, smooth: smooth(loss), error: snap.error || "", lora: snap.lora || "" });
+          setRun({ state: snap.state, step: snap.step, total: snap.total || ui.run.total, elapsed: snap.elapsed, message: snap.message, loss, smooth: smooth(loss), error: snap.error || "", lora: snap.lora || "", runId: snap.run, paused: snap.paused || null });
+          if (snap.state === "paused") {
+            setRun({ active: false });
+            draw();
+            if (snap.paused && snap.paused.reason === "preview" && !ui.holdPause) previewNow(true);
+            return;
+          }
           if (["done", "error", "stopped"].includes(snap.state)) {
             setRun({ active: false });
             if (snap.state === "done") c.toast.info({ text: `Done: ${snap.lora}` });
@@ -152,16 +169,46 @@ export default {
       runPoll = setTimeout(tick, POLL);
     }
     async function stop() {
+      const waiting = ui.run.state === "paused" || ui.run.state === "previewing";
       setRun({ message: "Stopping" });
+      if (ui.run.state === "previewing") { ui.stopAfterPreview = true; try { app.generate.cancel(); } catch { /* it was over */ } }
       try { await api.trainStop(); } catch { /* it ends anyway */ }
-      try { await fetch("/interrupt", { method: "POST" }); } catch { /* the training step check ends it */ }
-      if (ui.run.state === "queued") { setRun({ active: false, state: "stopped", message: "" }); draw(); }
+      if (!waiting) { try { await fetch("/interrupt", { method: "POST" }); } catch { /* the training step check ends it */ } }
+      if (ui.run.state === "queued" || waiting) { setRun({ active: false, state: "stopped", message: "" }); draw(); }
+    }
+    async function pause() {
+      ui.holdPause = true;                            // a pause the person asked for stays: no preview step then carries on by itself
+      setRun({ message: ui.run.state === "previewing" ? "It will wait after this preview" : "Pausing at the end of this step" });
+      if (ui.run.state === "training") { try { await api.trainPause(); } catch { /* the run goes on */ } }
+      if (ui.tab === "train" && ui.monitorBox) ui.monitorBox.set([monitor(ui)]);
+    }
+    /** A picture or clip made by the pipeline with the LoRA so far; when `auto`, training carries on afterwards. */
+    async function previewNow(auto) {
+      const paused = ui.run.paused;
+      if (!paused || !paused.preview) return;
+      ui.stopAfterPreview = false;
+      setRun({ state: "previewing", message: `Making a preview with the LoRA at step ${paused.step}` });
+      draw();
+      let out;
+      try { out = app.runner && app.runner.preview ? await app.runner.preview({ lora: paused.preview }) : { error: "Previews need the app's Generate." }; } catch (err) { out = { error: err.message }; }
+      if (out.image) {
+        const im = out.image;
+        ui.previews.push({ id: `p${ui.previews.length + 1}`, step: paused.step, src: { kind: "output", type: im.type || "output", subfolder: im.subfolder || "", filename: im.filename }, media_kind: VIDEO.test(im.filename) ? "video" : "image" });
+      } else if (!ui.stopAfterPreview) c.toast.warn({ text: out.error || "The preview could not be made." });
+      if (ui.stopAfterPreview) { draw(); return; }
+      setRun({ state: "paused", message: "" });
+      if (auto && !ui.holdPause) launch(ui.run.runId); else draw();
     }
     // A run already going when the window opens (page reloaded): pick it up.
     async function resume() {
       try {
         const snap = await api.trainRun(0);
-        if (snap.state === "training") {
+        if (snap.state === "paused") {
+          ui.before = "";
+          setRun({ shown: true, active: false, state: "paused", loss: snap.loss, smooth: smooth(snap.loss), step: snap.step, total: snap.total, message: "", runId: snap.run, paused: snap.paused });
+          ui.holdPause = true;                        // found after a reload: the person decides
+          ui.tab = "train";
+        } else if (snap.state === "training") {
           ui.before = "";
           setRun({ shown: true, active: true, state: "training", loss: snap.loss, smooth: smooth(snap.loss), step: snap.step, total: snap.total, elapsed: snap.elapsed, message: snap.message });
           ui.tab = "train";

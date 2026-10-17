@@ -138,6 +138,36 @@ export default {
       } finally { busy = false; draw(); }
     }
     app.runner.units = (units, times) => runUnits(units, times);
+    /** One run for the Training window: the pipeline as it is, its LoRA loader pointed at `lora`, the picked scene (else the first one) and the project's own settings.
+     *  Nothing is put on the timeline; resolves to {image} or {error}. */
+    app.runner.preview = async ({ lora, strength = 1 }) => {
+      if (busy || held || g.state().phase === QUEUED || g.state().phase === RUNNING) return { error: "A run is already going: the preview waits for it." };
+      if (!p.project) return { error: "Open a project first: the preview uses its settings." };
+      const frozen = structuredClone(app.pipeline.slots() || []);
+      const slot = frozen.find((s) => s.node === "FunPackLoraLoader" && !s.bypassed) || frozen.find((s) => s.node === "FunPackLoraLoader");
+      if (!slot) return { error: "This pipeline has no LoRA loader to try the LoRA in. Add one in Models & Pipeline." };
+      slot.bypassed = false;
+      slot.inputs = { ...slot.inputs, lora_name: lora, strength_model: strength };
+      const snap = structuredClone(p.project);
+      const first = [p.selected, ...p.scenes].find((s) => s && isGenerative(s) && !s.excluded);
+      const root = first && unitRoot(snap, genUnitId(first));
+      if (!root) return { error: "The project has no scene the model makes, so there is nothing to preview with." };
+      const group = snap.scenes.filter((s) => genUnitId(s) === genUnitId(root));
+      const frames = group.reduce((t, s) => t + effFrames(s, snap), 0) - (group.length - 1);
+      busy = true; draw();
+      try {
+        await Promise.all((app.beforeRun || []).map((f) => f().catch(() => {})));
+        const { inputs } = await buildInputs({ project: snap, scene: root, slots: frozen, expand, frames, hooks: app.inputHooks, prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root, snap); } catch { return []; } }) });
+        const done = g.waitForTerminal();
+        const queued = await g.generate({ sceneId: root.id, projectId: snap.id, inputs, slots: frozen });
+        if (!queued) { done.cancel(); return { error: (g.run.state.error && g.run.state.error.message) || "The preview could not be queued. Is ComfyUI running?" }; }
+        const end = await done;
+        const images = g.run.state.images;
+        if (end === g.DONE && images.length) return { image: images[images.length - 1] };
+        const e = g.run.state.error;
+        return { error: end === g.CANCELLED ? "The preview was stopped." : e && e.message ? `The preview failed${e.node ? ` in ${e.node}` : ""}: ${e.message}` : "The preview finished without a result." };
+      } finally { busy = false; draw(); }
+    };
     const pickedScenes = () => { const ids = new Set(app.selection.ids); const hit = p.scenes.filter((s) => ids.has(s.id)); return hit.length ? hit : p.selected ? [p.selected] : []; };       // every picked clip, else the one in focus
     const unitsOf = (scenes) => [...new Set(scenes.map(genUnitId))];
 
