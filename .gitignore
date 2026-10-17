@@ -49,3 +49,4 @@ app/playwright-report/
 /block_influence.latest.json
 /phrase_probe.enabled
 /phrase_probe.latest.json
+/log.jsonl

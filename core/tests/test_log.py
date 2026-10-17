@@ -140,3 +140,19 @@ def test_different_keys_are_independent():
     log.once("a", log.ALERT, "src", "one")
     log.once("b", log.ALERT, "src", "two")
     assert len(log.history()) == 2
+
+
+def test_the_log_survives_the_process_dying(tmp_path, monkeypatch):
+    """Each record is on disk as soon as it is said; the next start shows the previous session's last lines."""
+    from core import config
+    monkeypatch.setattr(config, "LOG_FILE", tmp_path / "log.jsonl")
+    monkeypatch.setattr(log, "_persist", True)
+    monkeypatch.setattr(log, "_file", None)
+    log._reset()
+    log.info("training", "step 3: backward")
+    log.warning("training", "step 4: forward")
+    log._file.close()
+    log._records.clear()
+    monkeypatch.setattr(log, "_file", None)
+    log._load()
+    assert [r["message"] for r in log.history()] == ["step 3: backward", "step 4: forward"]

@@ -22,6 +22,7 @@ The buffer is bounded because a long rental session must not turn a log into a
 memory leak.
 """
 
+import json
 import sys
 import time
 from collections import deque
@@ -39,6 +40,49 @@ LEVELS = (INFO, ALERT, WARNING, CRITICAL)
 # Enough to cover a long generation and its aftermath, small enough to be free.
 HISTORY = 500
 _records: deque = deque(maxlen=HISTORY)
+
+_file = None            # opened on the first record; None while persistence is off (tests, unwritable folder)
+_persist = "pytest" not in sys.modules      # tests do not write the machine's Log
+
+
+def _path():
+    from . import config
+    return config.LOG_FILE
+
+
+def _load() -> None:
+    """The last records of the previous session, so a crash leaves the Log as it was. The file is cut back to that many lines."""
+    try:
+        path = _path()
+        lines = path.read_text(encoding="utf-8").splitlines()[-HISTORY:]
+    except (OSError, ValueError):
+        return
+    for text in lines:
+        try:
+            entry = json.loads(text)
+            if isinstance(entry, dict) and "message" in entry:
+                _records.append(entry)
+        except ValueError:
+            continue
+    try:
+        path.write_text("".join(t + "\n" for t in lines), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _keep(entry: dict) -> None:
+    """One line appended and flushed per record: a dead process leaves everything it said."""
+    global _file, _persist
+    if not _persist:
+        return
+    try:
+        if _file is None:
+            _file = open(_path(), "a", encoding="utf-8")
+        _file.write(json.dumps(entry, default=str) + "\n")
+        _file.flush()
+    except (OSError, ValueError):
+        _persist = False                               # a Log that cannot be written is still shown, just not kept
+
 
 # Keys already said once. Cleared per run rather than per process: v4's dedup
 # lasted the life of the interpreter, so a session reported the first generation
@@ -59,6 +103,7 @@ def record(level: str, source: str, message: str) -> dict:
     entry = {"at": time.time(), "level": level, "source": source,
              "message": message, "run": run_mod.current()}
     _records.append(entry)
+    _keep(entry)
     print(line(level, source, message), file=sys.stderr, flush=True)
     return entry
 
@@ -129,3 +174,6 @@ def _reset() -> None:
     """Tests only."""
     _records.clear()
     _said.clear()
+
+
+_load()

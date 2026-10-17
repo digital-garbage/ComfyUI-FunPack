@@ -85,6 +85,14 @@ def silence_latent(audio_vae, seconds: float):
     return audio_vae.encode(wave.movedim(1, -1))
 
 
+LORA_LAYERS = ("attn.qkv_proj", "attn.out_proj", "mlp.fc1", "mlp.fc2")
+
+
+def lora_targets(diffusion_model):
+    """[(name, module)] of the layers a LoRA goes on, named as in the model file (blocks.N.attn.qkv_proj ...)."""
+    return [(f"blocks.{i}.{layer}", block.get_submodule(layer)) for i, block in enumerate(diffusion_model.blocks) for layer in LORA_LAYERS]
+
+
 def adapt(model):
     """None for any model but H3. For H3, the facts the training module plans around."""
     from . import is_h3
@@ -92,6 +100,8 @@ def adapt(model):
         return None
     return {"name": "H3", "step": SPATIAL_STEP, "video": True, "batch_limit": 1, "fps": FPS,
             "blocks": lambda diffusion_model: list(diffusion_model.blocks),      # the 50 DiT blocks, for block swap
+            "lora_targets": lora_targets,                       # musubi-tuner's choice: the attention and feed-forward projections of the 50 DiT blocks
+            "checkpoint": lambda diffusion_model: list(diffusion_model.blocks) + list(diffusion_model.token_refiner.blocks),
             "checkpoint_depth": 2,                              # one checkpoint per block and one for the text refiner: depth 1 would be the whole model as a single piece
             "frames": lambda n: align_frame_count(max(5, int(n))),
             "fit": lambda available: 17 * ((int(available) - 5) // 17) + 5 if available >= 5 else 0,      # the longest 17k+5 run that fits in a clip

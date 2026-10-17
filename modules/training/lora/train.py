@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 from ..._core import log
-from . import captions, jobs, media_io, store, swap
+from . import captions, jobs, loop, media_io, store, swap
 
 POSITIVE = ("own", "liked")
 NEGATIVE = ("disliked", "bad_composition", "bad_image")
@@ -201,18 +201,22 @@ def _run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str =
         _free_the_card(mm, torch)
         _card("after freeing", mm, torch)
         _train_on_a_plain_copy(model)
-        losses = _loss_hook(nt, cfg["steps"] * cfg["grad_accumulation"])
         jobs.say("Training", "training")
         shim = adapt["shims"]() if adapt and adapt.get("shims") else _nothing()
-        with shim, losses, _watch(nt, mm, torch, _swapper(adapt, cfg, mm, torch)):
-            out = nt.TrainLoraNode.execute(
-                model=[model], latents=payload, positive=conds, batch_size=[batch], steps=[cfg["steps"]],
-                grad_accumulation_steps=[cfg["grad_accumulation"]], learning_rate=[cfg["learning_rate"]], rank=[cfg["rank"]],
-                optimizer=[cfg["optimizer"]], loss_function=[cfg["loss"]], seed=[cfg["seed"]], training_dtype=[cfg["training_dtype"]],
-                lora_dtype=[cfg["lora_dtype"]], quantized_backward=[False], algorithm=[cfg["algorithm"]],
-                gradient_checkpointing=[cfg["gradient_checkpointing"]], checkpoint_depth=[(adapt or {}).get("checkpoint_depth", 1)], offloading=[cfg["offloading"]],
-                existing_lora=["[None]"], bucket_mode=[False], bypass_mode=[cfg["bypass"]])
-        lora = (out.result if hasattr(out, "result") else out)[0]
+        watch = _watch(nt, mm, torch, _swapper(adapt, cfg, mm, torch))
+        if adapt and adapt.get("lora_targets"):
+            lora = loop.train(model, payload, conds, cfg, adapt, nt, mm, torch, watch, shim)       # our own loop, ComfyUI carries the batches
+        else:
+            losses = _loss_hook(nt, cfg["steps"] * cfg["grad_accumulation"])
+            with shim, losses, watch:
+                out = nt.TrainLoraNode.execute(
+                    model=[model], latents=payload, positive=conds, batch_size=[batch], steps=[cfg["steps"]],
+                    grad_accumulation_steps=[cfg["grad_accumulation"]], learning_rate=[cfg["learning_rate"]], rank=[cfg["rank"]],
+                    optimizer=[cfg["optimizer"]], loss_function=[cfg["loss"]], seed=[cfg["seed"]], training_dtype=[cfg["training_dtype"]],
+                    lora_dtype=[cfg["lora_dtype"]], quantized_backward=[False], algorithm=[cfg["algorithm"]],
+                    gradient_checkpointing=[cfg["gradient_checkpointing"]], checkpoint_depth=[(adapt or {}).get("checkpoint_depth", 1)], offloading=[cfg["offloading"]],
+                    existing_lora=["[None]"], bucket_mode=[False], bypass_mode=[cfg["bypass"]])
+            lora = (out.result if hasattr(out, "result") else out)[0]
         file = _save(lora, cfg["name"], folder_paths, safetensors.torch, set_name, cfg)
         jobs.finish("done", lora=file)
         return file
@@ -309,7 +313,8 @@ def _card(when, mm, torch):
         device = mm.get_torch_device()
         gib = 1024 ** 3
         loaded = ", ".join(f"{type(getattr(m.model, 'model', m.model)).__name__} {m.model_loaded_memory() / gib:.1f} GiB" for m in mm.current_loaded_models) or "none"
-        log.info("FunPack LoRA training", f"card {when}: tensors {torch.cuda.memory_allocated(device) / gib:.1f} GiB, free {mm.get_free_memory(device) / gib:.1f} GiB, loaded models: {loaded}")
+        line = f"card {when}: tensors {torch.cuda.memory_allocated(device) / gib:.1f} GiB, free {mm.get_free_memory(device) / gib:.1f} GiB, loaded models: {loaded}"
+        jobs.trail(line)
     except Exception as exc:                              # noqa: BLE001 -- a report must never stop a run
         log.info("FunPack LoRA training", f"card {when}: not readable ({type(exc).__name__})")
 
@@ -329,6 +334,8 @@ class _watch:
                 return
 
             def watched(*args, **kwargs):
+                if label == "loading the model":
+                    jobs.trail("loading the model onto the card now")
                 out = original(*args, **kwargs)
                 if label == "loading the model" and self.after_load:
                     self.after_load(args[0] if args else kwargs.get("models"))

@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 
-from ..._core import config
+from ..._core import config, log
 
 MAX_KEPT_LOSSES = 4000          # a saved run keeps a thinned curve: a 100000 step run is not a 100000 number file
 _LOCK = threading.Lock()
@@ -29,6 +29,17 @@ def _dir():
     path = config.TRAINING_DIR / "runs"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def trail(message: str) -> None:
+    """A stage of the run in the Log, which is kept on disk as it is written: when ComfyUI dies mid-run, the last line says where."""
+    rss = ""
+    try:
+        with open("/proc/self/statm") as f:
+            rss = f" [process {int(f.read().split()[1]) * 4096 / 1024 ** 3:.1f} GiB in memory]"
+    except OSError:
+        pass
+    log.info("FunPack LoRA training", message + rss)
 
 
 def begin(set_name: str, name: str, total: int, settings: dict, prompt_id: str = "") -> str:
@@ -52,6 +63,7 @@ def step(loss: float) -> None:
 
 
 def say(message: str, state: str | None = None) -> None:
+    trail(message)
     with _LOCK:
         _now["message"] = message
         if state and _now["state"] not in ("done", "error", "stopped"):

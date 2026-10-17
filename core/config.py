@@ -46,3 +46,6 @@ ADDONS_FILE = ROOT / "addons.json"
 
 # LoRA training (modules/training/lora): training sets, tagger models, run history. Per machine, like media.
 TRAINING_DIR = ROOT / "training"
+
+# The Log's last lines, kept on disk as they are written so a crash does not take them (core/log.py). Per machine.
+LOG_FILE = ROOT / "log.jsonl"
