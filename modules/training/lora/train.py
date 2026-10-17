@@ -314,7 +314,21 @@ class _watch:
         for name in self.STAGES:
             wrap(self.nt, name, name.strip("_").replace("_", " "))
         wrap(self.mm, "load_models_gpu", "loading the model")
+        self._backward()
         return self
+
+    def _backward(self):
+        """A Log line just before the first backward passes: what the forward pass left on the card (the part that grows with clip length)."""
+        autograd, torch, seen = self.torch.autograd, self.torch, [0]
+        original = autograd.backward
+
+        def watched(*args, **kwargs):
+            if seen[0] < 2:
+                seen[0] += 1
+                _card(f"before backward pass {seen[0]} (peak so far {torch.cuda.max_memory_allocated() / 1024 ** 3:.1f} GiB)", self.mm, torch)
+            return original(*args, **kwargs)
+        autograd.backward = watched
+        self.put.append((autograd, "backward", original))
 
     def __exit__(self, *exc):
         for owner, name, original in reversed(self.put):
