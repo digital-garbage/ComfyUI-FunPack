@@ -47,8 +47,7 @@ ADDONS = (
      "requires": ("spacy>=3.8,<3.9", _SPACY_MODEL), "modules": ("spacy", "en_core_web_sm"), "offered": lambda: True},
     {"id": "lora_training", "title": "LoRA training",
      "hint": "Train your own LoRA from your media and rated results, with a tag editor and automatic tagging (onnxruntime). Training runs on ComfyUI's own trainer.",
-     "requires": ("onnxruntime>=1.17",), "modules": ("onnxruntime",), "offered": lambda: True,
-     "legacy": False},          # onnxruntime is common: having it must not switch the feature on by itself
+     "requires": ("onnxruntime>=1.17",), "modules": ("onnxruntime",), "offered": lambda: True},
 )
 _BY_ID = {a["id"]: a for a in ADDONS}
 
@@ -79,7 +78,7 @@ def _wanted(data) -> set:
     people installed before add-ons existed must not go quiet."""
     if data is not None and isinstance(data.get("wanted"), list):
         return {i for i in data["wanted"] if i in _BY_ID}
-    return {a["id"] for a in ADDONS if a.get("legacy", True) and _present(a)}
+    return {a["id"] for a in ADDONS if _present(a)}
 
 
 def enabled(addon_id: str) -> bool:

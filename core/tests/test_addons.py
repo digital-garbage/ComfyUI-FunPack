@@ -121,10 +121,9 @@ def test_an_add_on_this_machine_cannot_run_is_not_enabled_even_if_wanted_and_ins
     assert not addons.enabled("nvidia_vsr")
 
 
-def test_an_add_on_that_is_not_legacy_is_not_switched_on_by_its_package_being_there(here):
-    """onnxruntime is common: a machine that already has it must not get LoRA training turned on for it."""
+def test_lora_training_starts_on_when_its_package_is_already_there(here):
     here.add("lora_training")
-    assert not addons.enabled("lora_training")
-    assert next(a["state"] for a in addons.listing() if a["id"] == "lora_training") == "disabled"
-    addons.set_wanted("lora_training", True)
     assert addons.enabled("lora_training")
+    assert next(a["state"] for a in addons.listing() if a["id"] == "lora_training") == "installed"
+    addons.set_wanted("lora_training", False)
+    assert not addons.enabled("lora_training")
