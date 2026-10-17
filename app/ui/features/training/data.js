@@ -1,7 +1,7 @@
 // Step 1, Training data: pick or make a set, then put media in it from any mix of sources.
 // Skippable: a set that already has what you want goes straight on to tags or to training.
 import { composer as c } from "../../composer/composer.js";
-import { LABEL_WORDS } from "./state.js";
+import { LABEL_WORDS, stillOf } from "./state.js";
 
 export const RATED = [
   { value: "liked", label: "Liked results" },
@@ -73,20 +73,35 @@ export function dataStep({ app, session, go, ui }) {
   } });
 
   const want = () => (ui.ratedKind === "all" ? ALL_RATED : [ui.ratedKind]);
-  const ratedCount = () => want().reduce((a, k) => a + ((ui.rated.counts || {})[k] || 0), 0);
+  const shownRated = () => (ui.rated.results || []).filter((r) => want().includes(r.label));
+  const keyOf = (r) => `${r.media.type}:${r.media.subfolder}/${r.media.filename}`;
+  const ratedPicked = ui.ratedPicked;
   const ratedNote = c.text.sm({ text: "" });
-  const addRated = c.button.sm({ label: "Add these results", tone: "primary", disabled: true, onClick: async () => {
-    await added((ui.rated.results || []).filter((r) => want().includes(r.label)).map(ratedEntry), "your results");
+  const ratedGallery = c.gallery.adaptive({ id: "training-rated", items: [], selection: [...ratedPicked], empty: "None found yet. Rate results in your projects and they appear here.", onActivate: (item) => {
+    if (ratedPicked.has(item.id)) ratedPicked.delete(item.id); else ratedPicked.add(item.id);
+    ratedGallery.setValue([...ratedPicked]);
+    showRated();
   } });
-  const showRated = () => {
-    const n = ratedCount();
-    ratedNote.setText(n ? `${n} rated result${n > 1 ? "s" : ""} found in your projects.` : "None found yet. Rate results in your projects and they appear here.");
+  const addRated = c.button.sm({ label: "Add these results", tone: "primary", disabled: true, onClick: async () => {
+    const all = shownRated(), chosen = all.filter((r) => ratedPicked.has(keyOf(r)));
+    await added((chosen.length ? chosen : all).map(ratedEntry), "your results");
+    ratedPicked.clear();
+    showRated();
+  } });
+  function showRated() {
+    const all = shownRated();
+    for (const k of [...ratedPicked]) if (!all.some((r) => keyOf(r) === k)) ratedPicked.delete(k);
+    ratedGallery.setItems(all.map((r) => ({ id: keyOf(r), label: r.media.filename, thumb: stillOf({ src: { kind: "output", ...r.media }, media_kind: r.media.filename.match(/\.(mp4|webm|mov|mkv|avi)$/i) ? "video" : "image" }), badge: r.label })));
+    ratedGallery.setValue([...ratedPicked]);
+    const n = all.length, p = ratedPicked.size;
+    ratedNote.setText(n ? `${n} rated result${n > 1 ? "s" : ""} found in your projects. ${p ? `${p} picked: only those are added.` : "None picked: all are added."}` : "None found yet. Rate results in your projects and they appear here.");
     addRated.node.disabled = !n || !open;
-  };
+  }
   const include = c.field.default({ label: "Captions include", hint: "What goes into the caption from each result's prompt. Shortcuts are expanded. Variables are filled in only when ticked, otherwise $name stays as written. Nothing ticked adds them with no caption.",
     control: c.checklist.default({ label: "Captions include", items: INCLUDE, values: ui.include, onChange: async (v) => {
       ui.include = v;
       try { ui.rated = await app.api.trainRated(v.length ? v : ["none"]); } catch { /* the old captions stay */ }
+      showRated();
     } }) });
   const ratedSel = c.segmented.sm({ label: "Which results", options: RATED, value: ui.ratedKind, onChange: (v) => { ui.ratedKind = v; showRated(); } });
   showRated();
@@ -100,7 +115,7 @@ export function dataStep({ app, session, go, ui }) {
     status,
     c.group.default({ label: "Drop files", rows: [dropzone] }),
     c.group.default({ label: "Choose in your Bin", rows: [gallery, c.toolbar.default({ items: [pickedNote], trailing: [addBin] })] }),
-    c.group.default({ label: "Choose your own results", hint: "Results you rated in your projects. Liked ones teach what you want; disliked ones can teach what to avoid.", rows: [ratedSel, include, c.toolbar.default({ items: [ratedNote], trailing: [addRated] })] }),
+    c.group.default({ label: "Choose your own results", hint: "Results you rated in your projects. Liked ones teach what you want; disliked ones can teach what to avoid.", rows: [ratedSel, ratedGallery, include, c.toolbar.default({ items: [ratedNote], trailing: [addRated] })] }),
     next,
   ] });
 }

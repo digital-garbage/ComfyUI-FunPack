@@ -250,3 +250,26 @@ test("Tags step: Remove selected takes the ticked items out of the set and saves
   assert.equal(saved[2].items[0].id, "cccccccccccc");
   off();
 });
+
+test("rated results are shown as pictures, and only the picked ones are added", async () => {
+  const f = fake();
+  f.api.trainRated = async () => ({ results: [
+    { label: "liked", media: { type: "output", subfolder: "", filename: "x.mp4" }, caption: "a" },
+    { label: "liked", media: { type: "output", subfolder: "", filename: "y.png" }, caption: "b" }], counts: { liked: 2 } });
+  const added = [];
+  f.api.trainAdd = async (name, entries) => { added.push(entries); return { set: f.doc, added: entries.length }; };
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  assert.ok(text().includes("2 rated results found"));
+  const cells = [...document.querySelectorAll(".cx-cell")];
+  assert.equal(cells.length, 3, "one bin item and the two rated results are drawn as pictures");
+  (cells[2].querySelector("button") || cells[2]).click();
+  await wait(20);
+  assert.ok(text().includes("1 picked: only those are added"));
+  click("Add these results").click();
+  await wait(40);
+  assert.equal(added[0].length, 1);
+  assert.equal(added[0][0].src.filename, "y.png");
+  off();
+});
