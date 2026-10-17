@@ -62,6 +62,50 @@ def plan_items(set_name: str, use: str):
     return found, problems
 
 
+def _fingerprint(obj) -> str:
+    """Tells one set of VAE or text-encoder weights from another cheaply: class, size and a few values."""
+    import hashlib
+    if obj is None:
+        return ""
+    inner = getattr(obj, "first_stage_model", None) or getattr(obj, "cond_stage_model", None) or getattr(obj, "model", None) or obj
+    h = hashlib.sha256(type(inner).__name__.encode())
+    try:
+        params = list(inner.parameters())
+        h.update(str(sum(p.numel() for p in params)).encode())
+        for p in (params[0], params[-1]) if params else ():
+            h.update(p.detach().flatten()[:16].float().cpu().numpy().tobytes())
+    except Exception:                                      # noqa: BLE001 -- an object with no parameters: its class has to do
+        pass
+    return h.hexdigest()[:16]
+
+
+def _pair(result):
+    return result[0].clone(), None if result[1] is None else result[1].clone()
+
+
+def _cached(kind, parts, make, torch):
+    """What an item encodes to, kept on disk for the next run: same file, same settings, same weights give the same answer. Returns (value, was_cached)."""
+    import hashlib
+    import json
+    from ..._core import config
+    folder = config.TRAINING_DIR / "cache"
+    path = folder / f"{kind}-{hashlib.sha256(json.dumps(parts, default=str).encode()).hexdigest()[:24]}.pt"
+    if path.is_file():
+        try:
+            return torch.load(path, weights_only=False), True
+        except Exception:                                  # noqa: BLE001 -- a damaged or foreign-device file: encode again
+            pass
+    value = make()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        torch.save(value, tmp)
+        tmp.replace(path)
+    except Exception as exc:                               # noqa: BLE001 -- the cache is only a speed-up
+        log.warning("FunPack LoRA training", f"could not keep {kind} in the cache: {exc}")
+    return value, False
+
+
 def _encode_text(clip, text: str):
     tokens = clip.tokenize(text)
     return clip.encode_from_tokens_scheduled(tokens)
@@ -186,15 +230,22 @@ def _run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str =
         if adapt and adapt.get("video"):
             cfg = _fit_frames(cfg, adapt, items)
         videos, sounds, conds = [], [], []
+        hits = 0
         with torch.inference_mode():
+            vae_id, audio_id, clip_id = _fingerprint(vae), _fingerprint(audio_vae), _fingerprint(clip)
             for number, ((item, path), size, text) in enumerate(zip(items, buckets, texts), 1):
                 if jobs.stop_requested():
                     raise Stopped()
                 jobs.say(f"Preparing {number} of {len(items)}")
-                latent, sound = encode_item(item, path, size, cfg, vae, adapt, audio_vae)
+                shape = [str(Path(path).resolve()), Path(path).stat().st_mtime_ns, Path(path).stat().st_size, item["media_kind"], list(size), cfg["frames"], cfg["fps"], cfg["start"],
+                         (adapt or {}).get("name"), vae_id, audio_id if audio_vae is not None else None]
+                (latent, sound), hit = _cached("latent", shape, lambda: _pair(encode_item(item, path, size, cfg, vae, adapt, audio_vae)), torch)
+                cond, hit_text = _cached("text", [text, clip_id], lambda: _encode_text(clip, text), torch)
+                hits += hit and hit_text
                 videos.append(latent.clone())
                 sounds.append(None if sound is None else sound.clone())
-                conds.append(_encode_text(clip, text))
+                conds.append(cond)
+        log.info("FunPack LoRA training", f"prepared {len(items)} items, {hits} entirely from the cache")
         videos, sounds, conds = _normal(videos), _normal(sounds), _normal(conds)         # made in inference mode: copies a backward pass can use
         if adapt and adapt.get("pack") and audio_vae is not None and all(s is not None for s in sounds):
             latents = adapt["pack"](videos, sounds)

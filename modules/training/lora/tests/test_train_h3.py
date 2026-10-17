@@ -403,6 +403,28 @@ def test_a_failed_run_is_restored_from_its_saved_state_in_comfyuis_inference_mod
     assert not loop.has_checkpoint(run)
 
 
+def test_a_second_run_on_the_same_data_does_not_encode_it_again(run_env, monkeypatch):
+    from modules.training.lora import train
+    tmp_path, jobs = run_env
+    calls = {"video": 0, "text": 0}
+    real_item, real_text = train.encode_item, train._encode_text
+
+    def item(*a, **k):
+        calls["video"] += 1
+        return real_item(*a, **k)
+
+    def text(*a, **k):
+        calls["text"] += 1
+        return real_text(*a, **k)
+    monkeypatch.setattr(train, "encode_item", item)
+    monkeypatch.setattr(train, "_encode_text", text)
+    train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=2))
+    first = dict(calls)
+    assert first["video"] > 0 and first["text"] > 0 and any((tmp_path / "training" / "cache").glob("latent-*.pt"))
+    train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=2))
+    assert calls == first, "the clips and captions came from the cache"
+
+
 def test_pause_button_waits_at_the_next_step_and_stop_ends_a_paused_run(run_env, monkeypatch):
     from modules.training.lora import jobs as j, train
     tmp_path, jobs = run_env
