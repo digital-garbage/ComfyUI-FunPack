@@ -47,6 +47,22 @@ def load_checkpoint(run, torch):
     return torch.load(path, map_location="cpu", weights_only=False)
 
 
+def has_checkpoint(run):
+    import re
+    return bool(re.fullmatch(r"[0-9a-f]{12}", str(run))) and _checkpoint_file(run).is_file()
+
+
+def _normal(value, torch):
+    """A copy made outside inference mode: ComfyUI runs nodes in it, and what it creates there cannot be updated in place by the optimizer."""
+    if isinstance(value, torch.Tensor):
+        return value.clone()
+    if isinstance(value, dict):
+        return {k: _normal(v, torch) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_normal(v, torch) for v in value)
+    return value
+
+
 def forget_checkpoint(run):
     try:
         _checkpoint_file(run).unlink()
@@ -216,6 +232,7 @@ def train(model, payload, conds, cfg, adapt, nt, mm, torch, watch, shim, resume=
                 raise Stopped()
         first = 0
         if resume:
+            resume = _normal(resume, torch)
             lora.restore(resume["lora"])
             optimizer.load_state_dict(resume["optimizer"])
             first = int(resume["step"])

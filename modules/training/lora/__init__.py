@@ -9,7 +9,7 @@ H3 trains picture and sound together; the repairs its latent and its rotary op n
 used when this module asks. UNTESTED on real weights or hardware: proven only on tiny stand-in models on CPU.
 """
 
-from . import captions, jobs, media_io, plan, rated, store, taggers, train
+from . import captions, jobs, loop, media_io, plan, rated, store, taggers, train
 from .nodes import FunPackTrainLora
 
 ID = "training_lora"
@@ -226,16 +226,20 @@ def routes(table, base, web):
 
     @table.get(base + "/runs")
     async def _runs(_req):
-        return web.json_response({"runs": jobs.history()})
+        return web.json_response({"runs": [{**r, "resumable": loop.has_checkpoint(r["run"])} for r in jobs.history()]})
 
     @table.get(base + "/runs/{run}")
     async def _record(req):
         rec = jobs.record(req.match_info["run"])
-        return web.json_response(rec) if rec else _bad(web, "There is no such run.", 404)
+        return web.json_response({**rec, "resumable": loop.has_checkpoint(rec.get("run"))}) if rec else _bad(web, "There is no such run.", 404)
 
     @table.delete(base + "/runs/{run}")
     async def _forget(req):
-        return web.json_response({"deleted": jobs.forget(req.match_info["run"])})
+        run = req.match_info["run"]
+        gone = jobs.forget(run)
+        if gone:
+            loop.forget_checkpoint(run)
+        return web.json_response({"deleted": gone})
 
 
 PROVIDES = {"routes": routes}

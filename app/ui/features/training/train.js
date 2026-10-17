@@ -1,4 +1,4 @@
-// Step 3, Train: the settings, Start and Stop, and the loss graph while it runs.
+// Step 3, Train: the settings, Start and Stop. The graph, previews and progress of a run are in the Results step.
 import { composer as c } from "../../composer/composer.js";
 import { stillOf } from "./state.js";
 
@@ -60,7 +60,7 @@ export function trainStep({ app, session, go, ui }) {
   ] }) });
 
   const run = ui.run;
-  const live = c.region.stack({ gap: "md", children: [monitor(ui)] });      // redrawn on its own while a run goes on: the settings above stay as they are
+  const live = c.region.stack({ gap: "md", children: [notice(ui, go)].filter(Boolean) });      // redrawn on its own while a run goes on: the settings above stay as they are
   ui.monitorBox = live;
   const waiting = run.state === "paused" || run.state === "previewing";       // between steps: nothing is training, the run is still open
   const busy = run.active || run.state === "previewing";
@@ -95,6 +95,16 @@ export function trainStep({ app, session, go, ui }) {
     c.toolbar.default({ items: [c.button.md({ label: "Back", tone: "ghost", onClick: () => go("tags") })], trailing: [stop, pause, previewNow, resume, start] }),
     live,
   ].filter(Boolean) });
+}
+
+/** What the Train step says about a run: where to look, and the error if it failed. */
+export function notice(ui, go) {
+  const run = ui.run;
+  if (!run.shown) return null;
+  const where = c.button.sm({ label: "Open Results", tone: "ghost", onClick: () => go("results") });
+  if (run.error) return c.region.stack({ gap: "sm", children: [c.inlineError.default({ text: run.error }), where] });
+  const text = { done: "Training finished.", stopped: "Training stopped.", paused: `Training paused at step ${run.step || 0}.`, previewing: "Making a preview." }[run.state] || "Training started.";
+  return c.region.stack({ gap: "sm", children: [c.banner.info({ text: `${text} Check graphs and previews in the Results tab.` }), where] });
 }
 
 /** Progress, the message, and the loss graph. */

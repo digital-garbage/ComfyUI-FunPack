@@ -47,6 +47,7 @@ const open = async (f) => {
   return { host, button, off };
 };
 const text = () => document.body.textContent;
+const tab = (label) => [...document.querySelectorAll("button, [role=tab]")].find((b) => b.textContent.trim().endsWith(label));
 const click = (label, root = document) => [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
 
 test("captions: tags are trimmed and unique, counts are per caption, bulk edits only the chosen", () => {
@@ -199,11 +200,18 @@ test("a run in progress draws its loss, then reports the saved file; Stop asks t
   await wait(20);
   click("Start training").click();
   await wait(1200);
+  assert.ok(text().includes("Check graphs and previews in the Results tab"), "Train only says where to look");
+  assert.ok(!document.querySelector(".cx-chart"), "the graph is not on the Train tab");
+  tab("Results").click();
+  await wait(20);
   assert.ok(text().includes("Step 2 of 5"), "progress is shown");
   assert.ok(document.querySelector(".cx-chart path.cx-chart-line"), "the loss is drawn");
+  tab("Train").click();
+  await wait(20);
   click("Stop").click();
   await wait(20);
   assert.ok(f.calls.some((c) => c[0] === "stop"));
+  tab("Results").click();
   await wait(1200);
   assert.ok(text().includes("cats_lora.safetensors"));
   off();
@@ -306,6 +314,7 @@ test("a preview step pauses the run, the pipeline makes a preview with the LoRA 
   click("Skip to training").click();
   await wait(20);
   click("Start training").click();
+  tab("Results").click();
   await wait(3600);
   assert.equal(previews.length, 1);
   assert.equal(previews[0].lora, "cats_preview.safetensors");
@@ -337,11 +346,11 @@ test("Pause asks the server, a paused run offers Resume, Preview now and Stop, a
   click("Pause").click();
   await wait(1400);
   assert.ok(f.calls.some((c) => c[0] === "pause"));
-  assert.ok(text().includes("Paused at step 2"));
+  assert.ok(text().includes("paused at step 2"));
   assert.ok(click("Resume") && !click("Resume").hidden && !click("Preview now").hidden);
   click("Stop").click();
   await wait(40);
   assert.ok(f.calls.some((c) => c[0] === "stop"));
-  assert.ok(text().includes("Stopped"));
+  assert.ok(text().includes("Training stopped."));
   off();
 });

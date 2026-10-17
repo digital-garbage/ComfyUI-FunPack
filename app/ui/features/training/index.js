@@ -3,7 +3,7 @@
 import { composer as c } from "../../composer/composer.js";
 import { dataStep } from "./data.js";
 import { applyTagging, tagsStep } from "./tags.js";
-import { monitor, settingsOf, trainStep } from "./train.js";
+import { monitor, notice, settingsOf, trainStep } from "./train.js";
 import { resultsStep } from "./results.js";
 import { makeSession, srcKey } from "./state.js";
 
@@ -33,7 +33,7 @@ export default {
       advanced: false, runs: [], chosenRun: "", record: null,
       run: { shown: false, active: false, state: "idle", loss: [], smooth: [], step: 0, total: 0, elapsed: 0, message: "", error: "", lora: "", before: "", runId: "", paused: null },
       previews: [], holdPause: false, awaitStart: false, peek: (item) => peek(item),
-      pause: () => pause(), resume: () => launch(ui.run.runId), previewNow: () => previewNow(),
+      pause: () => pause(), resume: () => launch(ui.run.runId), restore: (id) => { ui.run.loss = []; return launch(id); }, previewNow: () => previewNow(),
       monitorBox: null, redraw: () => draw(), pollTaggers: () => pollTaggers(true), loadRecord: (id) => loadRecord(id), loadRuns: () => loadRuns(),
       start: () => start(), stop: () => stop(),
       /** Ask for the frame counts of clips not known yet; `then` runs when new numbers arrived. */
@@ -122,7 +122,12 @@ export default {
         : { shown: true, active: true, state: "queued", loss: [], smooth: [], step: 0, total: settings.steps, elapsed: 0, message: "Checking the pipeline", error: "", lora: "", runId: "", paused: null });
       draw();
       let before = "";
-      if (!resumeId) { try { before = (await api.trainRun(0)).run || ""; } catch { /* first run */ } }
+      ui.staleStarted = 0;
+      try {
+        const last = await api.trainRun(0);
+        if (resumeId) ui.staleStarted = last.started || 0;      // a failed or stopped run being restored still shows as the current record until the new one begins
+        else before = last.run || "";
+      } catch { /* first run */ }
       try {
         const plan = await api.trainPlan(session.name, app.pipeline.slots(), settings);
         if (plan.problems && plan.problems.length) throw new Error(plan.problems.join("; "));
@@ -134,6 +139,11 @@ export default {
       ui.awaitStart = Boolean(resumeId);              // until the new run begins, the record still shows the pause it is carrying on from
       watch();
     }
+    function refreshLive() {                          // the graph lives in Results, a short notice in Train
+      if (!ui.monitorBox) return;
+      if (ui.tab === "results") ui.monitorBox.set([monitor(ui)].filter(Boolean));
+      else if (ui.tab === "train") ui.monitorBox.set([notice(ui, go)].filter(Boolean));
+    }
     function watch() {
       clearTimeout(runPoll);
       const queuedAt = Date.now();
@@ -141,11 +151,11 @@ export default {
         if (!ui.run.active) return;
         if (ui.run.state === "queued" && Date.now() - queuedAt > QUEUE_WAIT && !ui.run.message.includes("log")) {
           setRun({ message: "ComfyUI has not started the run yet. It may be busy with another job or loading models; if this stays, look at ComfyUI's log." });
-          if (ui.tab === "train" && ui.monitorBox) ui.monitorBox.set([monitor(ui)]);
+          refreshLive();
         }
         let snap = null;
         try { snap = await api.trainRun(ui.run.loss.length); } catch { /* try again */ }
-        if (snap && snap.run && snap.run !== ui.before && !(ui.awaitStart && snap.state === "paused")) {
+        if (snap && snap.run && snap.run !== ui.before && !(ui.awaitStart && (snap.state === "paused" || (ui.staleStarted && snap.started === ui.staleStarted)))) {
           ui.awaitStart = false;
           const loss = snap.loss_from === ui.run.loss.length ? ui.run.loss.concat(snap.loss) : ui.run.loss;
           setRun({ state: snap.state, step: snap.step, total: snap.total || ui.run.total, elapsed: snap.elapsed, message: snap.message, loss, smooth: smooth(loss), error: snap.error || "", lora: snap.lora || "", runId: snap.run, paused: snap.paused || null });
@@ -162,7 +172,7 @@ export default {
             loadRuns();
             return;
           }
-          if (ui.tab === "train" && ui.monitorBox) ui.monitorBox.set([monitor(ui)]);
+          refreshLive();
         }
         runPoll = setTimeout(tick, POLL);
       };
@@ -180,7 +190,7 @@ export default {
       ui.holdPause = true;                            // a pause the person asked for stays: no preview step then carries on by itself
       setRun({ message: ui.run.state === "previewing" ? "It will wait after this preview" : "Pausing at the end of this step" });
       if (ui.run.state === "training") { try { await api.trainPause(); } catch { /* the run goes on */ } }
-      if (ui.tab === "train" && ui.monitorBox) ui.monitorBox.set([monitor(ui)]);
+      refreshLive();
     }
     /** A picture or clip made by the pipeline with the LoRA so far; when `auto`, training carries on afterwards. */
     async function previewNow(auto) {

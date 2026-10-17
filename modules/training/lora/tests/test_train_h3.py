@@ -376,6 +376,33 @@ def test_a_run_pauses_for_a_preview_and_carries_on_to_the_same_end(run_env):
     assert not (tmp_path / "training" / "checkpoints" / f"{run}.pt").exists()
 
 
+def test_a_failed_run_is_restored_from_its_saved_state_in_comfyuis_inference_mode(run_env, monkeypatch):
+    """The optimizer's memory is read back in inference mode there; updating it in place used to fail on the first step."""
+    import torch
+    from modules.training.lora import jobs as j, loop, train
+    tmp_path, jobs = run_env
+    with torch.inference_mode():
+        train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=6, preview_every=2))
+    run = jobs.snapshot()["run"]
+    assert loop.has_checkpoint(run)
+    real = j.step
+
+    def fail(loss):
+        real(loss)
+        raise RuntimeError("the card fell over")
+    monkeypatch.setattr(j, "step", fail)
+    with torch.inference_mode(), pytest.raises(RuntimeError, match="fell over"):
+        train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=6, preview_every=2, resume=run))
+    assert jobs.snapshot()["state"] == "error" and loop.has_checkpoint(run), "a failed run keeps its saved state"
+    monkeypatch.setattr(j, "step", real)
+    with torch.inference_mode():
+        train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=6, preview_every=2, resume=run))
+        done = train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=6, preview_every=2, resume=run))
+    snap = jobs.snapshot()
+    assert done == "tiny_lora.safetensors" and snap["state"] == "done" and len(snap["loss"]) == 6
+    assert not loop.has_checkpoint(run)
+
+
 def test_pause_button_waits_at_the_next_step_and_stop_ends_a_paused_run(run_env, monkeypatch):
     from modules.training.lora import jobs as j, train
     tmp_path, jobs = run_env
