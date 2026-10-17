@@ -182,6 +182,7 @@ export default {
     async function stop() {
       const waiting = ui.run.state === "paused" || ui.run.state === "previewing";
       setRun({ message: "Stopping" });
+      refreshLive();
       if (ui.run.state === "previewing") { ui.stopAfterPreview = true; try { app.generate.cancel(); } catch { /* it was over */ } }
       try { await api.trainStop(); } catch { /* it ends anyway */ }
       if (!waiting) { try { await fetch("/interrupt", { method: "POST" }); } catch { /* the training step check ends it */ } }

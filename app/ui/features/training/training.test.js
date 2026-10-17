@@ -344,6 +344,12 @@ test("Pause asks the server, a paused run offers Resume, Preview now and Stop, a
   click("Start training").click();
   await wait(1400);
   click("Pause").click();
+  await wait(20);
+  assert.ok(text().includes("Pausing at the end of this step"), "the controls' message is beside the controls");
+  tab("Results").click();
+  await wait(20);
+  assert.ok(!text().includes("Pausing at the end of this step"), "and not with the graph");
+  tab("Train").click();
   await wait(1400);
   assert.ok(f.calls.some((c) => c[0] === "pause"));
   assert.ok(text().includes("paused at step 2"));

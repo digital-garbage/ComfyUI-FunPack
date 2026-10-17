@@ -97,6 +97,9 @@ export function trainStep({ app, session, go, ui }) {
   ].filter(Boolean) });
 }
 
+/** What the controls said last (Pausing, Stopping): shown beside the controls in Train, not with the graph in Results. */
+const aboutControls = (message) => /^(Pausing|Stopping|It will wait)/.test(message || "");
+
 /** What the Train step says about a run: where to look, and the error if it failed. */
 export function notice(ui, go) {
   const run = ui.run;
@@ -104,7 +107,7 @@ export function notice(ui, go) {
   const where = c.button.sm({ label: "Open Results", tone: "ghost", onClick: () => go("results") });
   if (run.error) return c.region.stack({ gap: "md", children: [c.inlineError.default({ text: run.error }), where] });
   const text = { done: "Training finished.", stopped: "Training stopped.", paused: `Training paused at step ${run.step || 0}.`, previewing: "Making a preview." }[run.state] || "Training started.";
-  return c.region.stack({ gap: "md", children: [c.banner.info({ text: `${text} Check graphs and previews in the Results tab.` }), where] });
+  return c.region.stack({ gap: "md", children: [c.banner.info({ text: `${aboutControls(run.message) ? `${run.message}. ` : ""}${text} Check graphs and previews in the Results tab.` }), where] });
 }
 
 /** Progress, the message, and the loss graph. */
@@ -116,7 +119,7 @@ export function monitor(ui) {
   const done = run.step || 0, total = run.total || 1;
   const lines = [
     run.state === "training" || run.state === "queued" ? `Step ${done} of ${total}${run.elapsed ? ` · ${clock(run.elapsed)}` : ""}${done && run.elapsed ? ` · about ${clock((run.elapsed / done) * (total - done))} left` : ""}` : null,
-    run.message || null,
+    run.message && !aboutControls(run.message) ? run.message : null,
   ].filter(Boolean);
   const previews = ui.previews && ui.previews.length ? c.gallery.adaptive({ id: "training-previews", cols: 3, selection: [],
     items: ui.previews.map((p) => ({ id: p.id, label: `Step ${p.step}`, thumb: stillOf(p), badge: p.media_kind })),
