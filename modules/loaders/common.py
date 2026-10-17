@@ -53,7 +53,7 @@ def fp32_over_bf16(weight_dtype, compute_dtype, stored=None):
     """Why fp32 compute over bf16 weights is noisy, or None. It runs, but the activations go fp32 while the norm layers keep
     their bf16 weights, so torch warns "Mismatch dtype between input and weight". Allowed, but said."""
     if compute_dtype == "fp32" and (weight_dtype == "bf16" or (weight_dtype == "default" and stored == "bf16")):
-        return "bf16 weights dtype with fp32 precision is a bad combo for H3. Don't expect miracles."
+        return "bf16 weights dtype with fp32 precision is a bad combo for H3. Don't expect miracles: it runs, but slowly."
 
 
 _SHORT = {"bfloat16": "bf16", "float16": "fp16", "float32": "fp32"}
