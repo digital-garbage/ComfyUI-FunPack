@@ -2,7 +2,7 @@
 import { composer as c } from "../../composer/composer.js";
 import { offer } from "../../shell/actions.js";
 
-// Per browser, not per project: the wheel is a habit of the hand. enabled null = everything offered.
+// Per browser, not per project: the wheel is a habit of the hand. enabled null = everything offered except the opt-in actions.
 const KEY = "funpack_wheel";
 export function readPrefs() {
   try { const p = JSON.parse(localStorage.getItem(KEY)) || {}; return { shape: p.shape === "half" ? "half" : "full", side: p.side === "left" ? "left" : "right", enabled: Array.isArray(p.enabled) ? p.enabled : null }; }
@@ -25,17 +25,17 @@ export default {
     const p = () => app.project, pipe = () => app.pipeline;
     const say = (text) => c.toast.info({ text });
     const toggles = [
-      offer(app, { id: "all-off", icon: "⊘", get label() { return pipe().allOff() ? "Enable enhancements" : "Disable all enhancements"; },
+      offer(app, { id: "all-off", optIn: true, icon: "⊘", get label() { return pipe().allOff() ? "Enable enhancements" : "Disable all enhancements"; },
         when: () => Boolean(pipe() && pipe().allOff && pipe().setAllOff),
         run: async () => { const on = !pipe().allOff(); await pipe().setAllOff(on); say(on ? "All enhancements disabled: runs are plain" : "Enhancements enabled again"); } }),
-      offer(app, { id: "fix-seed", icon: "⚄", get label() { return p().pref("random_seed", true) === false ? "Fresh seed each run" : "Fix the seed"; },
+      offer(app, { id: "fix-seed", optIn: true, icon: "⚄", get label() { return p().pref("random_seed", true) === false ? "Fresh seed each run" : "Fix the seed"; },
         when: () => Boolean(p() && p().pref),
         run: () => { const fix = p().pref("random_seed", true) !== false; p().setPref("random_seed", !fix); say(fix ? "Seed fixed: the seed node's own number is used" : "A fresh seed on every Generate"); } }),
     ];
     const onDown = (e) => {
       if (e.button !== 1 || wheel || document.querySelector('[role="dialog"]')) return;       // nothing behind a dialog
       e.preventDefault();
-      const prefs = readPrefs(), on = (a) => !prefs.enabled || prefs.enabled.includes(a.id);
+      const prefs = readPrefs(), on = (a) => prefs.enabled ? prefs.enabled.includes(a.id) : !a.optIn;
       const items = (app.actions || []).filter((a) => on(a) && (!a.when || a.when())).slice(0, 12).map((a) => ({ id: a.id, label: a.label, icon: a.icon }));
       if (!items.length) return;
       const shared = { items, onClose: () => { wheel = null; },
@@ -49,7 +49,7 @@ export default {
         c.hint.default({ text: "Hold the middle mouse button anywhere, flick toward an action and let go." }),
         c.segmented.md({ label: "Shape", value: prefs.shape, onChange: (v) => set({ shape: v }), options: [{ value: "full", label: "Full wheel" }, { value: "half", label: "Half wheel" }] }),
         c.segmented.md({ label: "A half wheel opens", value: prefs.side, onChange: (v) => set({ side: v }), options: [{ value: "left", label: "Left" }, { value: "right", label: "Right" }] }),
-        c.checklist.default({ label: "On the wheel", items: offered, values: prefs.enabled || offered.map((o) => o.value), onChange: (v) => set({ enabled: v }) })] });
+        c.checklist.default({ label: "On the wheel", items: offered, values: prefs.enabled || (app.actions || []).filter((a) => !a.optIn).map((a) => a.id), onChange: (v) => set({ enabled: v }) })] });
     });
     document.addEventListener("mousedown", onDown, true);
     return () => { document.removeEventListener("mousedown", onDown, true); if (wheel) wheel.close && wheel.close(); offs.concat(toggles).forEach((f) => f()); };
