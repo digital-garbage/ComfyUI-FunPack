@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import torch
 
@@ -57,6 +58,19 @@ def size_of(path, kind: str) -> tuple[int, int]:
         return int(s.codec_context.width), int(s.codec_context.height)
 
 
+def frames_at(path, fps: float) -> int:
+    """How many frames a clip gives when read at `fps` (0 = its own rate)."""
+    import av
+    with av.open(str(path)) as box:
+        s = box.streams.video[0]
+        src = float(s.average_rate or s.guessed_rate or 24.0)
+        step = src / (float(fps) if fps else src)
+        total = int(s.frames or 0)
+        if not total and s.duration and s.time_base:
+            total = int(float(s.duration * s.time_base) * src)
+    return int((total - 1) / step) + 1 if total else 0
+
+
 def clip_frames(path, frames: int, fps: float, start: str, width: int, height: int):
     """[frames, H, W, 3] float 0..1 taken in order from the clip at `fps` (0 = the clip's own rate), plus the rate used.
 
@@ -83,7 +97,7 @@ def clip_frames(path, frames: int, fps: float, start: str, width: int, height: i
                 break
     missing = [i for i in want if i not in got]
     if missing:
-        raise ValueError(f"the clip is too short: it needs {want[-1] + 1} frames at {rate:g} fps and has fewer")
+        raise ValueError(f"{Path(path).name} is too short: it needs {want[-1] + 1} frames at {rate:g} fps and has {len(got)} there (its own rate is {src:g} fps)")
     return to_tensor([got[i] for i in want]), rate
 
 

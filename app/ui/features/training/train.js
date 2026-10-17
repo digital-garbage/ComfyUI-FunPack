@@ -82,7 +82,7 @@ export function trainStep({ app, session, go, ui }) {
     c.group.default({ label: "Pictures and clips", rows: [
       num("resolution", "Size", "Pixels per side. Everything is fitted to about this area.", { min: 64, max: 2048, step: 32 }),
       flag("aspect_buckets", "Keep each shape", "A few size groups instead of one shape for all. Not used for H3."),
-      num("frames", "Frames per clip", "For video models. H3 rounds to its own grid (17 x n + 5).", { min: 1, max: 257, step: 1 }),
+      num("frames", "Frames per clip", "For video models. H3 rounds to its own grid (17 x n + 5).", { min: 1, max: 1025, step: 1 }),
       num("fps", "Frames per second", "0 uses each clip's own rate (H3: 24).", { min: 0, max: 120, step: 0.5 }),
       pickOf("start", "Take frames from", "", [{ value: "start", label: "The start of the clip" }, { value: "middle", label: "The middle" }])] }),
     advanced,

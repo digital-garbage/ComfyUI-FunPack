@@ -73,4 +73,5 @@ def adapt(model):
     return {"name": "H3", "step": SPATIAL_STEP, "video": True, "batch_limit": 1, "fps": FPS,
             "checkpoint_depth": 2,                              # one checkpoint per block and one for the text refiner: depth 1 would be the whole model as a single piece
             "frames": lambda n: align_frame_count(max(5, int(n))),
+            "fit": lambda available: 17 * ((int(available) - 5) // 17) + 5 if available >= 5 else 0,      # the longest 17k+5 run that fits in a clip
             "temporal": temporal_shape, "shims": shims, "pack": pack, "silence": silence_latent}

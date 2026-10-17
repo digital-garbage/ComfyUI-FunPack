@@ -102,3 +102,33 @@ def test_a_rated_prompt_becomes_a_caption_from_the_parts_asked_for():
     media = {"filename": "a.mp4", "subfolder": "", "type": "output"}
     project = {"id": "p", "anchor": "A", "scenes": [{"id": "s", "rating": "10", "rated": {"text": "a $hero fox"}}], "scene_renders": {"s": {"media": media}}}
     assert rated.scan([project], expand, resolve, ("prefix", "main"))[0]["caption"] == "A a $hero red fox"
+
+
+def _clip(path, frames, fps=24):
+    import av
+    import numpy as np
+    with av.open(str(path), "w") as box:
+        s = box.add_stream("mpeg4", rate=fps)
+        s.width, s.height, s.pix_fmt = 64, 48, "yuv420p"
+        for i in range(frames):
+            frame = av.VideoFrame.from_ndarray(np.full((48, 64, 3), i * 3 % 255, dtype=np.uint8), format="rgb24")
+            for packet in s.encode(frame):
+                box.mux(packet)
+        for packet in s.encode():
+            box.mux(packet)
+
+
+def test_every_clip_is_read_for_as_many_frames_as_the_shortest_one_gives(tmp_path):
+    from modules.training.lora import train
+    short, long = tmp_path / "s.mp4", tmp_path / "l.mp4"
+    _clip(short, 45)
+    _clip(long, 100)
+    assert media_io.frames_at(short, 24) == 45 and media_io.frames_at(short, 12) == 23
+    items = [({"media_kind": "video"}, short), ({"media_kind": "video"}, long), ({"media_kind": "image"}, tmp_path / "x.png")]
+    h3 = {"fps": 24, "frames": lambda n: n, "fit": lambda a: 17 * ((a - 5) // 17) + 5}
+    assert train._fit_frames({"fps": 0, "frames": 120}, h3, items)["frames"] == 39       # 17 x 2 + 5: the longest on the grid that fits 45
+    assert train._fit_frames({"fps": 0, "frames": 33}, h3, items)["frames"] == 33        # nothing to lower
+    with pytest.raises(ValueError, match="too short"):
+        train._fit_frames({"fps": 0, "frames": 120}, {**h3, "fit": lambda a: 0}, items)
+    with pytest.raises(ValueError, match="s.mp4"):
+        media_io.clip_frames(short, 80, 24, "start", 64, 48)

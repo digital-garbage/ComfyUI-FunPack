@@ -34,7 +34,7 @@ class FunPackTrainLora(io.ComfyNode):
                 io.Int.Input("grad_accumulation", default=1, min=1, max=256, tooltip="Steps added up before the weights change: a bigger batch for less memory."),
                 io.Int.Input("resolution", default=512, min=64, max=2048, step=32, tooltip="Training size in pixels per side. Each item is fitted to about this area, keeping its shape."),
                 io.Boolean.Input("aspect_buckets", default=False, tooltip="Keep each picture's own shape (a few size groups) instead of one shape for all. Not used for H3."),
-                io.Int.Input("frames", default=33, min=1, max=257, tooltip="Frames taken from each clip, for video models. H3 rounds to its own grid (17 x n + 5)."),
+                io.Int.Input("frames", default=33, min=1, max=1025, tooltip="Frames taken from each clip, for video models. H3 rounds to its own grid (17 x n + 5)."),
                 io.Float.Input("fps", default=0.0, min=0.0, max=120.0, step=0.5, tooltip="Frames per second to read the clips at. 0 uses each clip's own rate (H3: 24)."),
                 io.Combo.Input("start", options=["start", "middle"], default="start", tooltip="Where in a clip to take the frames from."),
                 io.String.Input("trigger", default="", tooltip="A word put at the start of every caption, to call the LoRA up later."),

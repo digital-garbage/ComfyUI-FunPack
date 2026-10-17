@@ -151,6 +151,8 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
         trigger = cfg["trigger"]
         texts = [captions.with_trigger(item["caption"], trigger) for item, _ in items]
 
+        if adapt and adapt.get("video"):
+            cfg = _fit_frames(cfg, adapt, items)
         videos, sounds, conds = [], [], []
         with torch.inference_mode():
             for number, ((item, path), size, text) in enumerate(zip(items, buckets, texts), 1):
@@ -232,6 +234,20 @@ def load_model(name, weight_dtype="default", compute_dtype="default"):
         model.set_model_compute_dtype(getattr(torch, _WEIGHT[compute_dtype]))
     model.cached_patcher_init = (lambda *args, **kwargs: model, ())      # the trainer's "fresh copy" is this model: no second read of the file
     return model
+
+
+def _fit_frames(cfg, adapt, items):
+    """Every clip is read for the same number of frames, so the shortest clip sets the limit: fewer than asked is used, and said."""
+    rate = cfg["fps"] or adapt.get("fps", 24)
+    shortest = min((media_io.frames_at(path, rate) for item, path in items if item["media_kind"] == "video"), default=None)
+    wanted = adapt["frames"](cfg["frames"])
+    if shortest is None or shortest >= wanted:
+        return cfg
+    fit = adapt["fit"](shortest) if adapt.get("fit") else shortest
+    if fit < 1:
+        raise ValueError(f"the shortest clip has only {shortest} frames at {rate:g} fps: too short to train on")
+    log.warning("FunPack LoRA training", f"the shortest clip gives {shortest} frames at {rate:g} fps, so every clip is read for {fit} frames and not {wanted}")
+    return {**cfg, "frames": fit}
 
 
 def _sizes(payload, conds):
