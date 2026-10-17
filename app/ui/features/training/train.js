@@ -48,7 +48,7 @@ export function trainStep({ app, session, go, ui }) {
     ui.redraw();
   } });
 
-  const advanced = c.collapsible.default({ label: "More settings", open: ui.advanced, body: c.region.stack({ gap: "sm", children: [
+  const advanced = c.collapsible.default({ label: "More settings", open: ui.advanced, onToggle: (o) => { ui.advanced = o; }, body: c.region.stack({ gap: "sm", children: [
     pickOf("algorithm", "Adapter", "LoRA is the common one.", opts(["LoRA", "LoHa", "LoKr", "OFT"])),
     pickOf("optimizer", "Optimizer", "How the weights are updated.", opts(["AdamW", "Adam", "SGD", "RMSprop"])),
     pickOf("loss", "Loss", "How the error is measured.", opts(["MSE", "L1", "Huber", "SmoothL1"])),

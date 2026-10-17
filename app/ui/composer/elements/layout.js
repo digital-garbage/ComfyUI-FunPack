@@ -481,8 +481,9 @@ define("workspace", "docked", ({
   };
 });
 
-define("collapsible", "default", ({ label, open = false, body, hint } = {}) => {
+define("collapsible", "default", ({ label, open = false, body, hint, onToggle } = {}) => {
   const node = el("details", { cls: "cx-collapsible", attrs: { open: open || undefined } });
+  if (onToggle) node.addEventListener("toggle", () => onToggle(node.open));
   const summary = el("summary", { cls: ["cx-collapsible-head", "cx-focusable"], children: [
     el("span", { cls: "cx-collapsible-label", text: label }),
     hint ? el("span", { cls: "cx-hint", text: hint }) : null,

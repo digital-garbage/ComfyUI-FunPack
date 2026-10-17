@@ -113,6 +113,24 @@ test("Train step: Start sends the settings and the pipeline to the plan and queu
   off();
 });
 
+test("Train step: More settings stays open while an option in it is changed", async () => {
+  const f = fake();
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Skip to training").click();
+  await wait(20);
+  const more = () => document.querySelector("details.cx-collapsible");
+  more().open = true;
+  more().dispatchEvent(new Event("toggle"));
+  const select = [...more().querySelectorAll("select")][0];
+  select.value = "LoHa";
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  await wait(40);
+  assert.equal(more().open, true);
+  off();
+});
+
 test("a refused plan shows the reason and starts nothing", async () => {
   const f = fake();
   f.api.trainPlan = async () => ({ prompt: {}, problems: ["the pipeline has no clip loader"] });
