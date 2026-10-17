@@ -45,3 +45,13 @@ def test_h265_is_tagged_hvc1_so_a_mac_browser_plays_it(tmp_path, monkeypatch):
     assert "H265" in nodes.encode(path, _clip(10), 24.0, encoder="gpu", codec="h265")
     with av.open(path) as f:
         assert f.streams.video[0].codec_context.name == "hevc" and f.streams.video[0].codec_tag == "hvc1"
+
+
+def test_nan_sound_is_dropped_and_the_video_still_saves(tmp_path):
+    import torch
+    path = str(tmp_path / "n.mp4")
+    wave = torch.zeros(1, 2, 44100 * 2)
+    wave[0, 0, 5] = float("nan")
+    nodes.encode(path, _clip(), 24.0, {"waveform": wave, "sample_rate": 44100}, None, encoder="cpu")
+    with av.open(path) as f:
+        assert f.streams.video[0].frames == 30 and not f.streams.audio

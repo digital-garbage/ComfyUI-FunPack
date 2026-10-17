@@ -59,6 +59,9 @@ def _write(path, frames, fps, audio, metadata, codec):
 def encode(path, frames, fps, audio=None, metadata=None, encoder="auto", codec="h264"):
     """-> which encoder wrote the file. `frames`: uint8 [T, H, W, 3]. GPU first unless told otherwise;
     a GPU attempt that fails leaves no half file and falls back to CPU H.264, unless "gpu" was demanded."""
+    if audio is not None and not bool(audio["waveform"].isfinite().all()):      # NaN/Inf sound (typically the model loaded in fp16): AAC refuses it, so the video is kept without it
+        audio = None
+        log.alert("FunPack Save Video", "The audio contains NaN/Inf values, so you are most likely using the wrong precision for this model (fp16?). The audio has been removed; the video was saved without it.")
     gpu = NVENC[codec]
     if encoder != "cpu" and gpu[0] in av.codecs_available:
         try:
