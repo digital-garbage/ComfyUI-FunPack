@@ -41,6 +41,14 @@ export function tagsStep({ app, session, go, ui, peek }) {
   const filter = c.segmented.sm({ label: "Show", options: FILTERS, value: ui.filter, onChange: (v) => { ui.filter = v; ui.limit = PAGE; ui.redraw(); } });
   const everyone = c.button.sm({ label: "Select all shown", tone: "ghost", onClick: () => { list.forEach((i) => sel.add(i.id)); ui.redraw(); } });
   const none = c.button.sm({ label: "Clear", tone: "ghost", onClick: () => { sel.clear(); ui.redraw(); } });
+  const drop = c.button.sm({ label: "Remove selected", tone: "danger", title: "Take the selected items out of this set. The files themselves stay where they are.", onClick: async () => {
+    if (!sel.size) { c.toast.info({ text: "Tick the items to remove first." }); return; }
+    const n = sel.size;
+    if (!(await c.modal.dialogue({ title: "Remove from set", message: `Remove ${n} item${n > 1 ? "s" : ""} from "${session.name}"? The files themselves are not deleted.`, tone: "danger", confirmLabel: "Remove" }).result)) return;
+    session.edit((d) => { d.items = d.items.filter((i) => !sel.has(i.id)); });
+    sel.clear();
+    ui.redraw();
+  } });
 
   // --- bulk edits on the selected (or all, when nothing is selected)
   const tagBox = c.input.md({ label: "Tag", placeholder: "tag" });
@@ -78,7 +86,7 @@ export function tagsStep({ app, session, go, ui, peek }) {
     ] }),
     c.group.default({ label: "Automatic tagging", rows: [autoTag({ app, session, ui })] }),
     c.group.default({ label: "Tags in this set", hint: "Click one to show only the items that have it. The x removes it from all.", rows: [cloudEl] }),
-    c.toolbar.default({ items: [filter, count], trailing: [everyone, none] }),
+    c.toolbar.default({ items: [filter, count], trailing: [everyone, none, drop] }),
     bar,
     grid, more,
     c.toolbar.default({ items: [], trailing: [c.button.md({ label: "Back", tone: "ghost", onClick: () => go("data") }), c.button.md({ label: "Next: train", tone: "primary", onClick: () => go("train") })] }),

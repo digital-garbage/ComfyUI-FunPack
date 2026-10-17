@@ -231,3 +231,22 @@ test("rated results are added with the captions the server built, and changing w
   assert.equal(added[1][0].caption, "a red fox 35mm");
   off();
 });
+
+test("Tags step: Remove selected takes the ticked items out of the set and saves", async () => {
+  const f = fake();
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Next: tags").click();
+  await wait(20);
+  document.querySelector(".cx-captioned-pick").click();
+  click("Remove selected").click();
+  await wait(40);
+  const yes = [...document.querySelectorAll("button")].filter((b) => b.textContent.trim() === "Remove").pop();
+  yes.click();
+  await wait(700);
+  const saved = f.calls.filter((c) => c[0] === "save").pop();
+  assert.equal(saved[2].items.length, 1);
+  assert.equal(saved[2].items[0].id, "cccccccccccc");
+  off();
+});
