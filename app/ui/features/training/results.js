@@ -5,7 +5,7 @@ import { clock, fmt, monitor } from "./train.js";
 const STATES = { done: "Finished", error: "Failed", stopped: "Stopped", training: "Running" };
 
 export function resultsStep({ app, ui }) {
-  const runs = ui.runs;
+  const runs = ui.runs.filter((r) => !(ui.run.active && r.run === ui.run.runId));      // the run going on is shown above, not a second time from its old record
   const live = c.region.stack({ gap: "md", children: [monitor(ui)].filter(Boolean) });      // the run going on now, redrawn on its own
   ui.monitorBox = live;
   if (!runs.length) return ui.run.shown ? live : c.emptyState.default({ title: "No runs yet", hint: "A run you start in the Train step is kept here, with its loss graph." });

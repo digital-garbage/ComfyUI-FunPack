@@ -33,7 +33,7 @@ export default {
       advanced: false, runs: [], chosenRun: "", record: null,
       run: { shown: false, active: false, state: "idle", loss: [], smooth: [], step: 0, total: 0, elapsed: 0, message: "", error: "", lora: "", before: "", runId: "", paused: null },
       previews: [], holdPause: false, awaitStart: false, peek: (item) => peek(item),
-      pause: () => pause(), resume: () => launch(ui.run.runId), restore: (id) => { ui.run.loss = []; return launch(id); }, previewNow: () => previewNow(),
+      pause: () => pause(), resume: () => launch(ui.run.runId), restore: (id) => { ui.run.loss = []; ui.run.runId = id; return launch(id); }, previewNow: () => previewNow(),
       monitorBox: null, redraw: () => draw(), pollTaggers: () => pollTaggers(true), loadRecord: (id) => loadRecord(id), loadRuns: () => loadRuns(),
       start: () => start(), stop: () => stop(),
       /** Ask for the frame counts of clips not known yet; `then` runs when new numbers arrived. */
