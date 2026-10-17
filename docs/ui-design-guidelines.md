@@ -17,7 +17,7 @@ How FunPack looks and behaves, and why. Read this before you add a screen, a set
 Only the kit styles anything: `app/ui/composer/` (tokens, internals, elements). A feature builds with kit elements and names no colour, size or class.
 
 - A rule test fails the build if kit code parses content as markup or compiles code (`tools/kit_lint` `KIT_RULES`).
-- The same scanner is run over module `ui.js` files with stricter rules (`MODULE_RULES`): no inline style, no `classList`, no `document`, no raw hex colour, no `px` size.
+- The same scanner is run over module `ui.js` files (the running app does not load them) with stricter rules (`MODULE_RULES`): no inline style, no `classList`, no `document`, no raw hex colour, no `px` size.
 - A few older features touch `document` or add `fp-` classes in `shell/frame.css`. Do not copy them. New work uses the kit, and if the kit lacks the element, add the element (see [Adding an element](ui-kit-reference.md#adding-an-element)).
 
 ## Tokens

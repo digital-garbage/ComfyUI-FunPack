@@ -337,7 +337,7 @@ export function setup({ values, on, shell }) {
 
 A module's `ui.js` gets **no element factory and no DOM**. It cannot style, build or inject anything: `tools/kit_lint` fails the build on inline styles, class changes, `document`, `window`, `globalThis`, `innerHTML`, hardcoded colours or pixel sizes, stylesheets and `eval`. The settings panel is drawn for it from the declaration.
 
-Be aware that `ui.js` is only loaded by `mountAll` in `shell/panels.js`, which the catalogue and the tests call. The running app (`boot.js`) does not call it, and no shipped module has a `ui.js`. Anything a person needs to see in the app is a setting, or a [UI feature](writing-a-ui-feature.md).
+**The running app ignores `ui.js` on purpose.** `boot.js` never calls `mountAll`; only the catalogue and the tests do, and no shipped module has a `ui.js`. A module does not get to draw anything. It declares what it wants in `SETTINGS` (type, `ui` hint, range, hint text) and the UI kit builds the control from that declaration. Anything else a person needs to see in the app is a [UI feature](writing-a-ui-feature.md), which is app code and not a module. Do not add a `ui.js`.
 
 ## Before you open a pull request
 

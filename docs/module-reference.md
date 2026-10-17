@@ -10,7 +10,7 @@ Read by `core/registry.py` from the module's `__init__.py` (the `FIELDS` table).
 |---|---|---|---|
 | `ID` | `str` | none | Required, non-empty. Unique across modules (a second claimant is left out and said). Keep it free of `.`: a fault is traced back to a module from its hook key `funpack.<id>`. |
 | `TITLE` | `str` | none | Required, non-empty. |
-| `MOUNT` | `str` | `""` | Required and non-empty when the module has `SETTINGS` or a `ui.js`. |
+| `MOUNT` | `str` | `""` | Required and non-empty when the module has `SETTINGS` (or a `ui.js`, which the app does not load). |
 | `SETTINGS` | `dict` | `{}` | `{key: setting}`. Must be a dict. |
 | `STAGE` | `str` | `"sampling"` | One of `load`, `conditioning`, `latent`, `guidance`, `sampling`, `post`. |
 | `CATEGORY` | `str` | `""` | `""` or one of `continuity`, `guidance`, `conditioning`, `sampling`, `post`, `system`. Empty shows under "Other". |
@@ -183,5 +183,5 @@ Most used:
 | `/funpack/` | the app (`index.html`) |
 | `/funpack/api/modules` | the manifest (`?traits=a,b` narrows to a model) |
 | `/funpack/api/m/<id>/...` | a module's own routes |
-| `/funpack/modules/<group>/<name>/ui.js` | a module's `ui.js`. Only `.js` is served from `modules/`. |
+| `/funpack/modules/<group>/<name>/ui.js` | a module's `ui.js`. Only `.js` is served from `modules/`. The app does not load it. |
 | `/funpack/app/...` | the app. Allowed types: `.js .css .html .woff2 .svg`. |
