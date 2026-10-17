@@ -8,7 +8,7 @@
 
 import { composer } from "../composer/composer.js";
 import { fetchManifest } from "../shell/manifest.js";
-import { build } from "../shell/layout.js";
+import { build } from "../shell/frame.js";
 import { offered, _reset } from "../shell/mounts.js";
 
 const root = document.querySelector("#app");
