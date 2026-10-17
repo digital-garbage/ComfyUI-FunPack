@@ -23,3 +23,4 @@ import "./wheel.js";
 import "./stage.js";
 import "./chart.js";
 import "./tags.js";
+import "./captioned.js";

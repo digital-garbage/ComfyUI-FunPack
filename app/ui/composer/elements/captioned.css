@@ -1,0 +1,31 @@
+/* Captioned media: a preview with its tag editor. cell = picture over tags (grids); side = picture beside tags (one at a time). */
+.cx-captioned {
+  display: flex; gap: var(--sp-4); min-width: 0;
+  padding: var(--sp-3); border: var(--bw) solid var(--line); border-radius: var(--r-4); background: var(--elev-1);
+}
+.cx-captioned.cx-on { border-color: var(--accent); background: var(--accent-soft); }
+.cx-captioned-cell { flex-direction: column; }
+.cx-captioned-side { flex-direction: row; align-items: flex-start; }
+.cx-captioned-view {
+  position: relative; display: grid; place-items: center; flex: none; padding: 0; overflow: hidden;
+  border: 0; border-radius: var(--r-3); background: var(--elev-2); cursor: pointer;
+}
+.cx-captioned-cell .cx-captioned-view { width: 100%; aspect-ratio: 4 / 3; }
+.cx-captioned-side .cx-captioned-view { width: calc(var(--sp-11) * 5); aspect-ratio: 4 / 3; }
+.cx-captioned-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cx-captioned-glyph { color: var(--muted); font-size: var(--fs-2); }
+.cx-captioned-play {
+  position: absolute; right: var(--sp-3); bottom: var(--sp-3); padding: 0 var(--sp-3);
+  border-radius: var(--r-pill); background: var(--elev-2); color: var(--text); font-size: var(--fs-7);
+}
+.cx-captioned-body { display: flex; flex-direction: column; flex: 1 1 auto; gap: var(--sp-3); min-width: 0; }
+.cx-captioned-head { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
+.cx-captioned-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-6); color: var(--text); }
+.cx-captioned-badge {
+  flex: none; padding: 0 var(--sp-3); border: var(--bw) solid var(--line); border-radius: var(--r-pill);
+  font-size: var(--fs-7); color: var(--muted); white-space: nowrap;
+}
+.cx-captioned-good { color: var(--good); border-color: var(--good); }
+.cx-captioned-bad { color: var(--danger); border-color: var(--danger); }
+.cx-captioned-warn { color: var(--warn); border-color: var(--warn); }
+.cx-captioned-pick { flex: none; }

@@ -36,6 +36,7 @@ save.destroy();
 | `stage.js` | `stage` |
 | `chart.js` | `chart` |
 | `tags.js` | `tags` |
+| `captioned.js` | `captioned` |
 | `status.js` | `banner`, `chip`, `dot`, `dropzone`, `emptyState`, `inlineError`, `progress`, `skeleton`, `spinner`, `toast` |
 | `modal.js` | `modal` |
 | `popover.js` | `autocomplete`, `menu`, `popover`, `splitButton`, `tooltip` |
@@ -144,13 +145,14 @@ Variants are listed after the group. Props shown are the ones every use needs; t
 
 All overlays use the portal, the z-ladder and the dismiss stack.
 
-### Charts and tags
+### Charts, tags and captioned media
 
 | Element | Variants | Main props |
 |---|---|---|
 | `chart` | `line` | `series` (`{ name, values }` or `{ name, points: [{x, y}] }`, plus `tone` `accent`/`good`/`warn`/`muted`, `faint` for a raw noisy line under a smoothed one, `dashed`), `xLabel`, `yLabel`, `height` (`sm`, `md`, `lg`), `logY`, `empty`, `label`. Points that are not numbers are skipped; long series are cut to a few hundred drawn points keeping highs and lows. Hover reads the nearest values. Methods `setSeries`, `setEmpty`. |
 | `tags` | `editor` | `value` (list of strings), `suggestions`, `placeholder`, `label`, `maxTags`, `onChange(list)`. Enter or comma adds, Backspace on an empty box removes the last, chips drag to reorder, Tab takes the first suggestion. Methods `get`, `setValue` (does not call `onChange`), `focus`. |
 | `tags` | `cloud` | `items` (`{ tag, count }`), `selected`, `onPick(tag)`, `onRemove(tag)` (adds a remove button), `label`, `empty`. Draws the first 300 and says how many more. Methods `setItems`, `setSelected`. |
+| `captioned` | `cell`, `side` | A picture or clip with its caption: preview, name, a badge and a tag editor in one card. `cell` stacks the picture over the tags (for grids), `side` puts them side by side (for one at a time). `src` (a picture URL; a clip passes its still), `kind` (`image` or `video`, a clip gets a play mark), `title`, `caption` (comma separated), `badge` and `tone` (`neutral`, `good`, `bad`, `warn`), `selected` and `onSelect(on)` (adds a tick box), `suggestions`, `onChange(caption)`, `onOpen()` (makes the picture a button). Methods `getCaption`, `setCaption` (does not call `onChange`), `setSelected`, `setBadge`, `setPicture`, `focus`. |
 
 ### Media and time
 

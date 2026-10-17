@@ -238,3 +238,42 @@ test("a cloud tag is shown as text, never as markup", () => {
   assert.equal(t.node.querySelector("img"), null);
   assert.ok(t.node.textContent.includes(evil));
 });
+
+
+// --- captioned ---------------------------------------------------------------
+
+test("a captioned card shows its tags as chips and hands the whole line back after an edit", () => {
+  const heard = [];
+  const c = mount(composer.captioned.cell({ title: "a.png", caption: "red, blue, red", onChange: (v) => heard.push(v) }));
+  assert.deepEqual([...c.node.querySelectorAll(".cx-tag-text")].map((n) => n.textContent), ["red", "blue"]);
+  c.node.querySelector(".cx-tag-x").click();
+  assert.deepEqual(heard, ["blue"]);
+  c.setCaption("one, two");
+  assert.equal(c.getCaption(), "one, two");
+  assert.deepEqual(heard, ["blue"], "setCaption does not call onChange");
+});
+
+test("a captioned card takes its picture and caption as text, selects, opens and marks a clip", () => {
+  const events = [];
+  const c = mount(composer.captioned.side({ title: "<b>x</b>", caption: "<i>t</i>", kind: "video", src: "/thumb.png", badge: "Clip", tone: "good",
+    onSelect: (on) => events.push(["select", on]), onOpen: () => events.push(["open"]) }));
+  assert.equal(c.node.querySelector(".cx-captioned-title").textContent, "<b>x</b>");
+  assert.equal(c.node.querySelector(".cx-tag-text").textContent, "<i>t</i>");
+  assert.ok(c.node.querySelector(".cx-captioned-play"), "a clip is marked");
+  assert.equal(c.node.querySelector(".cx-captioned-badge").textContent, "Clip");
+  c.node.querySelector(".cx-captioned-view").click();
+  const tick = c.node.querySelector(".cx-captioned-pick");
+  tick.checked = true; tick.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.deepEqual(events, [["open"], ["select", true]]);
+  assert.ok(c.node.classList.contains("cx-on"));
+  c.setSelected(false);
+  assert.ok(!c.node.classList.contains("cx-on"));
+});
+
+test("a picture that fails to load is replaced by a glyph, and no picture shows one", () => {
+  const c = mount(composer.captioned.cell({ title: "a", src: "/gone.png" }));
+  c.node.querySelector("img").dispatchEvent(new window.Event("error"));
+  assert.ok(c.node.querySelector(".cx-captioned-glyph") && !c.node.querySelector("img"));
+  const none = mount(composer.captioned.cell({ title: "b" }));
+  assert.ok(none.node.querySelector(".cx-captioned-glyph"));
+});
