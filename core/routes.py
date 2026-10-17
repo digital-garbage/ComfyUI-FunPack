@@ -882,12 +882,15 @@ def register(routes, prefix=None):
         body = await _body(req)
         if body is None:
             return web.json_response({"problems": ["expected a project object"]}, status=400)
-        if projects.get(pid) is None:
+        before = projects.get(pid)
+        if before is None:
             return web.json_response({"problems": ["no such project"]}, status=404)
         # The id comes from the URL, never the body: a PUT that names its own
         # target is a PUT that can write over a different project.
-        return web.json_response(
-            projects.save(projects.Project.from_dict({**body, "id": pid})).to_dict())
+        saved = projects.save(projects.Project.from_dict({**body, "id": pid}))
+        if saved.num_frames_per_scene != before.num_frames_per_scene:           # the Log keeps it: a length that changed on its own can be placed beside what else was going on
+            log.info("projects", f"{saved.name or pid}: length changed from {before.num_frames_per_scene} to {saved.num_frames_per_scene} frames (saved from the page)")
+        return web.json_response(saved.to_dict())
 
     @routes.delete(P + "/api/projects/{pid}")
     async def _projects_delete(req):
