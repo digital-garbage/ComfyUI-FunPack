@@ -50,10 +50,10 @@ def unsupported_dtypes(model, weight_dtype, compute_dtype):
 
 
 def fp32_over_bf16(weight_dtype, compute_dtype, stored=None):
-    """Why fp32 compute does not suit bf16 weights, or None. The activations go fp32 but the norm layers keep their bf16
-    weights (torch: "Mismatch dtype between input and weight"), so the model runs mixed. Allowed, but said."""
+    """Why fp32 compute over bf16 weights is noisy, or None. It runs, but the activations go fp32 while the norm layers keep
+    their bf16 weights, so torch warns "Mismatch dtype between input and weight" and skips its fused layer norm. Allowed, but said."""
     if compute_dtype == "fp32" and (weight_dtype == "bf16" or (weight_dtype == "default" and stored == "bf16")):
-        return "compute dtype fp32 does not run with bf16 weights (mixed precision in the norm layers)"
+        return "compute dtype fp32 over bf16 weights runs, but torch will warn about a dtype mismatch in the norm layers (no fused kernel, a little slower)"
 
 
 _SHORT = {"bfloat16": "bf16", "float16": "fp16", "float32": "fp32"}
