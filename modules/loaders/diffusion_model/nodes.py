@@ -251,7 +251,7 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
             notes.append(line)
         mixed = fp32_over_bf16(weight_dtype, compute_dtype, stored)
         if mixed:
-            log.alert("FunPack Diffusion Model Loader", f"{mixed}. Set compute to default or bf16 to avoid it.")
+            log.alert("FunPack Diffusion Model Loader", mixed)
             notes.append(mixed)
         dtype = dtype_of(compute_dtype)
         if dtype is not None and hasattr(model, "set_model_compute_dtype"):
