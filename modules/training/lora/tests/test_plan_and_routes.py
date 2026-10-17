@@ -57,7 +57,9 @@ def test_routes_make_and_edit_a_set(tmp_path, monkeypatch):
     from aiohttp.test_utils import TestClient, TestServer
     from core import config
     from modules.training import lora
+    from core import addons
     monkeypatch.setattr(config, "TRAINING_DIR", tmp_path)
+    monkeypatch.setattr(addons, "enabled", lambda _id: False)       # the add-on is off: a plan is refused
 
     async def go():
         app, table = web.Application(), web.RouteTableDef()

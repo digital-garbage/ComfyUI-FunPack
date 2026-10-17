@@ -169,6 +169,11 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
         else:
             payload = [{"samples": v} for v in videos]
 
+        import gc
+        del vae, clip, audio_vae                          # their work is done; the trainer copies the model next and needs the room
+        gc.collect()
+        mm.unload_all_models()
+        mm.soft_empty_cache()
         losses = _loss_hook(nt, cfg["steps"] * cfg["grad_accumulation"])
         jobs.say("Training", "training")
         shim = adapt["shims"]() if adapt and adapt.get("shims") else _nothing()
