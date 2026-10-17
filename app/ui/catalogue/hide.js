@@ -22,7 +22,7 @@ async function render(theme) {
   const section = el("section", "cat-section");
   section.append(el("h2", null, "What a user sees"));
   section.append(el("p", null,
-    "Six modules go in: one valid, five broken in different ways. Everything below " +
+    "Five modules go in: one valid, four broken in different ways. Everything below " +
     "is the whole of what reaches the screen."));
 
   const pane = el("section", "cat-pane");

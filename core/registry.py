@@ -132,12 +132,6 @@ def scan(root: Optional[Path] = None, package: Optional[str] = None) -> Registry
             # live in packages too.
             continue
 
-        # A module's ui.js is optional, and the default is none: most modules
-        # are a settings schema and no JavaScript at all.
-        ui_file = feature / "ui.js"
-        if ui_file.is_file():
-            raw["ui"] = f"{config.UI_PREFIX}/modules/{'/'.join(rel.parts)}/ui.js"
-
         try:
             registry.add(validate(raw, source=dotted))
         except SchemaError as exc:

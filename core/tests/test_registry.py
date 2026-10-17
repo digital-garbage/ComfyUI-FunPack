@@ -51,15 +51,6 @@ def test_every_failure_says_why(scanned):
         assert where and why, f"failure recorded with no reason: {where!r} {why!r}"
 
 
-def test_a_module_with_a_ui_file_advertises_its_path(scanned):
-    assert scanned.specs["audio_clock"].ui.endswith("/modules/timing/audio_clock/ui.js")
-
-
-def test_a_module_without_a_ui_file_advertises_none(scanned):
-    # The default is no JavaScript at all: a settings schema is a whole module.
-    assert scanned.specs["momentum"].ui is None
-
-
 def test_defaults_are_available_without_any_ui(scanned):
     assert scanned.specs["audio_clock"].defaults() == {
         "enabled": True, "strength": 0.65, "mode": "beat",

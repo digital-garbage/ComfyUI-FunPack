@@ -9,11 +9,9 @@ MODULES_DIR = ROOT / "modules"
 
 UI_PREFIX = "/funpack"
 
-# Extension allowlists per served root. These are rule 1 ("a module never styles
-# anything") enforced at the transport layer: a .css inside modules/ is a 404, so
-# a module cannot ship a stylesheet even if someone writes one.
+# Extension allowlist for the served app. modules/ is never served: a module is
+# Python and a settings declaration, and draws nothing.
 APP_EXTS = frozenset({".js", ".css", ".html", ".woff2", ".svg"})
-MODULE_EXTS = frozenset({".js"})
 
 # Where projects are kept. Inside the pack rather than ComfyUI's output tree: a
 # project is FunPack's own state, and clearing outputs must not take a user's

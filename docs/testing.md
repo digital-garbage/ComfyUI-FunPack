@@ -66,7 +66,7 @@ See [Adding an element](ui-kit-reference.md#adding-an-element). The registry-wid
 
 ### `tools/kit_lint`
 
-`scan.js` applies `MODULE_RULES` to module `ui.js` files and `KIT_RULES` to the kit. `rule_no_module_styling.test.js` runs it and also runs the files in `composer/tests/lint_fixtures`, so a rule that stops catching its own bad example fails. It is a discipline check, not a security boundary.
+`scan.js` applies `KIT_RULES` to the kit and the shell: no markup parsing, no `eval`. `rule_kit_never_interprets.test.js` runs it and checks it still catches a bad example. It is a discipline check, not a security boundary.
 
 ## Looking at it
 

@@ -337,7 +337,7 @@ def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
     # region would make it invent one -- which then shows up as "hidden", i.e.
     # a module reported as broken for having nothing to show.
     mount = announcement.get("mount")
-    renders = bool(announcement.get("settings")) or bool(announcement.get("ui"))
+    renders = bool(announcement.get("settings"))
     if renders and (not isinstance(mount, str) or not mount.strip()):
         raise SchemaError(
             f"module {announcement.get('id') or source or '?'} has settings to render "
@@ -401,7 +401,6 @@ def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
         before=_ids("before"),
         stage=stage,
         category=category,
-        ui=announcement.get("ui"),
         status=status,
         source=source,
     )

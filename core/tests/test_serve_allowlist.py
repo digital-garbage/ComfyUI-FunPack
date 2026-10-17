@@ -1,8 +1,4 @@
-"""Rule 1, transport half: a module cannot ship anything but JavaScript.
-
-These exist before there is any UI to enforce them against — the wall goes up
-first, so nothing can be built that leans on a hole in it.
-"""
+"""Rule 1, transport half: only the app is served; modules/ never is."""
 
 import pytest
 
@@ -23,7 +19,6 @@ def tree(tmp_path):
 
     mods = tmp_path / "modules"
     (mods / "timing" / "audio_clock").mkdir(parents=True)
-    (mods / "timing" / "audio_clock" / "ui.js").write_text("export default {};")
     (mods / "timing" / "audio_clock" / "sneaky.css").write_text(".x{color:red}")
     (mods / "timing" / "audio_clock" / "panel.html").write_text("<b>no</b>")
     (mods / "timing" / "audio_clock" / "module.py").write_text("x = 1")
@@ -36,34 +31,7 @@ def app_get(tree, rel):
     return serve(tree / "app", rel, config.APP_EXTS)
 
 
-def module_get(tree, rel):
-    return serve(tree / "modules", rel, config.MODULE_EXTS)
-
-
 # --- the allowlist ---------------------------------------------------------
-
-def test_module_js_is_served(tree):
-    r = module_get(tree, "timing/audio_clock/ui.js")
-    assert r.status == 200
-    assert b"export default" in r.body
-
-
-def test_module_css_is_not_served(tree):
-    assert module_get(tree, "timing/audio_clock/sneaky.css").status == 404
-
-
-def test_module_html_is_not_served(tree):
-    assert module_get(tree, "timing/audio_clock/panel.html").status == 404
-
-
-def test_module_python_is_not_served(tree):
-    assert module_get(tree, "timing/audio_clock/module.py").status == 404
-
-
-def test_module_directory_is_not_an_index(tree):
-    # modules/ has no .html in its allowlist, so a directory is nothing to serve.
-    assert module_get(tree, "timing/audio_clock").status == 404
-
 
 def test_app_serves_its_own_css_and_fonts(tree):
     assert app_get(tree, "composer/composer.css").status == 200
@@ -87,10 +55,6 @@ def test_traversal_is_forbidden(tree, rel):
     assert app_get(tree, rel).status == 403
 
 
-def test_traversal_out_of_modules_is_forbidden(tree):
-    assert module_get(tree, "../app/boot.js").status == 403
-
-
 def test_null_byte_is_forbidden(tree):
     assert app_get(tree, "boot.js\x00.png").status == 403
 
@@ -106,7 +70,6 @@ def test_symlink_escape_is_forbidden(tree):
 def test_js_is_explicitly_text_javascript(tree):
     # With ES modules a text/plain guess makes the browser refuse the module.
     assert app_get(tree, "boot.js").content_type == "text/javascript"
-    assert module_get(tree, "timing/audio_clock/ui.js").content_type == "text/javascript"
 
 
 def test_known_types_are_explicit():

@@ -81,7 +81,6 @@ class ModuleSpec:
     # Hook points a sampler must offer before this module can run. Empty means
     # "any sampler will do", the same narrowing rule traits follow.
     hooks: List[str] = field(default_factory=list)
-    ui: Optional[str] = None                            # served path to its ui.js
     status: str = "experimental"                        # or "proven"
     source: str = ""                                    # dotted import path
 
@@ -109,7 +108,6 @@ class ModuleSpec:
             "before": list(self.before),
             "stage": self.stage,
             "category": self.category,
-            "ui": self.ui,
             "status": self.status,
             "nodes": [_node_id(n) for n in self.nodes],
         }
