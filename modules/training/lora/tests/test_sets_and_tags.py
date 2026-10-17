@@ -87,3 +87,11 @@ def test_buckets_share_one_shape_or_follow_the_picture():
     assert w % 32 == 0 and h % 32 == 0 and w > h
     assert len(set(media_io.buckets_for([1.0, 2.0, 0.5], 512, 64, True))) == 1
     assert len(set(media_io.buckets_for([1.0, 2.0, 0.5], 512, 64, False))) == 3
+
+
+def test_a_rated_prompt_becomes_a_caption_with_shortcuts_expanded_and_variables_dropped():
+    assert rated.prompt_caption("  a fox\n runs $hero  home ", lambda t: t.replace("fox", "red fox")) == "a red fox runs home"
+    assert rated.prompt_caption("", lambda t: "x") == "" and rated.prompt_caption(None) == ""
+    media = {"filename": "a.mp4", "subfolder": "", "type": "output"}
+    doc = {"id": "p", "scenes": [{"id": "s", "rating": "10", "rated": {"text": "a $hero fox"}}], "scene_renders": {"s": {"media": media}}}
+    assert rated.scan([doc], lambda t: t.replace("fox", "red fox"))[0]["caption"] == "a red fox"

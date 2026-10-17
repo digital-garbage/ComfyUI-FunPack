@@ -13,8 +13,8 @@ export const RATED = [
 const ALL_RATED = ["liked", "disliked", "bad_composition", "bad_image"];
 
 export const binEntry = (m) => ({ src: { kind: "bin", id: m.id }, media_kind: m.kind === "video" ? "video" : "image", label: "own", name: m.name });
-export const ratedEntry = (r) => ({ src: { kind: "output", type: r.media.type, subfolder: r.media.subfolder, filename: r.media.filename },
-  media_kind: /\.(mp4|webm|mov|mkv|avi)$/i.test(r.media.filename) ? "video" : "image", label: r.label, caption: r.caption || "", name: r.media.filename });
+export const ratedEntry = (r, withCaption = true) => ({ src: { kind: "output", type: r.media.type, subfolder: r.media.subfolder, filename: r.media.filename },
+  media_kind: /\.(mp4|webm|mov|mkv|avi)$/i.test(r.media.filename) ? "video" : "image", label: r.label, caption: withCaption ? r.caption || "" : "", name: r.media.filename });
 
 const countsLine = (counts) => Object.keys(LABEL_WORDS).filter((k) => counts[k]).map((k) => `${counts[k]} ${LABEL_WORDS[k].toLowerCase()}`).join(", ");
 
@@ -74,13 +74,14 @@ export function dataStep({ app, session, go, ui }) {
   const ratedCount = () => want().reduce((a, k) => a + ((ui.rated.counts || {})[k] || 0), 0);
   const ratedNote = c.text.sm({ text: "" });
   const addRated = c.button.sm({ label: "Add these results", tone: "primary", disabled: true, onClick: async () => {
-    await added((ui.rated.results || []).filter((r) => want().includes(r.label)).map(ratedEntry), "your results");
+    await added((ui.rated.results || []).filter((r) => want().includes(r.label)).map((r) => ratedEntry(r, ui.useCaptions)), "your results");
   } });
   const showRated = () => {
     const n = ratedCount();
     ratedNote.setText(n ? `${n} rated result${n > 1 ? "s" : ""} found in your projects.` : "None found yet. Rate results in your projects and they appear here.");
     addRated.node.disabled = !n || !open;
   };
+  const useCaptions = c.toggle.default({ label: "Use their prompts as captions", hint: "The prompt each result was made from, with shortcuts expanded. Variables, prefixes and postfixes are left out.", checked: ui.useCaptions, onChange: (v) => { ui.useCaptions = v; } });
   const ratedSel = c.segmented.sm({ label: "Which results", options: RATED, value: ui.ratedKind, onChange: (v) => { ui.ratedKind = v; showRated(); } });
   showRated();
 
@@ -93,7 +94,7 @@ export function dataStep({ app, session, go, ui }) {
     status,
     c.group.default({ label: "Drop files", rows: [dropzone] }),
     c.group.default({ label: "Choose in your Bin", rows: [gallery, c.toolbar.default({ items: [pickedNote], trailing: [addBin] })] }),
-    c.group.default({ label: "Choose your own results", hint: "Results you rated in your projects. Liked ones teach what you want; disliked ones can teach what to avoid.", rows: [ratedSel, c.toolbar.default({ items: [ratedNote], trailing: [addRated] })] }),
+    c.group.default({ label: "Choose your own results", hint: "Results you rated in your projects. Liked ones teach what you want; disliked ones can teach what to avoid.", rows: [ratedSel, useCaptions, c.toolbar.default({ items: [ratedNote], trailing: [addRated] })] }),
     next,
   ] });
 }

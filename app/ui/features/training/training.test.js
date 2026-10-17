@@ -153,3 +153,24 @@ test("a run in progress draws its loss, then reports the saved file; Stop asks t
   assert.ok(text().includes("cats_lora.safetensors"));
   off();
 });
+
+test("rated results are added with their prompts as captions, or without when that is switched off", async () => {
+  const f = fake();
+  f.api.trainRated = async () => ({ results: [{ label: "liked", media: { type: "output", subfolder: "", filename: "x.mp4" }, caption: "a red fox" }], counts: { liked: 1 } });
+  const added = [];
+  f.api.trainAdd = async (name, entries) => { added.push(entries); return { set: f.doc, added: entries.length }; };
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Add these results").click();
+  await wait(40);
+  assert.equal(added[0][0].caption, "a red fox");
+  assert.equal(added[0][0].media_kind, "video");
+  const sw = [...document.querySelectorAll("input[role=switch]")].find((i) => /prompts as captions/.test(i.closest(".cx-toggle-row").textContent));
+  sw.click();
+  await wait(10);
+  click("Add these results").click();
+  await wait(40);
+  assert.equal(added[1][0].caption, "");
+  off();
+});

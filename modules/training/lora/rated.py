@@ -8,6 +8,8 @@ one disliked, and "Disliked: bad image" / "Disliked: bad composition" say which 
 
 from __future__ import annotations
 
+import re
+
 from .store import kind_of
 
 FORGET = "-Just forget it-"
@@ -37,8 +39,26 @@ def _media(raw):
     return {"filename": name, "subfolder": str(raw.get("subfolder") or ""), "type": raw.get("type") if raw.get("type") in ("output", "temp", "input") else "output"}
 
 
-def scan(projects) -> list[dict]:
-    """[{project, project_name, label, rating, media, caption}] for every rated result in these project documents."""
+_VARIABLE = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
+
+
+def prompt_caption(text, expand=None) -> str:
+    """A rated result's prompt as a caption: the scene's own words with shortcuts expanded, and nothing else.
+
+    `expand(text)` is the app's shortcut expansion. `$variables` are dropped, not filled in, and the project's
+    anchor and postfix were never part of the stored text, so they are not here either.
+    """
+    text = " ".join(str(text or "").split())
+    if expand and text:
+        text = " ".join(str(expand(text)).split())
+    return " ".join(_VARIABLE.sub(" ", text).split())
+
+
+def scan(projects, expand=None) -> list[dict]:
+    """[{project, project_name, label, rating, media, caption}] for every rated result in these project documents.
+
+    The caption is the prompt that made the result, run through `prompt_caption` with `expand`.
+    """
     out, seen = [], set()
 
     def take(doc, rating, media, caption):
@@ -50,7 +70,7 @@ def scan(projects) -> list[dict]:
             return
         seen.add(key)
         out.append({"project": doc.get("id", ""), "project_name": doc.get("name", ""), "label": label, "rating": str(rating),
-                    "media": media, "caption": " ".join(str(caption or "").split())})
+                    "media": media, "caption": prompt_caption(caption, expand)})
 
     for doc in projects:
         if not isinstance(doc, dict):

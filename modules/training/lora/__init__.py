@@ -26,7 +26,7 @@ def _bad(web, why, status=400):
 
 
 def routes(table, base, web):
-    from ..._core import addons, projects
+    from ..._core import addons, projects, shortcuts
 
     def enabled():
         return addons.enabled("lora_training")
@@ -107,7 +107,7 @@ def routes(table, base, web):
             project = projects.get(entry["id"])
             if project is not None:
                 docs.append({**project.to_dict(), "id": entry["id"]})
-        found = rated.scan(docs)
+        found = rated.scan(docs, lambda t: shortcuts.expand(t, seed=1))
         want = req.rel_url.query.get("label")
         if want:
             found = [r for r in found if r["label"] == want]
