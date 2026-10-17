@@ -118,8 +118,9 @@ export function dataStep({ app, session, go, ui }) {
     c.field.default({ label: "Training set", hint: "A saved list of what to learn from.", control: c.region.stack({ gap: "sm", children: [setSelect, c.toolbar.default({ items: [make, drop] })] }) }),
     status,
     c.group.default({ label: "Drop files", rows: [dropzone] }),
-    c.group.default({ label: "Choose in your Bin", rows: [gallery, c.toolbar.default({ items: [pickedNote], trailing: [addBin] })] }),
-    c.group.default({ label: "Choose your own results", hint: "Results you rated in your projects. Liked ones teach what you want; disliked ones can teach what to avoid.", rows: [ratedSel, ratedGallery, include, c.toolbar.default({ items: [ratedNote], trailing: [addRated] })] }),
+    c.collapsible.default({ label: "Choose in your Bin", open: ui.openBin, onToggle: (o) => { ui.openBin = o; }, body: c.region.stack({ gap: "sm", children: [gallery, c.toolbar.default({ items: [pickedNote], trailing: [addBin] })] }) }),
+    c.collapsible.default({ label: "Choose your own results", hint: "Results you rated in your projects. Liked ones teach what you want; disliked ones can teach what to avoid.", open: ui.openRated, onToggle: (o) => { ui.openRated = o; },
+      body: c.region.stack({ gap: "sm", children: [ratedSel, ratedGallery, include, c.toolbar.default({ items: [ratedNote], trailing: [addRated] })] }) }),
     next,
   ] });
 }
