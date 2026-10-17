@@ -97,6 +97,7 @@ I express my deepest gratitude to:
 - the authors of the papers behind the sampling modules: ALG (arXiv 2506.08456), FreeSliders (2511.00103), Decisiveness (2510.01184), momentum (2602.20360), "Pulling The REINS" (2606.17257) and STAS (2603.17825);
 - [OpenCut](https://github.com/opencut-app/opencut-classic) — the in-browser non-linear video editor whose UI and interaction patterns inspired FunPack's timeline studio;
 - [Inter](https://github.com/rsms/inter) and IBM Plex Mono — the fonts of the app (SIL Open Font License; copies in `app/assets/fonts`);
+- [musubi-tuner](https://github.com/kohya-ss/musubi-tuner) by kohya-ss (Apache-2.0) — the LoRA training add-on's block swap (a number of transformer blocks kept in system memory) and its per-block checkpointing follow its MiniMax H3 training recipe;
 - ComfyUI and its whole community.
 
 Without all of you, this project would've been impossible.
