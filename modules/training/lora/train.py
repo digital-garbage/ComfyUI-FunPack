@@ -114,7 +114,29 @@ def _sound_latent(path, kind, seconds, audio_vae, adapt):
 
 
 def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = "") -> str:
-    """Train and save. Returns the saved LoRA's file name inside the loras folder. Raises with a reason a person can act on."""
+    """Train and save. Returns the saved LoRA's file name inside the loras folder. Raises with a reason a person can act on.
+
+    A failed run lets go of everything it held: ComfyUI keeps the error (and so every frame's locals, the model copy
+    among them) alive after it is shown, and the next run then starts with that much of the card already taken.
+    """
+    import gc
+    import traceback
+    import torch
+    import comfy.model_management as mm
+    gc.collect()                                          # what an earlier failed run left behind in reference cycles
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    _card("at the start of the run", mm, torch)
+    try:
+        return _run(model, clip, vae, audio_vae, set_name, cfg, prompt_id)
+    except BaseException as exc:
+        traceback.clear_frames(exc.__traceback__)
+        model = clip = vae = audio_vae = None
+        _free_the_card(mm, torch)
+        raise
+
+
+def _run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = "") -> str:
     import torch
     import comfy.model_management as mm
     import comfy_extras.nodes_train as nt
