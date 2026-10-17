@@ -30,7 +30,8 @@ export function mount({ dom, setFooter, close }) {
     const ok = await composer.modal.dialogue({ title: "Delete file", tone: "danger", confirmLabel: "Delete",
       message: `Delete “${f.filename}” from ${where === "output" ? "your saved files" : "the temp folder"} for good? It does not go to the trash.` }).result;
     if (!ok) return;
-    try { await erase(f); } catch (err) { return composer.toast.warn({ text: `Could not delete it: ${err.message}` }); }
+    setFooter({ note: payload.path || "", actions: [composer.button.md({ label: "Deleting…", disabled: true })] });
+    try { await erase(f); } catch (err) { footer(); return composer.toast.warn({ text: `Could not delete it: ${err.message}` }); }
     viewer.close();
     composer.toast.good({ text: `Deleted ${f.filename}.` });
     load();
@@ -48,10 +49,21 @@ export function mount({ dom, setFooter, close }) {
     const ok = await composer.modal.dialogue({ title: `Delete ${list.length} files`, tone: "danger", confirmLabel: `Delete ${list.length}`,
       message: `Delete ${list.length} files from ${where === "output" ? "your saved files" : "the temp folder"} for good? They do not go to the trash.` }).result;
     if (!ok) return;
-    let gone = 0, why = "";
-    for (const f of list) {
-      try { await erase(f); gone += 1; } catch (err) { why = err.message; }
-    }
+    let gone = 0, done = 0, why = "";
+    const bar = composer.progress.bar({ value: 0, max: list.length, label: "Deleting" });
+    const say = composer.text.md({ text: "" });
+    const tick = () => { bar.setValue(done); say.setText(`Deleting ${done} of ${list.length}…`); };
+    tick();
+    content.set([composer.region.stack({ gap: "md", children: [say, bar] })]);
+    setFooter({ note: payload.path || "", actions: [composer.button.md({ label: "Deleting…", disabled: true })] });
+    const queue = [...list];
+    const worker = async () => {                // a few at a time: one request per file, and a network drive answers slowly
+      for (let f = queue.shift(); f; f = queue.shift()) {
+        try { await erase(f); gone += 1; } catch (err) { why = err.message; }
+        done += 1; tick();
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
     picked.clear();
     selecting = false;
     (why ? composer.toast.warn : composer.toast.good)({ text: why ? `Deleted ${gone} of ${list.length}. ${why}` : `Deleted ${gone} files.` });
