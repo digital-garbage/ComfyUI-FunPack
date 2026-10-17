@@ -21,7 +21,7 @@ const MAX = 12;
 /** The full circle, opened wherever the pointer is. */
 export const FULL = {
   size: 240,
-  rIn: 42, rOut: 117, rLabel: 84,
+  rIn: 42, rOut: 117, rLabel: 80,
   hub: { r: 42, x: 0, y: 0 },
 };
 
@@ -185,6 +185,7 @@ function buildWheel({ items, onPick, onClose, geo, recentre, cancelOnCentre, cls
   hub.style.height = `${geo.hub.r * 2}px`;
   hub.style.left = `${size / 2 + geo.hub.x}px`;
   hub.style.top = `${size / 2 + geo.hub.y}px`;
+  if (cancelOnCentre) hub.addEventListener("click", () => commit(-1));      // the cross is a button too, not only a release target
   node.append(hub);
 
   function highlight(index) {
@@ -219,6 +220,7 @@ function buildWheel({ items, onPick, onClose, geo, recentre, cancelOnCentre, cls
     armed = false;
     const index = at(event);
     if (index >= 0) commit(index);
+    else if (cancelOnCentre && Math.hypot(event.clientX - centre.x - geo.hub.x, event.clientY - centre.y - geo.hub.y) < geo.hub.r) commit(-1);       // let go over the cross
   };
 
   // An edge panel is pinned to an edge, so the edge moving is the one thing it

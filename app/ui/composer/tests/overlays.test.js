@@ -295,6 +295,14 @@ test("the click that opens the wheel does not also pick", () => {
   w.destroy();
 });
 
+test("clicking the cross closes the wheel without picking", () => {
+  let picked = null, why = null;
+  const w = composer.wheel.picker({ items: [{ label: "A" }, { label: "B" }], onPick: (i) => { picked = i; }, onClose: (r) => { why = r; }, x: 400, y: 300 });
+  w.node.querySelector(".cx-wheel-hub").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  assert.equal(why, "cancelled");
+  assert.equal(picked, null);
+});
+
 test("a pointer beyond the rim points at nothing", () => {
   // The lit wedge IS the region that picks the item. Highlighting one from
   // outside the ring promises a pick that release would not deliver.

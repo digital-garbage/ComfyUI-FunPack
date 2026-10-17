@@ -24,7 +24,7 @@
 .cx-wheel-item {
   position: absolute; transform: translate(-50%, -50%);
   display: flex; flex-direction: column; align-items: center; gap: 2px;
-  min-width: 52px; padding: var(--sp-1) var(--sp-2);
+  width: 70px; padding: var(--sp-1) 0; line-height: 1.15; overflow-wrap: anywhere;   /* long names wrap inside the ring instead of sticking out of it */
   background: transparent; border: 0; color: var(--muted);
   font-size: var(--fs-7); cursor: pointer; text-align: center;
   transition: color var(--dur-1) var(--ease-standard),

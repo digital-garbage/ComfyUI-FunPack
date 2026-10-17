@@ -22,6 +22,16 @@ export default {
       offer(app, { id: "models", label: "Models & Pipeline", icon: "▤", when: () => Boolean(app.openSettings), run: () => app.openSettings("models") }),
       offer(app, { id: "engine", label: "Engine settings", icon: "⚙", when: () => Boolean(app.openSettings), run: () => app.openSettings("engine") }),
     ];
+    const p = () => app.project, pipe = () => app.pipeline;
+    const say = (text) => c.toast.info({ text });
+    const toggles = [
+      offer(app, { id: "all-off", icon: "⊘", get label() { return pipe().allOff() ? "Enable enhancements" : "Disable all enhancements"; },
+        when: () => Boolean(pipe() && pipe().allOff && pipe().setAllOff),
+        run: async () => { const on = !pipe().allOff(); await pipe().setAllOff(on); say(on ? "All enhancements disabled: runs are plain" : "Enhancements enabled again"); } }),
+      offer(app, { id: "fix-seed", icon: "⚄", get label() { return p().pref("random_seed", true) === false ? "Fresh seed each run" : "Fix the seed"; },
+        when: () => Boolean(p() && p().pref),
+        run: () => { const fix = p().pref("random_seed", true) !== false; p().setPref("random_seed", !fix); say(fix ? "Seed fixed: the seed node's own number is used" : "A fresh seed on every Generate"); } }),
+    ];
     const onDown = (e) => {
       if (e.button !== 1 || wheel || document.querySelector('[role="dialog"]')) return;       // nothing behind a dialog
       e.preventDefault();
@@ -42,6 +52,6 @@ export default {
         c.checklist.default({ label: "On the wheel", items: offered, values: prefs.enabled || offered.map((o) => o.value), onChange: (v) => set({ enabled: v }) })] });
     });
     document.addEventListener("mousedown", onDown, true);
-    return () => { document.removeEventListener("mousedown", onDown, true); if (wheel) wheel.close && wheel.close(); offs.forEach((f) => f()); };
+    return () => { document.removeEventListener("mousedown", onDown, true); if (wheel) wheel.close && wheel.close(); offs.concat(toggles).forEach((f) => f()); };
   },
 };
