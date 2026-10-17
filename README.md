@@ -53,6 +53,8 @@ FunPack uses your existing ComfyUI/PyTorch install.
 
 Start with [How to start generating with FunPack](docs/how-to-start.md). The app also has a guided tour: Help -> Start tour.
 
+Writing a module or a UI feature? Start with [Developing FunPack](docs/README.md).
+
 Version history is available in [CHANGELOG.md](CHANGELOG.md).
 
 ## Classic FunPack (4.x)
