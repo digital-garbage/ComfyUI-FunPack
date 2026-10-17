@@ -20,10 +20,10 @@ export function resultsStep({ app, ui }) {
   ].filter(Boolean).join(" · ") : "";
   const s = (rec && rec.settings) || {};
   const settings = rec ? ["algorithm", "rank", "learning_rate", "optimizer", "loss", "resolution", "batch_size", "use"].filter((k) => s[k] !== undefined).map((k) => `${k.replace("_", " ")} ${s[k]}`).join(" · ") : "";
-  return c.region.stack({ gap: "md", children: [
+  return c.region.stack({ gap: "lg", children: [
     live,
     list,
-    c.group.default({ label: chosen.name || "LoRA", rows: [c.region.stack({ gap: "md", children: [
+    c.group.default({ label: chosen.name || "LoRA", rows: [c.region.stack({ gap: "lg", children: [
       c.hint.default({ text: facts }),
       rec && rec.lora ? c.banner.info({ text: `File: ${rec.lora}. Pick it in a LoRA loader to use it.` }) : null,
       rec && rec.error ? c.inlineError.default({ text: rec.error }) : null,

@@ -75,7 +75,7 @@ export function trainStep({ app, session, go, ui }) {
   const previewNow = c.button.lg({ label: "Preview now", tone: "neutral", title: "Make a picture or clip with the LoRA so far", onClick: () => ui.previewNow() });
   previewNow.node.hidden = !(run.state === "paused" && run.paused && run.paused.preview);
 
-  return c.region.stack({ gap: "md", children: [
+  return c.region.stack({ gap: "lg", children: [
     c.hint.default({ text: used.length ? `${used.length} item${used.length > 1 ? "s" : ""} will be learned from (${caption} with tags). ${used.length - caption ? "Items without a caption are learned from with only the prefix and postfix." : ""}`.trim()
       : `"${session.name}" is empty. Add media in the Data step.` }),
     hasAudioVae ? c.banner.info({ text: "This pipeline has an audio VAE, so it trains picture and sound together (H3). One clip at a time, so training is slow and needs a lot of memory. musubi-tuner's H3 recipe: learning rate 0.0001, rank 16, batch 1, bf16, gradient checkpointing, plus block swap. Its plain flow-matching loss undoes the few-step quality of a distilled (turbo) model; musubi adds a training adapter, guidance loss or teacher matching for that, which this trainer does not have." }) : null,
@@ -102,9 +102,9 @@ export function notice(ui, go) {
   const run = ui.run;
   if (!run.shown) return null;
   const where = c.button.sm({ label: "Open Results", tone: "ghost", onClick: () => go("results") });
-  if (run.error) return c.region.stack({ gap: "sm", children: [c.inlineError.default({ text: run.error }), where] });
+  if (run.error) return c.region.stack({ gap: "md", children: [c.inlineError.default({ text: run.error }), where] });
   const text = { done: "Training finished.", stopped: "Training stopped.", paused: `Training paused at step ${run.step || 0}.`, previewing: "Making a preview." }[run.state] || "Training started.";
-  return c.region.stack({ gap: "sm", children: [c.banner.info({ text: `${text} Check graphs and previews in the Results tab.` }), where] });
+  return c.region.stack({ gap: "md", children: [c.banner.info({ text: `${text} Check graphs and previews in the Results tab.` }), where] });
 }
 
 /** Progress, the message, and the loss graph. */
@@ -122,7 +122,7 @@ export function monitor(ui) {
     items: ui.previews.map((p) => ({ id: p.id, label: `Step ${p.step}`, thumb: stillOf(p), badge: p.media_kind })),
     onActivate: (item) => ui.peek(ui.previews.find((p) => p.id === item.id)) }) : null;
   const heading = { done: "Finished", error: "Stopped with an error", stopped: "Stopped", paused: `Paused at step ${done}`, previewing: `Making a preview at step ${done}` }[run.state] || "Training";
-  return c.group.default({ label: heading, rows: [c.region.stack({ gap: "md", children: [
+  return c.group.default({ label: heading, rows: [c.region.stack({ gap: "lg", children: [
     run.state === "previewing" ? c.progress.indeterminate({ label: "Making a preview" }) : null,
     run.state === "training" ? c.progress.bar({ value: done, max: total, label: "Training progress" }) : run.state === "queued" ? c.progress.indeterminate({ label: "Waiting for ComfyUI" }) : null,
     lines.length ? c.hint.default({ text: lines.join(" · ") }) : null,

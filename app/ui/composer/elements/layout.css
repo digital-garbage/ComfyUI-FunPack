@@ -58,6 +58,9 @@
 /* A group of plain fields (label, control, hint) needs air between them and from the edges; a group of settings rows brings its own. */
 .cx-group-rows:has(> .cx-field) { display: flex; flex-direction: column; gap: var(--sp-7); padding: var(--sp-8); }
 .cx-group:has(> .cx-group-rows > .cx-field) { gap: var(--sp-5); }
+/* A group holding one stack of mixed things (text, a banner, a chart, buttons) gets the same room from its edges. */
+.cx-group-rows:has(> .cx-stack) { padding: var(--sp-8); }
+.cx-group:has(> .cx-group-rows > .cx-stack) { gap: var(--sp-5); }
 
 .cx-panel {
   border: var(--bw) solid var(--line); border-radius: var(--r-4);
