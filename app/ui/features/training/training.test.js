@@ -386,3 +386,27 @@ test("Restore and continue is offered for a failed run, goes away while it carri
   assert.ok(click("Restore and continue") && !click("Restore and continue").hidden, "offered again after the next failure");
   off();
 });
+
+test("Train step: the preset picked stays picked when a setting is changed after it, and is not sent to the trainer", async () => {
+  const f = fake();
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Skip to training").click();
+  await wait(20);
+  click("Thorough").click();
+  await wait(20);
+  const rank = [...document.querySelectorAll(".cx-field")].find((x) => x.textContent.startsWith("Rank")).querySelector("input");
+  rank.value = "8";
+  rank.dispatchEvent(new window.Event("change", { bubbles: true }));
+  await wait(700);
+  const picked = [...document.querySelectorAll("[aria-pressed=true], [aria-checked=true], .is-active, .on")].map((e) => e.textContent.trim());
+  assert.ok(picked.includes("Thorough") && !picked.includes("Quick check"), `picked: ${picked}`);
+  click("Start training").click();
+  await wait(60);
+  const plan = f.calls.find((c) => c[0] === "plan");
+  assert.equal(plan[2].rank, 8);
+  assert.equal(plan[2].steps, 2000);
+  assert.ok(!("preset" in plan[2]));
+  off();
+});

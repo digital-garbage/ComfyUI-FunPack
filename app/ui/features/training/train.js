@@ -38,9 +38,9 @@ export function trainStep({ app, session, go, ui }) {
   const caption = used.filter((i) => i.caption.trim()).length;
 
   const name = c.field.default({ label: "Name of the LoRA", hint: "Saved in your loras folder. An earlier file is never overwritten.", control: c.input.md({ label: "Name", value: v.name, onCommit: set("name") }) });
-  const preset = c.segmented.sm({ label: "Preset", options: PRESETS, value: (PRESETS.find((p) => p.steps === v.steps && p.rank === v.rank) || {}).value, onChange: (key) => {
+  const preset = c.segmented.sm({ label: "Preset", options: PRESETS, value: v.preset || (PRESETS.find((p) => p.steps === v.steps && p.rank === v.rank) || {}).value, onChange: (key) => {
     const p = PRESETS.find((x) => x.value === key);
-    session.edit((d) => { d.settings = { ...(d.settings || {}), steps: p.steps, rank: p.rank }; });
+    session.edit((d) => { d.settings = { ...(d.settings || {}), preset: key, steps: p.steps, rank: p.rank }; });
     ui.redraw();
   } });
 

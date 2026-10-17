@@ -113,6 +113,7 @@ export default {
       if (!doc) return;
       await session.flush();
       const settings = settingsOf(doc);
+      delete settings.preset;                         // a starting point the person picked, not a setting of the trainer
       settings.trigger = doc.trigger || "";
       settings.postfix = doc.postfix || "";
       if (resumeId) settings.resume = resumeId;
