@@ -95,7 +95,7 @@ export default {
     const note = c.text.sm({ text: "" });
     const drop = c.dropzone.default({ label: "Drop or choose files", hint: "images, clips, audio",
       onFiles: async (files) => {
-        try { const r = await api.uploadMedia(files, (i, n, name) => note.setText(`Uploading ${i + 1}/${n}: ${name}`)); (r.problems || []).forEach(tell); await refresh(); } catch (err) { tell(err.message); }
+        try { const r = await api.uploadMedia(files, (i, n, name, f) => note.setText(`Uploading ${i + 1}/${n}: ${name}${f ? ` ${f >= 1 ? "(saving...)" : `${Math.round(f * 100)}%`}` : ""}`)); (r.problems || []).forEach(tell); await refresh(); } catch (err) { tell(err.message); }
         note.setText("");
       } });
     const seg = (label, options, key) => c.segmented.sm({ label, options, value: show[key], onChange: (v) => { show[key] = v; draw(true); } });

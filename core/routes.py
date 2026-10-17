@@ -971,9 +971,20 @@ def register(routes, prefix=None):
                 break
             if not part.filename:
                 continue  # a form field that is not a file
-            data = await part.read(decode=False)
+            # 1MB reads (the default is 8KB: thousands of loop turns for a clip) and a
+            # stop at the limit, so a too-big file is refused without buffering all of it
+            buf = bytearray()
+            while True:
+                chunk = await part.read_chunk(1024 * 1024)
+                if not chunk:
+                    break
+                buf += chunk
+                if len(buf) > media.MAX_BYTES:
+                    break
+            data = bytes(buf)
             try:
-                saved.append(media.save_upload(part.filename, data))
+                # to_thread: writing a big clip must not stall the one event loop ComfyUI has
+                saved.append(await asyncio.to_thread(media.save_upload, part.filename, data))
             except ValueError as exc:
                 problems.append(f"{part.filename}: {exc}")
         if not saved and problems:

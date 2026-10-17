@@ -19,6 +19,20 @@ export async function call(method, path, body) {
   return payload;
 }
 
+/** POST a form. fetch cannot report bytes sent, so use XHR where it exists (browsers) and fetch elsewhere.
+ *  Resolves a fetch-like {ok, status, json()}. */
+function post(url, form, onFraction) {
+  if (typeof XMLHttpRequest === "undefined") return fetch(url, { method: "POST", body: form });
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onFraction(e.loaded / e.total); };
+    xhr.onerror = () => reject(new Error("the upload was interrupted"));
+    xhr.onload = () => resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, statusText: xhr.statusText, json: async () => JSON.parse(xhr.responseText) });
+    xhr.send(form);
+  });
+}
+
 export const api = {
   pipeline: () => call("GET", "/api/pipeline"),
   editPipeline: (body) => call("POST", "/api/pipeline", body),
@@ -167,15 +181,16 @@ export const api = {
   deleteMedia: (id) => call("DELETE", `/api/media/${encodeURIComponent(id)}`),
   /** Upload files as media, one request each so one refusal (too big, wrong type) does not sink the rest.
    *  Resolves {media, problems}. Not JSON, so not through call(). */
-  async uploadMedia(files, onProgress) {       // onProgress(done, total, name) before each file
+  async uploadMedia(files, onProgress) {       // onProgress(done, total, name, fraction) before each file, then again as bytes go out
     const out = { media: [], problems: [] };
     let done = 0;
     for (const file of files) {
-      if (onProgress) onProgress(done++, files.length, file.name);
+      const at = done++;
+      if (onProgress) onProgress(at, files.length, file.name, 0);
       const form = new FormData();
       form.append("file", file, file.name);
       try {
-        const res = await fetch(`${BASE}/api/media`, { method: "POST", body: form });
+        const res = await post(`${BASE}/api/media`, form, (f) => onProgress && onProgress(at, files.length, file.name, f));
         const payload = await res.json().catch(() => null);
         if (!res.ok) throw Object.assign(new Error(why(res, payload)), { status: res.status });      // status: a refusal (4xx) is not an outage
         out.media.push(...(payload.media || [])); out.problems.push(...(payload.problems || []));
