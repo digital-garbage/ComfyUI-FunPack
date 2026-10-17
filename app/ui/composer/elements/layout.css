@@ -55,6 +55,8 @@
   padding-inline: var(--sp-6) var(--sp-4);
   container-type: inline-size;
 }
+/* A group of plain fields (label, control, hint) needs air between them and from the edges; a group of settings rows brings its own. */
+.cx-group-rows:has(> .cx-field) { display: flex; flex-direction: column; gap: var(--sp-6); padding-block: var(--sp-6); }
 
 .cx-panel {
   border: var(--bw) solid var(--line); border-radius: var(--r-4);
