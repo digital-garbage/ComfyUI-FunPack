@@ -66,7 +66,7 @@ See [Adding an element](ui-kit-reference.md#adding-an-element). The registry-wid
 
 ### `tools/kit_lint`
 
-`scan.js` applies `KIT_RULES` to the kit and the shell: no markup parsing, no `eval`. `rule_kit_never_interprets.test.js` runs it and checks it still catches a bad example. It is a discipline check, not a security boundary.
+`scan.js` applies `KIT_RULES` to the kit and the shell: no markup parsing, no `eval`. `rule_kit_never_interprets.test.js` runs it and checks it still catches a bad example. `FEATURE_RULES` run over every UI feature (`rule_features_use_the_kit.test.js`): no `document`, `window`, style, class names, literal colours or sizes. It is a discipline check, not a security boundary.
 
 ## Looking at it
 

@@ -17,8 +17,9 @@ How FunPack looks and behaves, and why. Read this before you add a screen, a set
 Only the kit styles anything: `app/ui/composer/` (tokens, internals, elements). A feature builds with kit elements and names no colour, size or class.
 
 - A rule test fails the build if kit code parses content as markup or compiles code (`tools/kit_lint` `KIT_RULES`).
+- A second rule test (`FEATURE_RULES`) runs over every file in `app/ui/features/`: no `document` or `window`, no `style`, `classList` or `className`, no `cx-` or `fp-` class names, no literal colour or pixel size, no markup, no `eval`. A feature that needs the page asks `app.dom`; one that needs a look the kit lacks gets a new kit element (see [Adding an element](ui-kit-reference.md#adding-an-element)).
 - Modules ship no JavaScript, so there is nothing to scan in `modules/`.
-- A few older features touch `document` or add `fp-` classes in `shell/frame.css`. Do not copy them. New work uses the kit, and if the kit lacks the element, add the element (see [Adding an element](ui-kit-reference.md#adding-an-element)).
+- The page frame (`app/ui/frame.css`, `shell/frame.js`) uses `fp-` classes and belongs to the shell. Frame-level behaviour, such as the timeline auto-hide (`shell/peek.js`), lives in `shell/`; the feature is only a button that calls it.
 
 ## Tokens
 
@@ -140,7 +141,7 @@ Dex's rule is plain words. Apply it to every label, hint, error and toast.
 
 ## Checklist before you open a pull request
 
-- [ ] Only kit elements; no literal colour, size or z-index; no `document` in new feature code.
+- [ ] Only kit elements; no literal colour, size or z-index; no `document` or `window` in feature code (use `app.dom`).
 - [ ] Every string is passed as text. A name containing `<b>` shows as `<b>`.
 - [ ] Looks right in dark and light, at a narrow width, with reduced motion on.
 - [ ] Usable by keyboard alone; Escape closes the top overlay only.

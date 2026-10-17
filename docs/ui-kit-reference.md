@@ -20,23 +20,25 @@ save.destroy();
 - **Content is text.** Every string prop goes through `asText` (`internals/text.js`) and is shown as text, never parsed. A prop that would take HTML does not exist.
 - **Containers take handles**, not nodes or markup: `panel.default({ children: [handleA, handleB] })`.
 - **Unknown elements throw `UnknownElement`.** `composer.button.huge(...)` fails with the list of known variants. A feature that asks for an element that does not exist therefore hides itself instead of showing something approximate.
-- The kit's own CSS classes start with `cx-`. App frame classes start with `fp-` (`shell/frame.css`). Never use either from a feature.
+- The kit's own CSS classes start with `cx-`. App frame classes start with `fp-` (`app/ui/frame.css`) and belong to the shell. Never use either from a feature; the feature rule test fails on a `cx-` or `fp-` string.
 
 ### Where each group lives
 
 | File | Groups |
 |---|---|
-| `text.js` | `brand`, `code`, `header`, `hint`, `label`, `text` |
+| `text.js` | `brand`, `code`, `header`, `hint` (`low: true` hides it first when the row runs short), `label`, `text` |
 | `button.js` | `button`, `buttonGroup`, `iconButton` |
 | `input.js` | `filterList`, `input`, `number`, `search`, `stepper`, `textarea` |
 | `choice.js` | `checkbox`, `checkboxRow`, `checklist`, `color`, `radioGroup`, `segmented`, `select`, `toggle` |
 | `slider.js` | `range`, `slider` |
-| `layout.js` | `actionBar`, `collapsible`, `field`, `frame`, `group`, `list`, `panel`, `region`, `settingsRow`, `sidebar`, `splitPane`, `tabs`, `toolbar`, `workspace` |
+| `layout.js` | `actionBar`, `card`, `collapsible`, `field`, `frame`, `group`, `hero`, `list`, `panel`, `region`, `settingsRow`, `sidebar`, `splitPane`, `tabs`, `toolbar`, `workspace` |
+| `tile.js` | `grid`, `tile` |
+| `stage.js` | `stage` |
 | `status.js` | `banner`, `chip`, `dot`, `dropzone`, `emptyState`, `inlineError`, `progress`, `skeleton`, `spinner`, `toast` |
 | `modal.js` | `modal` |
 | `popover.js` | `autocomplete`, `menu`, `popover`, `splitButton`, `tooltip` |
-| `floating.js` | `floating`, `overlay`, `slideOver` |
-| `gallery.js` | `gallery`, `ruler`, `viewer` |
+| `floating.js` | `floating` (`window`, `corner`), `overlay`, `slideOver` |
+| `gallery.js` | `gallery`, `ruler`, `viewer` (`media`, `cover`) |
 | `track.js`, `nle.js` | `track`, `timeline` |
 | `wheel.js` | `wheel` |
 
@@ -73,7 +75,7 @@ Variants are listed after the group. Props shown are the ones every use needs; t
 | `textarea` | `md` | `value`, `rows`, `label` |
 | `number` | `md` | `value`, `min`, `max`, `step`, `precision`, `unit`, `snap`, `onChange`, `disabled`, `id`, `label` |
 | `stepper` | `md` | `value`, `min`, `max`, `step`, `label` |
-| `slider` | `md`, `sm`, `readout`, `macro` | `value`, `min`, `max`, `step`, `label`, `onChange`, `onCommit` |
+| `slider` | `md`, `sm`, `readout`, `macro` | `value`, `min`, `max`, `step`, `label`, `onChange`, `onCommit`. `.setMax(n)` changes the top and redraws the fill. |
 | `range` | `md` | `from`, `to`, `min`, `max`, `step`, `label` |
 | `toggle` | `default` | `label`, `hint`, `checked`, `onChange` |
 | `checkbox` | `default` | `checked`, `label` |
@@ -101,7 +103,11 @@ Variants are listed after the group. Props shown are the ones every use needs; t
 | `panel` | `default`, `zone` | A titled card. |
 | `group` | `default` | A quiet sub-block. |
 | `field` | `default`, `row` | A label, a control and a hint. |
-| `settingsRow` | `default` | The row the Settings window uses. |
+| `settingsRow` | `default` | The row the Settings window uses. `.setHint(text)` changes its hint later. |
+| `card` | `default` | `children`. Related fields on one rounded card (a `region.stack` with a background). |
+| `grid` | `pair`, `cards` | `children`. Tiles in two columns, or as many columns as fit (at least 190 wide). |
+| `tile` | `action`, `node`, `add` | `title`, `sub`, `onClick`. `node` also takes `state` (`ready`, `needs`, `skipped`) and draws a dot. `add` is the dashed empty slot. |
+| `hero` | `default` | `title`, `hint`. The mark, a big title and one line (the top of About). |
 | `collapsible` | `default` | |
 | `tabs` | `underline`, `dock` | `value`, `tabs`. |
 | `sidebar` | `rail` | `value`, `items`. |
@@ -117,7 +123,7 @@ Variants are listed after the group. Props shown are the ones every use needs; t
 | `dot` | `default` | `tone`, `label` |
 | `inlineError` | `default` | `text` |
 | `toast` | `info`, `good`, `warn`, `danger` | `text`, `action`, `duration` (default 3200 ms) |
-| `progress` | `bar`, `indeterminate` | `value`, `max`, `label` |
+| `progress` | `bar`, `indeterminate`, `inline` | `value`, `max`, `label`. `inline` is a short bar with a line of text beside it: `.setValue`, `.setText`, `.setHidden`. |
 | `spinner` | `md`, `sm` | `label` |
 | `skeleton` | `line`, `block`, `grid` | `count`, `label` |
 | `emptyState` | `default` | `icon`, `title`, `hint` |
@@ -130,7 +136,7 @@ Variants are listed after the group. Props shown are the ones every use needs; t
 | `popover` | `anchored` | Positioned by `internals/anchor.js`, flips at an edge. |
 | `menu` | `dropdown`, `context` | A context menu is anchored to a point, not an element. |
 | `tooltip` | `default` | |
-| `floating` | `window` | A draggable window (the Settings and Sampler windows). |
+| `floating` | `window`, `corner` | `window` is a draggable window (the Settings and Sampler windows). `corner` is a small button pinned inside the bottom-right corner of `anchor` (a handle or a node); it follows the box and calls `onGone` when the box leaves. |
 | `slideOver` | `md` | A panel that slides in from the side. |
 | `overlay` | `blocking` | `message`. Blocks the page while something runs. |
 
@@ -141,7 +147,8 @@ All overlays use the portal, the z-ladder and the dismiss stack.
 | Element | Variants | Main props |
 |---|---|---|
 | `gallery` | `adaptive`, `icons`, `list`, `rows`, `cards`, `strip` | `id`, `cols`, `items`. Density through `internals/density.js`. |
-| `viewer` | `media` | `src`, `empty` |
+| `viewer` | `media`, `cover` | `media`: `src`, `empty`; `.setLook({ transform, filter, fit, opacity })` changes how the picture is drawn (kept across sources). `cover` is a layer over its parent that shows a picture, clip or sound with a close button: `.show({ src, kind })`, `.close()`, `onClose`. |
+| `stage` | `overlay` | A transparent layer over a picture holding text and pictures that can be dragged and resized. Gives data (`items`: position as 0..1, size in picture pixels, colours, text); `onMove(id, {x, y})` and `onResize(id, factor)` report numbers, never styles. `.fit(w, h)` sizes it to the picture inside its parent, `.setItems(items)` draws, `.busy` is true during a gesture. |
 | `ruler` | `default` | `label`, `total`, `marks` |
 | `track` | `default` | `label`, `pxPerSecond`, `playhead`, `selection`, `items` |
 | `timeline` | `stage` | `pxPerSecond`, `lanes`. Methods `setLanes`, `setPlayhead`, `setZoom`. |
@@ -180,6 +187,7 @@ Used by elements. A feature does not import them. They exist in `composer/intern
 |---|---|
 | `rule_content_is_data.test.js` | Every string prop of every demo is shown as text. |
 | `rule_unknown_element_hides.test.js` | Asking for a missing element throws and hides the feature. |
+| `rule_features_use_the_kit.test.js` | Every file in `app/ui/features/` passes `FEATURE_RULES` (no `document`, `window`, style, class names, literal colours or sizes). |
 | `rule_kit_never_interprets.test.js` | `tools/kit_lint` finds no markup parsing or `eval` in the kit and the shell, and still catches a bad example. |
 | `register.test.js` | Duplicate definitions are refused. |
 | `overlays.test.js`, `dismiss.test.js`, `zlayer.test.js`, `portal.test.js` | Layering, Escape and portal behaviour. |

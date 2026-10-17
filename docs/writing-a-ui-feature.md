@@ -109,7 +109,7 @@ The rest of the app loads normally in every case. This is the "hide, don't warn"
 
 The loader only undoes `host` children and `app.on` subscriptions, and only when `setup` throws. Everything else is yours, in the function `setup` returns:
 
-- `document` and `window` listeners, timers, `ResizeObserver`s;
+- listeners you added through `app.dom.onPage` / `onWindow` (each returns its off switch), timers;
 - entries you pushed onto `app` lists (see below), keys you bound, actions you offered;
 - classes you put on `<html>`;
 - overlays, popovers and modals you opened (`handle.destroy()` or `.close()`).
@@ -168,6 +168,9 @@ A small preference belongs on the **Editor** page instead: push a function that 
 | `generate`, `runner` | Starting runs. `runner.units(ids, times)` is set by the Generate feature. | `shell/generate.js` |
 | `api` | Every server call, one method each. Use it; do not call `fetch`. | `shell/api.js` |
 | `keys` | `bind("mod+z", fn)` returns an unbind. Return `false` to let the key through. Typing in a field is never intercepted. | `shell/keys.js` |
+| `dom` | The page, as a service. A feature never names `document` or `window`. `typingIn(node, only?)` (the caret is in a field inside `node`: skip a redraw), `focusOn(node)`, `holdsFocus(node)`, `blur()`, `onPage(type, fn, opts)` and `onWindow(...)` (each returns its off switch), `dialogOpen()`, `selectingIn(node)`, `download(url, name)`, `saveBlob(blob, name)`, `openTab(url)`, `pickFile(accept)` (a `File` or `null`), `length(kind, src)` (seconds, or `null`), `landmark(name)` (`menubar`, `main`, `zone:0`..`zone:3`, `button:<label>`), `body`. | `shell/dom.js` |
+| `peek` | The timeline auto-hide: `set(on)`. The behaviour changes the frame's layout, so it lives in the shell; `features/peek` is only its button. | `shell/peek.js` |
+| `monitor` | An object the preview fills: `look({ transform, filter, fit, opacity })` draws on the monitor's picture. Absent until the preview is up, so check it. | `features/preview` |
 | `dock` | Which of Assets, Preview, Properties show | `shell/dock.js` |
 | `theme` | `window.ComposerTheme` (`apply`, `get`, `resolved`) | `shell/theme.js` |
 | `maintenance` | Update, switch branch, restart. Ends in a page reload. | `shell/maintenance.js` |
@@ -198,6 +201,8 @@ A feature that adds to the app pushes onto one of these lists and removes its en
 
 To add a new list, add it in `boot.js` and name it in this table. Keep the entry shape small.
 
+A feature is handed a **copy** of `app`, so `app.thing = ...` inside `setup` is invisible to every other feature. To offer something, put an empty object or array on `app` in `boot.js` and fill that (`app.monitor.look = fn`, `app.mediaMenu.push(fn)`), and remove your entry in teardown. A feature that reads it checks it is there.
+
 ## Pairing with a backend module
 
 A feature that exists only because a backend module exists names it: `modules: ["continuity"]`. If the module is not installed or failed to load, the feature is not drawn. Pair the two ids in a test the way `core/tests/test_ui_module_ids.py` does: it fails the build when a feature names a module id that does not exist.
@@ -208,7 +213,8 @@ When the backend module offers routes, call them through `app.api` (add the meth
 
 - **Use kit elements.** `composer.button.md({ label, onClick })`. Every element returns a handle `{ node, destroy, ...setters }`. Put `handle.node` in the page and call `handle.destroy()` when done. Containers take **handles**, not nodes.
 - **Content is text.** Pass strings. The kit sets them as text, never as markup, and throws on anything else.
-- **Do not style.** No `style`, no new classes, no colours or pixel sizes. If the kit lacks what you need, add an element to the kit (see [UI kit reference](ui-kit-reference.md#adding-an-element)) and use that.
+- **Do not style, and do not touch the page.** No `style`, `classList`, `className`, `cx-` or `fp-` strings, colours or pixel sizes, and no `document` or `window`. `tools/kit_lint` `FEATURE_RULES` fails the build on all of them. Need the page (focus, a download, a file chooser, a document listener)? Ask `app.dom`. Need a look the kit lacks (a tile, a card, a layer over the picture)? Add an element to the kit (see [UI kit reference](ui-kit-reference.md#adding-an-element)) and use that; do not work around it.
+- **Frame-level behaviour belongs to the shell.** Something that rewrites the page frame itself (the timeline auto-hide) lives in `app/ui/shell/` and the feature is only its button.
 - **A redraw replaces content, not controls.** `region.stack` has `set(children)`; it keeps the caret in a field being typed in. Do not redraw while a field has focus (the Engine page skips redraws while typing).
 - **The screen is the truth.** Generate reads live UI state and never waits for saves. Autosave must not disturb typing. Do not cache generated content across requests.
 - **Per-browser preferences** (a collapsed section, the dock) go in `localStorage`, wrapped in `try`/`catch`, and the feature must work when storage throws. Anything that should follow a project goes in `app.project.setPref`.
@@ -224,13 +230,14 @@ Put `hub.test.js` (or `<name>.test.js`) beside the code. `npm test` finds every 
 - Use jsdom through `composer/tests/_dom.js` (`setupDom`, `teardownDom`, `fire`, `key`). jsdom has no layout, so anything that depends on measured size belongs in the browser, not here.
 - Load the feature through `loadFeatures` with a fake `app` that has only what `needs` names. That tests the real hiding rules too.
 - Test teardown: nothing left in `host`, no listener left in `app`.
+- Tests may use `document`; features may not. A feature that lists `dom` in `needs` gets `dom: createDom()` (from `shell/dom.js`) in the fake `app`.
 - Use real objects (a real `project` store, a real `composer`) over hand-made stand-ins where you can.
 
 ## Before you open a pull request
 
 - [ ] One folder under `app/ui/features/`, one line in `app/ui/modules.js`.
 - [ ] `needs` and `modules` name everything it depends on.
-- [ ] Built from kit elements only. No style, no raw HTML, no colour, no pixel size.
+- [ ] Built from kit elements only. No style, no raw HTML, no colour, no pixel size, no `document` or `window` (`FEATURE_RULES` checks).
 - [ ] Teardown removes every listener, timer, list entry and class.
 - [ ] A control that changes the output is visible and switchable in the app in the same change.
 - [ ] Works in light and dark, and with keyboard only.

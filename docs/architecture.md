@@ -87,10 +87,10 @@ There are three trust levels in the app code. Know which one you are writing.
 | You are writing | May style or build DOM? | Checked by |
 |---|---|---|
 | A **backend module's settings** (Python only) | No JavaScript at all. The kit draws the rows. | `core/schema.py`, `core/tests/test_shipped_hints.py` |
-| A **UI feature** in `app/ui/features/` | It builds with kit elements. A few features touch `document` or add `fp-` classes in `frame.css`; new work should not. | review; the kit rules are enforced on `composer/` and `shell/` |
-| The **kit** itself | Yes. It is the only place that styles. | `tools/kit_lint` `KIT_RULES`, tests in `composer/tests/` |
+| A **UI feature** in `app/ui/features/` | It builds with kit elements and reaches the page only through `app` (`app.dom`). No `document`, `window`, style, class or colour of its own. | `tools/kit_lint` `FEATURE_RULES`, `composer/tests/rule_features_use_the_kit.test.js` |
+| The **kit** and the **shell** (`app/ui/shell/`) | Yes. The kit is the only place that styles elements; the shell owns the page frame (`frame.css`) and is the other place that touches `document`. | `tools/kit_lint` `KIT_RULES`, tests in `composer/tests/` |
 
-Be exact about what the lint is. `tools/kit_lint` is a discipline check, not a security boundary. Modules run only in Python and are never served to the browser; first-party modules are reviewed.
+Be exact about what the lint is. `tools/kit_lint` is a discipline check, not a security boundary: it reads text, so it catches the accidental, not a determined bypass. Modules run only in Python and are never served to the browser; first-party modules are reviewed.
 
 ## Where things live
 
