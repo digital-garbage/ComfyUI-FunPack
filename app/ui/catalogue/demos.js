@@ -362,6 +362,12 @@ export const DEMOS = {
     { id: "2", icon: "▦", label: "Scene 2", badge: "2", start: 4, duration: 6, rating: "liked" },
     { id: "3", icon: "▦", label: "Scene 3", badge: "3", start: 10, duration: 3, excluded: true },
   ] },
+  "chart.line": { label: "Loss", xLabel: "step", yLabel: "loss", height: "md", series: [
+    { name: "loss", faint: true, values: [0.9, 0.55, 0.7, 0.4, 0.5, 0.3, 0.35, 0.22, 0.3, 0.18, 0.2, 0.15] },
+    { name: "smoothed", tone: "good", values: [0.9, 0.72, 0.68, 0.58, 0.52, 0.44, 0.38, 0.33, 0.3, 0.26, 0.23, 0.2] },
+  ], empty: "No training yet" },
+  "tags.editor": { value: ["rooftop", "dusk", "city lights"], suggestions: ["rooftop", "rain", "dusk", "dawn", "neon sign"], placeholder: "Add a tag", label: "Tags" },
+  "tags.cloud": { items: [{ tag: "rooftop", count: 42 }, { tag: "dusk", count: 17 }, { tag: "rain", count: 9 }, { tag: "neon sign", count: 3 }], selected: ["dusk"], label: "Tag counts", empty: "No tags yet", onPick: () => {}, onRemove: () => {} },
   "wheel.half": { edge: "right", items: [
     { icon: "✂", label: "Split" }, { icon: "⧉", label: "Duplicate" },
     { icon: "★", label: "Rate" }, { icon: "◐", label: "Anchor" },

@@ -39,6 +39,8 @@ const CONTENT_KEYS = new Set([
   // string here. It was not on this list, so none of them were ever asked to
   // prove it comes back as text.
   "empty",
+  // chart axis names, and the word a tag chip shows.
+  "xLabel", "yLabel", "tag",
 ]);
 
 const isHandle = (v) => v && typeof v === "object" && v.node && v.node.nodeType === 1;

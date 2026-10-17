@@ -21,3 +21,5 @@ import "./track.js";
 import "./nle.js";
 import "./wheel.js";
 import "./stage.js";
+import "./chart.js";
+import "./tags.js";

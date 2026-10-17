@@ -1,0 +1,40 @@
+/* Chart. The plot is a grid: y numbers | the drawing; the x numbers sit under it. */
+.cx-chart { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; font-size: var(--fs-6); color: var(--muted); }
+.cx-chart-body {
+  display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto auto;
+  column-gap: var(--sp-3); row-gap: var(--sp-2);
+}
+.cx-chart-axis-name { grid-column: 1 / -1; font-size: var(--fs-7); text-transform: uppercase; letter-spacing: .06em; }
+.cx-chart-axis-x { text-align: right; }
+.cx-chart-yaxis, .cx-chart-xaxis { position: relative; font-family: var(--font-mono); font-size: var(--fs-7); }
+.cx-chart-yaxis { grid-column: 1; min-width: var(--sp-10); }
+.cx-chart-xaxis { grid-column: 2; height: var(--sp-7); }
+.cx-chart-tick { position: absolute; white-space: nowrap; line-height: 1; }
+.cx-chart-yaxis .cx-chart-tick { right: 0; transform: translateY(50%); }
+.cx-chart-xaxis .cx-chart-tick { top: 0; transform: translateX(-50%); }
+.cx-chart-field {
+  position: relative; grid-column: 2; border: var(--bw) solid var(--line); border-radius: var(--r-3);
+  background: var(--elev-1); overflow: hidden;
+}
+.cx-chart-sm .cx-chart-field { height: calc(var(--ctl-h-xl) * 3); }
+.cx-chart-md .cx-chart-field { height: calc(var(--ctl-h-xl) * 5); }
+.cx-chart-lg .cx-chart-field { height: calc(var(--ctl-h-xl) * 8); }
+.cx-chart-grid { position: absolute; inset: 0; }
+.cx-chart-rule { position: absolute; left: 0; right: 0; height: 0; border-top: var(--bw) solid var(--line); opacity: .6; }
+.cx-chart-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.cx-chart-cursor { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.cx-chart-line { stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.cx-chart-line.cx-chart-faint { stroke-width: 1; opacity: .45; }
+.cx-chart-dashed { stroke-dasharray: 6 4; }
+.cx-chart-accent { stroke: var(--accent); color: var(--accent); }
+.cx-chart-good { stroke: var(--good); color: var(--good); }
+.cx-chart-warn { stroke: var(--warn); color: var(--warn); }
+.cx-chart-muted { stroke: var(--muted); color: var(--muted); }
+.cx-chart-legend { display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-6); }
+.cx-chart-key { display: inline-flex; align-items: center; gap: var(--sp-3); }
+.cx-chart-swatch { width: var(--sp-6); height: var(--sp-2); border-radius: var(--r-pill); background: currentColor; flex: none; }
+.cx-chart-swatch.cx-chart-faint { opacity: .45; }
+.cx-chart-readout { margin: 0; min-height: var(--lh-6); font-family: var(--font-mono); font-size: var(--fs-6); color: var(--text); }
+.cx-chart-empty { display: none; margin: 0; padding: var(--sp-8) var(--sp-5); text-align: center; border: var(--bw) dashed var(--line); border-radius: var(--r-3); }
+.cx-chart-none .cx-chart-body, .cx-chart-none .cx-chart-legend, .cx-chart-none .cx-chart-readout { display: none; }
+.cx-chart-none .cx-chart-empty { display: block; }

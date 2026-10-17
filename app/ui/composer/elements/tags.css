@@ -1,0 +1,45 @@
+/* Tags: chips in a wrapping field (editor) and a wrapping cloud. */
+.cx-tags {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3);
+  min-height: var(--ctl-h-xl); padding: var(--sp-2) var(--sp-3);
+  border: var(--bw) solid var(--line); border-radius: var(--ctl-r); background: var(--elev-1);
+  cursor: text;
+}
+.cx-tags:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.cx-tags-input {
+  flex: 1 1 var(--sp-11); min-width: var(--sp-11); height: var(--ctl-h-md);
+  padding: 0 var(--sp-2); border: 0; background: transparent; box-shadow: none; color: var(--text); font-size: var(--fs-5);
+}
+.cx-tags-input:focus-visible { box-shadow: none; }
+.cx-tag {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  height: var(--ctl-h-sm); padding: 0 var(--sp-3) 0 var(--sp-4);
+  border: var(--bw) solid var(--line); border-radius: var(--r-pill);
+  background: var(--elev-2); color: var(--text); font-size: var(--fs-6); white-space: nowrap;
+}
+.cx-tag-edit { cursor: grab; }
+.cx-tag-edit:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.cx-tag.cx-dragging { opacity: 0.4; cursor: grabbing; }
+.cx-tag-text { overflow: hidden; text-overflow: ellipsis; max-width: calc(var(--sp-11) * 6); }
+.cx-tag-count { color: var(--muted); font-family: var(--font-mono); font-size: var(--fs-7); }
+.cx-tag-x {
+  display: inline-grid; place-items: center; width: var(--ctl-h-icon-sm); height: var(--ctl-h-icon-sm);
+  padding: 0; border: 0; border-radius: var(--r-pill); background: transparent; color: var(--muted); cursor: pointer; font-size: var(--fs-4); line-height: 1;
+}
+.cx-tag-x:hover { color: var(--danger); background: var(--accent-soft); }
+
+.cx-tagcloud { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; }
+.cx-tagcloud-list { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+.cx-tag-cloud { padding: 0; gap: 0; }
+.cx-tag-pick {
+  display: inline-flex; align-items: center; gap: var(--sp-3); height: 100%; padding: 0 var(--sp-4);
+  border: 0; border-radius: var(--r-pill); background: transparent; color: inherit; font: inherit; cursor: pointer;
+}
+.cx-tag-cloud:has(.cx-tag-x) .cx-tag-pick { padding-right: var(--sp-2); }
+.cx-tag-cloud:hover { border-color: var(--accent); }
+.cx-tag-cloud.cx-on { background: var(--accent-soft); border-color: var(--accent); }
+.cx-tagcloud-more { margin: 0; font-size: var(--fs-6); color: var(--muted); }
+.cx-tagcloud-more:empty { display: none; }
+.cx-tagcloud-empty { display: none; margin: 0; font-size: var(--fs-5); color: var(--muted); }
+.cx-tagcloud-none .cx-tagcloud-empty { display: block; }
+.cx-tagcloud-none .cx-tagcloud-list { display: none; }

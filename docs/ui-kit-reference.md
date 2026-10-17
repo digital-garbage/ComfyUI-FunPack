@@ -34,6 +34,8 @@ save.destroy();
 | `layout.js` | `actionBar`, `card`, `collapsible`, `field`, `frame`, `group`, `hero`, `list`, `panel`, `region`, `settingsRow`, `sidebar`, `splitPane`, `tabs`, `toolbar`, `workspace` |
 | `tile.js` | `grid`, `tile` |
 | `stage.js` | `stage` |
+| `chart.js` | `chart` |
+| `tags.js` | `tags` |
 | `status.js` | `banner`, `chip`, `dot`, `dropzone`, `emptyState`, `inlineError`, `progress`, `skeleton`, `spinner`, `toast` |
 | `modal.js` | `modal` |
 | `popover.js` | `autocomplete`, `menu`, `popover`, `splitButton`, `tooltip` |
@@ -141,6 +143,14 @@ Variants are listed after the group. Props shown are the ones every use needs; t
 | `overlay` | `blocking` | `message`. Blocks the page while something runs. |
 
 All overlays use the portal, the z-ladder and the dismiss stack.
+
+### Charts and tags
+
+| Element | Variants | Main props |
+|---|---|---|
+| `chart` | `line` | `series` (`{ name, values }` or `{ name, points: [{x, y}] }`, plus `tone` `accent`/`good`/`warn`/`muted`, `faint` for a raw noisy line under a smoothed one, `dashed`), `xLabel`, `yLabel`, `height` (`sm`, `md`, `lg`), `logY`, `empty`, `label`. Points that are not numbers are skipped; long series are cut to a few hundred drawn points keeping highs and lows. Hover reads the nearest values. Methods `setSeries`, `setEmpty`. |
+| `tags` | `editor` | `value` (list of strings), `suggestions`, `placeholder`, `label`, `maxTags`, `onChange(list)`. Enter or comma adds, Backspace on an empty box removes the last, chips drag to reorder, Tab takes the first suggestion. Methods `get`, `setValue` (does not call `onChange`), `focus`. |
+| `tags` | `cloud` | `items` (`{ tag, count }`), `selected`, `onPick(tag)`, `onRemove(tag)` (adds a remove button), `label`, `empty`. Draws the first 300 and says how many more. Methods `setItems`, `setSelected`. |
 
 ### Media and time
 
