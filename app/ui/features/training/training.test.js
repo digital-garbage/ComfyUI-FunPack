@@ -354,3 +354,29 @@ test("Pause asks the server, a paused run offers Resume, Preview now and Stop, a
   assert.ok(text().includes("Training stopped."));
   off();
 });
+
+test("Restore and continue is offered for a failed run, goes away while it carries on, and comes back if it fails again", async () => {
+  const f = fake();
+  let failed = true, phase = 0;
+  const rec = () => ({ run: "r9", state: "error", steps: 51, total: 6, set: "cats", loss: [0.5], error: "boom", resumable: failed, settings: {} });
+  f.api.trainRuns = async () => (phase === 1 ? [] : [{ run: "r9", name: "cats", set: "cats", state: "error", steps: 51, total: 6 }]);
+  f.api.trainRunRecord = async () => rec();
+  f.api.queueGraph = async () => { phase = 1; return "pid"; };
+  f.api.trainRun = async () => phase === 0 ? { run: "r9", started: 5, state: "error", step: 51, total: 6, loss: [], loss_from: 0 }
+    : phase === 1 ? { run: "r9", started: 9, state: "training", step: 52, total: 6, elapsed: 1, loss: [], loss_from: 0 }
+    : { run: "r9", started: 9, state: "error", step: 53, total: 6, error: "again", loss: [], loss_from: 0 };
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  tab("Results").click();
+  await wait(60);
+  assert.ok(click("Restore and continue") && !click("Restore and continue").hidden);
+  click("Restore and continue").click();
+  await wait(1300);
+  assert.equal(f.calls.filter((c) => c[0] === "plan").pop()[2].resume, "r9");
+  assert.ok(!click("Restore and continue") || click("Restore and continue").hidden, "hidden while it carries on");
+  phase = 2;
+  await wait(1500);
+  assert.ok(click("Restore and continue") && !click("Restore and continue").hidden, "offered again after the next failure");
+  off();
+});

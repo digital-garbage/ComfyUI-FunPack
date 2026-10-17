@@ -33,7 +33,7 @@ export default {
       advanced: false, runs: [], chosenRun: "", record: null,
       run: { shown: false, active: false, state: "idle", loss: [], smooth: [], step: 0, total: 0, elapsed: 0, message: "", error: "", lora: "", before: "", runId: "", paused: null },
       previews: [], holdPause: false, awaitStart: false, peek: (item) => peek(item),
-      pause: () => pause(), resume: () => launch(ui.run.runId), restore: (id) => { ui.run.loss = []; ui.run.runId = id; return launch(id); }, previewNow: () => previewNow(),
+      pause: () => pause(), resume: () => launch(ui.run.runId), restore: (id) => { ui.run.loss = []; ui.run.runId = id; ui.record = null; return launch(id); }, previewNow: () => previewNow(),
       monitorBox: null, redraw: () => draw(), pollTaggers: () => pollTaggers(true), loadRecord: (id) => loadRecord(id), loadRuns: () => loadRuns(),
       start: () => start(), stop: () => stop(),
       /** Ask for the frame counts of clips not known yet; `then` runs when new numbers arrived. */
@@ -170,6 +170,7 @@ export default {
             if (snap.state === "done") c.toast.info({ text: `Done: ${snap.lora}` });
             draw();
             loadRuns();
+            loadRecord(snap.run);                    // a failure offers Restore and continue again
             return;
           }
           refreshLive();
@@ -220,7 +221,7 @@ export default {
           ui.tab = "train";
         } else if (snap.state === "training") {
           ui.before = "";
-          setRun({ shown: true, active: true, state: "training", loss: snap.loss, smooth: smooth(snap.loss), step: snap.step, total: snap.total, elapsed: snap.elapsed, message: snap.message });
+          setRun({ shown: true, active: true, state: "training", runId: snap.run, loss: snap.loss, smooth: smooth(snap.loss), step: snap.step, total: snap.total, elapsed: snap.elapsed, message: snap.message });
           ui.tab = "train";
           watch();
         }

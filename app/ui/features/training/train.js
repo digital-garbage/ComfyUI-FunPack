@@ -122,7 +122,7 @@ export function monitor(ui) {
     items: ui.previews.map((p) => ({ id: p.id, label: `Step ${p.step}`, thumb: stillOf(p), badge: p.media_kind })),
     onActivate: (item) => ui.peek(ui.previews.find((p) => p.id === item.id)) }) : null;
   const heading = { done: "Finished", error: "Stopped with an error", stopped: "Stopped", paused: `Paused at step ${done}`, previewing: `Making a preview at step ${done}` }[run.state] || "Training";
-  return c.group.default({ label: heading, rows: [
+  return c.group.default({ label: heading, rows: [c.region.stack({ gap: "md", children: [
     run.state === "previewing" ? c.progress.indeterminate({ label: "Making a preview" }) : null,
     run.state === "training" ? c.progress.bar({ value: done, max: total, label: "Training progress" }) : run.state === "queued" ? c.progress.indeterminate({ label: "Waiting for ComfyUI" }) : null,
     lines.length ? c.hint.default({ text: lines.join(" · ") }) : null,
@@ -131,5 +131,5 @@ export function monitor(ui) {
     previews,
     chart,
     run.loss.length ? c.hint.default({ text: `Latest loss ${fmt(run.loss[run.loss.length - 1])}. It should fall at first, then wobble; a LoRA is rarely better after the wobble stops shrinking.` }) : null,
-  ].filter(Boolean) });
+  ].filter(Boolean) })] });
 }

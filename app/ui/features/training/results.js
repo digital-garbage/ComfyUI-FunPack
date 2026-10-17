@@ -23,13 +23,13 @@ export function resultsStep({ app, ui }) {
   return c.region.stack({ gap: "md", children: [
     live,
     list,
-    c.group.default({ label: chosen.name || "LoRA", rows: [
+    c.group.default({ label: chosen.name || "LoRA", rows: [c.region.stack({ gap: "md", children: [
       c.hint.default({ text: facts }),
       rec && rec.lora ? c.banner.info({ text: `File: ${rec.lora}. Pick it in a LoRA loader to use it.` }) : null,
       rec && rec.error ? c.inlineError.default({ text: rec.error }) : null,
       rec && rec.resumable && ["error", "stopped"].includes(rec.state) ? c.banner.info({ text: `The state at step ${rec.steps || 0} or earlier is kept. Restore and continue picks the training up from it with the Train step's current settings.` }) : null,
       chart, c.hint.default({ text: settings }),
-      c.toolbar.default({ items: rec && rec.resumable && !ui.run.active ? [c.button.sm({ label: "Restore and continue", tone: "primary", title: "Carry on from the saved state", onClick: async () => { await ui.restore(chosen.run); } })] : [], trailing: [c.button.sm({ label: "Delete this record", tone: "ghost", title: "Removes the record only, not the LoRA file", onClick: async () => { await app.api.trainForgetRun(chosen.run); ui.chosenRun = ""; await ui.loadRuns(); ui.redraw(); } })] }),
-    ].filter(Boolean) }),
+      c.toolbar.default({ items: rec && rec.resumable && !ui.run.active && !["training", "queued", "previewing", "paused"].includes(ui.run.state) ? [c.button.sm({ label: "Restore and continue", tone: "primary", title: "Carry on from the saved state", onClick: async () => { await ui.restore(chosen.run); } })] : [], trailing: [c.button.sm({ label: "Delete this record", tone: "ghost", title: "Removes the record only, not the LoRA file", onClick: async () => { await app.api.trainForgetRun(chosen.run); ui.chosenRun = ""; await ui.loadRuns(); ui.redraw(); } })] }),
+    ].filter(Boolean) })] }),
   ] });
 }
