@@ -171,11 +171,10 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
         else:
             payload = [{"samples": v} for v in videos]
 
-        import gc
+        _card("before freeing", mm, torch)
         del vae, clip, audio_vae                          # their work is done; the trainer copies the model next and needs the room
-        gc.collect()
-        mm.unload_all_models()
-        mm.soft_empty_cache()
+        _free_the_card(mm, torch)
+        _card("after freeing", mm, torch)
         _train_on_a_plain_copy(model)
         losses = _loss_hook(nt, cfg["steps"] * cfg["grad_accumulation"])
         jobs.say("Training", "training")
@@ -232,6 +231,27 @@ def load_model(name, weight_dtype="default", compute_dtype="default"):
         model.set_model_compute_dtype(getattr(torch, _WEIGHT[compute_dtype]))
     model.cached_patcher_init = (lambda *args, **kwargs: model, ())      # the trainer's "fresh copy" is this model: no second read of the file
     return model
+
+
+def _card(when, mm, torch):
+    """One line in the Log: what the card holds and which models ComfyUI still has loaded."""
+    try:
+        device = mm.get_torch_device()
+        gib = 1024 ** 3
+        loaded = ", ".join(f"{type(getattr(m.model, 'model', m.model)).__name__} {m.model_loaded_memory() / gib:.1f} GiB" for m in mm.current_loaded_models) or "none"
+        log.info("FunPack LoRA training", f"card {when}: tensors {torch.cuda.memory_allocated(device) / gib:.1f} GiB, free {mm.get_free_memory(device) / gib:.1f} GiB, loaded models: {loaded}")
+    except Exception as exc:                              # noqa: BLE001 -- a report must never stop a run
+        log.info("FunPack LoRA training", f"card {when}: not readable ({type(exc).__name__})")
+
+
+def _free_the_card(mm, torch):
+    import gc
+    gc.collect()
+    mm.unload_all_models()
+    gc.collect()
+    mm.soft_empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def _train_on_a_plain_copy(model):
