@@ -59,7 +59,7 @@ export function dataStep({ app, session, go, ui }) {
   const picked = ui.picked;
   const pickedNote = c.text.sm({ text: `${picked.size} picked` });
   const usable = ui.bin.filter((m) => m.kind === "image" || m.kind === "video");
-  const gallery = c.gallery.adaptive({ id: "training-bin", items: usable.map((m) => ({ id: m.id, label: m.name, thumb: `/funpack/api/media/${encodeURIComponent(m.id)}/thumb`, badge: m.kind })), selection: [...picked],
+  const gallery = c.gallery.adaptive({ id: "training-bin", cols: 3, items: usable.map((m) => ({ id: m.id, label: m.name, thumb: `/funpack/api/media/${encodeURIComponent(m.id)}/thumb`, badge: m.kind })), selection: [...picked],
     empty: "Your Bin has no pictures or clips yet", onActivate: (item) => {
       if (picked.has(item.id)) picked.delete(item.id); else picked.add(item.id);
       gallery.setValue([...picked]);
@@ -77,7 +77,7 @@ export function dataStep({ app, session, go, ui }) {
   const keyOf = (r) => `${r.media.type}:${r.media.subfolder}/${r.media.filename}`;
   const ratedPicked = ui.ratedPicked;
   const ratedNote = c.text.sm({ text: "" });
-  const ratedGallery = c.gallery.adaptive({ id: "training-rated", items: [], selection: [...ratedPicked], empty: "None found yet. Rate results in your projects and they appear here.", onActivate: (item) => {
+  const ratedGallery = c.gallery.adaptive({ id: "training-rated", cols: 3, items: [], selection: [...ratedPicked], empty: "None found yet. Rate results in your projects and they appear here.", onActivate: (item) => {
     if (ratedPicked.has(item.id)) ratedPicked.delete(item.id); else ratedPicked.add(item.id);
     ratedGallery.setValue([...ratedPicked]);
     showRated();
