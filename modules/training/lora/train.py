@@ -122,19 +122,20 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
     import safetensors.torch
 
     from ..._core import registry
-    adapt = registry.current().ask("training_adapt", model)
-    items, problems = plan_items(set_name, cfg["use"])
-    if problems and not items:
-        raise ValueError("; ".join(problems))
-    if adapt is None and getattr(model, "cached_patcher_init", None) is None:
-        raise ValueError("this model was loaded in a way the trainer cannot copy; load it with the FunPack Diffusion Model Loader from a plain file")
-    batch = cfg["batch_size"]
-    if adapt and batch > adapt.get("batch_limit", batch):
-        log.warning("FunPack LoRA training", f"{adapt['name']} trains one sample at a time; batch size {batch} is lowered to {adapt['batch_limit']}")
-        batch = adapt["batch_limit"]
-
-    run_id = jobs.begin(set_name, cfg["name"], cfg["steps"], cfg, prompt_id)
+    run_id = jobs.begin(set_name, cfg["name"], cfg["steps"], cfg, prompt_id)        # first, so a refusal below is shown in the window and not only in ComfyUI's log
     try:
+        adapt = registry.current().ask("training_adapt", model)
+        items, problems = plan_items(set_name, cfg["use"])
+        if problems and not items:
+            raise ValueError("; ".join(problems))
+        if problems:
+            log.warning("FunPack LoRA training", f"left out of the run: {'; '.join(problems[:5])}{' ...' if len(problems) > 5 else ''}")
+        if adapt is None and getattr(model, "cached_patcher_init", None) is None:
+            raise ValueError("this model was loaded in a way the trainer cannot copy; load it with the FunPack Diffusion Model Loader from a plain file")
+        batch = cfg["batch_size"]
+        if adapt and batch > adapt.get("batch_limit", batch):
+            log.warning("FunPack LoRA training", f"{adapt['name']} trains one sample at a time; batch size {batch} is lowered to {adapt['batch_limit']}")
+            batch = adapt["batch_limit"]
         jobs.say(f"Reading {len(items)} items")
         step = (adapt or {}).get("step") or 64
         sizes = []

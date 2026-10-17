@@ -9,6 +9,7 @@ import { makeSession } from "./state.js";
 
 const TABS = [{ value: "data", label: "1  Data" }, { value: "tags", label: "2  Tags" }, { value: "train", label: "3  Train" }, { value: "results", label: "Results" }];
 const POLL = 1000;
+const QUEUE_WAIT = 60000;
 
 const smooth = (values) => {                       // a gentle moving average, so the trend shows through a noisy loss
   const w = Math.max(3, Math.round(values.length / 40)), out = [];
@@ -116,8 +117,13 @@ export default {
     }
     function watch() {
       clearTimeout(runPoll);
+      const queuedAt = Date.now();
       const tick = async () => {
         if (!ui.run.active) return;
+        if (ui.run.state === "queued" && Date.now() - queuedAt > QUEUE_WAIT && !ui.run.message.includes("log")) {
+          setRun({ message: "ComfyUI has not started the run yet. It may be busy with another job or loading models; if this stays, look at ComfyUI's log." });
+          if (ui.tab === "train" && ui.monitorBox) ui.monitorBox.set([monitor(ui)]);
+        }
         let snap = null;
         try { snap = await api.trainRun(ui.run.loss.length); } catch { /* try again */ }
         if (snap && snap.run && snap.run !== ui.before) {

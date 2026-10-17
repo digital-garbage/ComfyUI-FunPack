@@ -148,3 +148,67 @@ def test_a_set_with_nothing_for_the_chosen_use_is_refused(run_env):
     from modules.training.lora import train
     with pytest.raises(ValueError, match="nothing to train on"):
         train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(use="avoid"))
+
+
+# --- a picture model: no adapter, plain latent tensors ------------------------------------------------
+
+def tiny_sd_patcher():
+    import torch
+    import comfy.supported_models as sm
+    from comfy.model_patcher import ModelPatcher
+    unet = {"context_dim": 32, "model_channels": 32, "use_linear_in_transformer": False, "adm_in_channels": None, "use_temporal_attention": False,
+            "in_channels": 4, "out_channels": 4, "image_size": 32, "num_res_blocks": [1, 1], "transformer_depth": [1, 1], "channel_mult": [1, 2],
+            "transformer_depth_output": [1, 1, 1, 1], "transformer_depth_middle": 1, "use_spatial_transformer": True, "num_head_channels": 8}
+    cfg = sm.SD15(dict(unet))
+    cfg.set_inference_dtype(torch.float32, None)
+
+    def make(disable_dynamic=False):
+        base = cfg.get_model({}, "", device=torch.device("cpu"))
+        torch.manual_seed(0)
+        for p in base.parameters():
+            torch.nn.init.normal_(p, std=0.05)
+        return ModelPatcher(base, load_device=torch.device("cpu"), offload_device=torch.device("cpu"))
+    patcher = make()
+    patcher.cached_patcher_init = (make, ())
+    return patcher
+
+
+class FakeClip32(FakeClip):
+    def encode_from_tokens_scheduled(self, tokens):
+        import torch
+        return [[torch.randn(1, 6, 32), {}]]
+
+
+class FakeVae4:
+    def encode(self, pixels):
+        import torch
+        return torch.randn(pixels.shape[0], 4, pixels.shape[1] // 8, pixels.shape[2] // 8)
+
+
+@pytest.fixture
+def plain_env(run_env, monkeypatch):
+    from modules import _core
+    class NoAdapter:
+        def ask(self, capability, *a, **k):
+            return None
+    monkeypatch.setattr(_core.registry, "current", lambda: NoAdapter())
+    return run_env
+
+
+def test_a_picture_model_trains_from_a_set_of_one_shape(plain_env):
+    from modules.training.lora import train
+    _, jobs = plain_env
+    file = train.run(tiny_sd_patcher(), FakeClip32(), FakeVae4(), None, "tiny", settings(aspect_buckets=False, batch_size=2, steps=4))
+    snap = jobs.snapshot()
+    assert file.endswith(".safetensors") and snap["state"] == "done" and len(snap["loss"]) == 4
+    assert all(x == x for x in snap["loss"])
+
+
+def test_a_picture_model_trains_from_pictures_of_different_shapes(plain_env):
+    from PIL import Image
+    from modules.training.lora import store, train
+    tmp_path, jobs = plain_env
+    Image.new("RGB", (160, 64), (200, 30, 30)).save(tmp_path / "wide.png")
+    store.add("tiny", [{"src": {"kind": "output", "type": "input", "subfolder": "", "filename": "wide.png"}, "media_kind": "image", "label": "own", "caption": "wide"}])
+    train.run(tiny_sd_patcher(), FakeClip32(), FakeVae4(), None, "tiny", settings(aspect_buckets=True, batch_size=1, steps=3))
+    assert jobs.snapshot()["state"] == "done"
