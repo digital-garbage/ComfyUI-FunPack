@@ -132,7 +132,7 @@ Constants at the top of `__init__.py`, uppercase because they are declarations, 
 
 A declaration that is wrong does not load, and the Log says exactly what is wrong. There is no best-effort mode.
 
-**About `MOUNT`.** Core requires it when a module has settings, so give it. In the app as shipped, though, module settings are drawn by Settings > Engine and the Sampler window, which group by `CATEGORY`, not `MOUNT`. `MOUNT` only matters to the optional `ui.js` path described at the end.
+**About `MOUNT`.** Core requires it when a module has settings, so give it. In the app as shipped, though, module settings are drawn by Settings > Engine and the Sampler window, which group by `CATEGORY`, not `MOUNT`. `MOUNT` only matters to the catalogue and the tests, which mount panels by it.
 
 ## Settings
 
@@ -182,7 +182,7 @@ What the tests add (`core/tests/test_shipped_hints.py`), so treat them as rules:
 Two code paths can draw a setting, and they differ:
 
 - **Settings > Engine and the Sampler window** (`app/ui/features/settings/field.js`). This is what people use. It draws by `type`: `bool` as a toggle; `int` and `float` as a slider when `ui` is absent or `"slider"` and both `min` and `max` are set, otherwise as a number box; `enum` as a select; `color` as a swatch; `multiline` as a text area; `text` and `path` as a text box. A `ui` of `segmented`, `wheel`, `radioGroup`, `filterList` and so on is accepted by the schema but this page still draws the default for the type. `placeholder` is not used here.
-- **`composer/panel.js`** honours every `ui` hint in `UI_HINTS`. It is used by the catalogue and the tests, and by the optional `ui.js` route.
+- **`composer/panel.js`** honours every `ui` hint in `UI_HINTS`. It is used by the catalogue and the tests.
 
 So: choose `ui` only between `slider` and `number` for numbers, and design for the select and toggle everywhere else.
 
@@ -322,22 +322,9 @@ Research or debug data does not go in the console: put a toggle, a Download butt
 - Fewest words in docstrings, hints and tooltips. No backstory and no future plans in the repo.
 - Nothing NSFW in code, tests, comments, commits or docs. Build test data from constructed fixtures.
 
-## Optional `ui.js`
+## No JavaScript
 
-A module may have `ui.js` next to its `__init__.py`. Core serves it at `/funpack/modules/<group>/<name>/ui.js` (only `.js` files are served from `modules/`, so a module cannot ship CSS) and puts the path in its manifest. The contract in `app/ui/shell/panels.js`:
-
-```js
-export function setup({ values, on, shell }) {
-  // values.get() / values.set(key, value)   this module's settings only
-  // on((key, value) => ...)                 hears this module's changes only
-  // shell.theme, shell.density              the small list of app services
-  return () => { /* teardown */ };
-}
-```
-
-A module's `ui.js` gets **no element factory and no DOM**. It cannot style, build or inject anything: `tools/kit_lint` fails the build on inline styles, class changes, `document`, `window`, `globalThis`, `innerHTML`, hardcoded colours or pixel sizes, stylesheets and `eval`. The settings panel is drawn for it from the declaration.
-
-**The running app ignores `ui.js` on purpose.** `boot.js` never calls `mountAll`; only the catalogue and the tests do, and no shipped module has a `ui.js`. A module does not get to draw anything. It declares what it wants in `SETTINGS` (type, `ui` hint, range, hint text) and the UI kit builds the control from that declaration. Anything else a person needs to see in the app is a [UI feature](writing-a-ui-feature.md), which is app code and not a module. Do not add a `ui.js`.
+A module ships no JavaScript and draws nothing. It declares what it wants in `SETTINGS` (type, `ui` hint, range, hint text) and the UI kit builds the control from that declaration. `modules/` is never served to the browser. Anything else a person needs to see in the app is a [UI feature](writing-a-ui-feature.md), which is app code and not a module.
 
 ## Before you open a pull request
 

@@ -87,11 +87,10 @@ There are three trust levels in the app code. Know which one you are writing.
 | You are writing | May style or build DOM? | Checked by |
 |---|---|---|
 | A **backend module's settings** (Python only) | No JavaScript at all. The kit draws the rows. | `core/schema.py`, `core/tests/test_shipped_hints.py` |
-| An optional **module `ui.js`** (`modules/<group>/<name>/ui.js`). Not loaded by the app; see [Writing a module](writing-a-module.md#optional-uijs). | No. `setup({ values, on, shell })` and nothing else. | `tools/kit_lint` scans `modules/` |
 | A **UI feature** in `app/ui/features/` | It builds with kit elements. A few features touch `document` or add `fp-` classes in `frame.css`; new work should not. | review; the kit rules are enforced on `composer/` and `shell/` |
 | The **kit** itself | Yes. It is the only place that styles. | `tools/kit_lint` `KIT_RULES`, tests in `composer/tests/` |
 
-Be exact about what the lint is. `tools/kit_lint` is a discipline check, not a security boundary: a module `ui.js` runs in the page, so `document` is reachable. First-party modules are reviewed. A third-party module would need real isolation (a worker or another realm) before it could be trusted.
+Be exact about what the lint is. `tools/kit_lint` is a discipline check, not a security boundary. Modules run only in Python and are never served to the browser; first-party modules are reviewed.
 
 ## Where things live
 

@@ -1197,10 +1197,6 @@ def register(routes, prefix=None):
     async def _app_asset(req):
         return _serve_under(req, config.APP_DIR, config.APP_EXTS)
 
-    @routes.get(P + "/modules/{tail:.*}")
-    async def _module_asset(req):
-        return _serve_under(req, config.MODULES_DIR, config.MODULE_EXTS)
-
     @routes.get(P + "/")
     async def _index(_req):
         # The frontend: app/ui.

@@ -1,12 +1,12 @@
 // Hide, don't warn -- shown rather than asserted.
 //
-// One good module and five broken ones, put through the SAME shell code the app
+// One good module and four broken ones, put through the SAME shell code the app
 // uses. The good one's panel appears. The broken ones do not appear at all: no
 // placeholder, no greyed row, no warning chip. What you see on this page is the
 // whole of what a user would see.
 //
 // These mirror core/tests/fixtures/fixture_modules, so the browser and the
-// Python suite are looking at the same five ways of being wrong.
+// Python suite are looking at the same four ways of being wrong.
 
 export const GOOD = {
   id: "audio_clock",
@@ -31,11 +31,6 @@ export const GOOD = {
 // Each of these is refused somewhere different, which is the point: they are
 // caught at the earliest layer that can catch them.
 export const BROKEN = [
-  {
-    why: "raises on import",
-    caughtBy: "core: the scan imports it in a try",
-    spec: { id: "explodes", title: "Explodes", mount: "demo.panel", settings: {}, ui: "/nope/missing.js" },
-  },
   {
     why: "asks for a renderer its type does not have",
     caughtBy: "core: schema validation, before the manifest",

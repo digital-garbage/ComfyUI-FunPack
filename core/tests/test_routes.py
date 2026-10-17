@@ -41,7 +41,6 @@ def app(tmp_path, monkeypatch):
 
     mod_dir = tmp_path / "modules" / "timing" / "audio_clock"
     mod_dir.mkdir(parents=True)
-    (mod_dir / "ui.js").write_text("export default 1;")
     (mod_dir / "sneaky.css").write_text(".x{}")
 
     monkeypatch.setattr(config, "APP_DIR", app_dir)
@@ -113,13 +112,9 @@ def test_a_modules_url_cannot_reach_app_content(app):
 
 # --- the allowlist on ordinary URLs ----------------------------------------
 
-def test_module_css_is_refused(app):
+def test_modules_are_not_served(app):
     assert get(app, P + "/modules/timing/audio_clock/sneaky.css")[0] == 404
-
-
-def test_module_js_is_served(app):
-    status, body = get(app, P + "/modules/timing/audio_clock/ui.js")
-    assert status == 200 and "export default" in body
+    assert get(app, P + "/modules/timing/audio_clock/ui.js")[0] == 404
 
 
 def test_app_asset_is_served(app):

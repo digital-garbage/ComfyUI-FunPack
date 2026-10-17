@@ -180,7 +180,7 @@ Used by elements. A feature does not import them. They exist in `composer/intern
 |---|---|
 | `rule_content_is_data.test.js` | Every string prop of every demo is shown as text. |
 | `rule_unknown_element_hides.test.js` | Asking for a missing element throws and hides the feature. |
-| `rule_no_module_styling.test.js` | `tools/kit_lint` finds nothing in `modules/`, and its own fixtures (`tests/lint_fixtures`) still trip every rule. |
+| `rule_kit_never_interprets.test.js` | `tools/kit_lint` finds no markup parsing or `eval` in the kit and the shell, and still catches a bad example. |
 | `register.test.js` | Duplicate definitions are refused. |
 | `overlays.test.js`, `dismiss.test.js`, `zlayer.test.js`, `portal.test.js` | Layering, Escape and portal behaviour. |
 | `panel_schema.test.js` | `panel.js` draws every setting type. |
