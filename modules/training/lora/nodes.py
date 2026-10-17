@@ -25,7 +25,7 @@ class FunPackTrainLora(io.ComfyNode):
                 io.Combo.Input("use", options=list(train.USES), default="normal",
                                tooltip="normal: liked results and your own media. avoid: only the disliked results, for a LoRA you apply at negative strength. all: everything."),
                 io.Int.Input("steps", default=500, min=1, max=100000, tooltip="How many training steps."),
-                io.Float.Input("learning_rate", default=0.0005, min=0.0000001, max=1.0, step=0.0000001, tooltip="How big each learning step is. Lower is safer and slower."),
+                io.Float.Input("learning_rate", default=0.0001, min=0.0000001, max=1.0, step=0.0000001, tooltip="How big each learning step is. Lower is safer and slower."),
                 io.Int.Input("rank", default=16, min=1, max=128, tooltip="How much the LoRA can learn. Higher holds more detail and makes a bigger file."),
                 io.Combo.Input("algorithm", options=list(train.ALGORITHMS), default="LoRA", tooltip="The adapter kind. LoRA is the common one."),
                 io.Combo.Input("optimizer", options=["AdamW", "Adam", "SGD", "RMSprop"], default="AdamW", tooltip="How the weights are updated."),

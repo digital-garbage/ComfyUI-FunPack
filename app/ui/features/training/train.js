@@ -3,7 +3,7 @@ import { composer as c } from "../../composer/composer.js";
 
 /** The node's own defaults. A set remembers what was changed from them. */
 export const DEFAULTS = {
-  name: "funpack_lora", use: "normal", steps: 500, learning_rate: 0.0005, rank: 16, algorithm: "LoRA", optimizer: "AdamW", loss: "MSE",
+  name: "funpack_lora", use: "normal", steps: 500, learning_rate: 0.0001, rank: 16, algorithm: "LoRA", optimizer: "AdamW", loss: "MSE",
   batch_size: 1, grad_accumulation: 1, resolution: 512, aspect_buckets: false, frames: 33, fps: 0, start: "start", seed: 0,
   training_dtype: "bf16", lora_dtype: "bf16", gradient_checkpointing: true, offloading: false, bypass: false, swap_blocks: 0,
 };
@@ -74,7 +74,7 @@ export function trainStep({ app, session, go, ui }) {
   return c.region.stack({ gap: "md", children: [
     c.hint.default({ text: used.length ? `${used.length} item${used.length > 1 ? "s" : ""} will be learned from (${caption} with tags). ${used.length - caption ? "Items without a caption are learned from with only the prefix and postfix." : ""}`.trim()
       : `Nothing in "${session.name}" fits "${(USES.find((u) => u.value === v.use) || {}).label}". Add media or change the choice below.` }),
-    hasAudioVae ? c.banner.info({ text: "This pipeline has an audio VAE, so it trains picture and sound together (H3). One clip at a time, so training is slow and needs a lot of memory." }) : null,
+    hasAudioVae ? c.banner.info({ text: "This pipeline has an audio VAE, so it trains picture and sound together (H3). One clip at a time, so training is slow and needs a lot of memory. musubi-tuner's H3 recipe: learning rate 0.0001, rank 16, batch 1, bf16, gradient checkpointing, plus block swap. Its plain flow-matching loss undoes the few-step quality of a distilled (turbo) model; musubi adds a training adapter, guidance loss or teacher matching for that, which this trainer does not have." }) : null,
     c.group.default({ label: "Basics", rows: [name, preset,
       pickOf("use", "What to learn", "Liked results and your own media teach what you want. Disliked results teach what to avoid: apply that LoRA at a negative strength.", USES),
       num("steps", "Steps", "More steps learn more and can overdo it.", { min: 1, max: 100000, step: 10 }),
