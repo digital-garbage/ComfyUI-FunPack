@@ -367,8 +367,8 @@ export const DEMOS = {
     { name: "smoothed", tone: "good", values: [0.9, 0.72, 0.68, 0.58, 0.52, 0.44, 0.38, 0.33, 0.3, 0.26, 0.23, 0.2] },
   ], empty: "No training yet" },
   "tags.editor": { value: ["rooftop", "dusk", "city lights"], suggestions: ["rooftop", "rain", "dusk", "dawn", "neon sign"], placeholder: "Add a tag", label: "Tags" },
-  "captioned.cell": { title: "street_01.png", caption: "rooftop, dusk, city lights", badge: "Liked", tone: "good", suggestions: ["rooftop", "rain", "dusk"], onChange: () => {}, onSelect: () => {}, onOpen: () => {} },
-  "captioned.side": { title: "street_02.mp4", kind: "video", caption: "rain, neon sign", badge: "Clip", suggestions: ["rooftop", "rain", "dusk"], onChange: () => {}, onOpen: () => {} },
+  "captioned.cell": { title: "street_01.png", caption: "rooftop, dusk, city lights", badge: "Liked", tone: "good", onChange: () => {}, onSelect: () => {}, onOpen: () => {} },
+  "captioned.side": { title: "street_02.mp4", kind: "video", caption: "rain, neon sign", badge: "Clip", onChange: () => {}, onOpen: () => {} },
   "tags.cloud": { items: [{ tag: "rooftop", count: 42 }, { tag: "dusk", count: 17 }, { tag: "rain", count: 9 }, { tag: "neon sign", count: 3 }], selected: ["dusk"], label: "Tag counts", empty: "No tags yet", onPick: () => {}, onRemove: () => {} },
   "wheel.half": { edge: "right", items: [
     { icon: "✂", label: "Split" }, { icon: "⧉", label: "Duplicate" },
