@@ -204,9 +204,18 @@ def routes(table, base, web):
             since = 0
         return web.json_response(jobs.snapshot(since))
 
+    @table.post(base + "/run/pause")
+    async def _pause(_req):
+        return web.json_response({"paused": jobs.request_pause()})
+
     @table.post(base + "/run/stop")
     async def _stop(_req):
+        now = jobs.snapshot()
+        was_paused = now["state"] == "paused"
         stopped = jobs.request_stop()
+        if stopped and was_paused:
+            train.discard(now["run"], now["name"])
+            return web.json_response({"stopped": True})
         if stopped:
             try:
                 import comfy.model_management

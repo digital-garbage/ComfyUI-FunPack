@@ -19,10 +19,11 @@ MAX_KEPT_LOSSES = 4000          # a saved run keeps a thinned curve: a 100000 st
 _LOCK = threading.Lock()
 _ID = re.compile(r"\A[0-9a-f]{12}\Z")
 IDLE = {"state": "idle", "run": "", "set": "", "name": "", "step": 0, "total": 0, "started": 0.0, "message": "", "error": "",
-        "lora": "", "samples": [], "settings": {}}
+        "lora": "", "samples": [], "settings": {}, "paused": None}
 _now: dict = dict(IDLE)
 _loss: list[float] = []
 _stop = False
+_pause = False
 
 
 def _dir():
@@ -42,14 +43,19 @@ def trail(message: str) -> None:
     log.info("FunPack LoRA training", message + rss)
 
 
-def begin(set_name: str, name: str, total: int, settings: dict, prompt_id: str = "") -> str:
-    """Start a record. A run that was still marked running (ComfyUI restarted under it) is simply replaced."""
-    global _stop
+def begin(set_name: str, name: str, total: int, settings: dict, prompt_id: str = "", resume: dict | None = None) -> str:
+    """Start a record. A run that was still marked running (ComfyUI restarted under it) is simply replaced.
+
+    `resume` ({"run", "loss"}) carries on a paused run: same record, same loss curve, the steps counting on.
+    """
+    global _stop, _pause
     with _LOCK:
-        _stop = False
+        _stop = _pause = False
         _loss.clear()
         _now.clear()
-        _now.update(IDLE, state="training", run=uuid.uuid4().hex[:12], set=set_name, name=name, total=int(total), started=time.time(),
+        if resume:
+            _loss.extend(float(v) for v in resume.get("loss") or [])
+        _now.update(IDLE, state="training", run=(resume or {}).get("run") or uuid.uuid4().hex[:12], step=len(_loss), set=set_name, name=name, total=int(total), started=time.time(),
                     settings=dict(settings), prompt_id=prompt_id, message="Loading the model and the training data")
         return _now["run"]
 
@@ -84,12 +90,40 @@ def thin(values, keep: int = MAX_KEPT_LOSSES) -> list[float]:
     return out + [values[-1]]
 
 
+def losses() -> list[float]:
+    with _LOCK:
+        return list(_loss)
+
+
+def pause(reason: str, step: int, preview: str, checkpoint: bool = True) -> None:
+    """The run waits: its state is on disk, and the models are let go so the pipeline can use the card. `reason`: user or preview."""
+    with _LOCK:
+        if _now["state"] != "training":
+            return
+        _now.update(state="paused", message="", paused={"reason": reason, "step": int(step), "preview": preview, "checkpoint": bool(checkpoint)})
+
+
+def request_pause() -> bool:
+    """Ask the running training to wait at its next step. False when nothing is training."""
+    global _pause
+    with _LOCK:
+        if _now["state"] != "training":
+            return False
+        _pause = True
+        _now["message"] = "Pausing"
+        return True
+
+
+def pause_requested() -> bool:
+    return _pause
+
+
 def finish(state: str, lora: str = "", error: str = "") -> None:
     """state: done, stopped (the person stopped it) or error. Writes the run's record."""
     with _LOCK:
         if _now["run"] == "" or _now["state"] in ("done", "error", "stopped"):
             return
-        _now.update(state=state, lora=lora, error=error, message="")
+        _now.update(state=state, lora=lora, error=error, message="", paused=None)
         record = {k: _now.get(k) for k in ("run", "set", "name", "total", "started", "settings", "lora", "samples", "error")}
         record.update(state=state, steps=len(_loss), seconds=round(time.time() - _now["started"], 1),
                       final_loss=_loss[-1] if _loss else None, loss=thin(_loss))
@@ -144,11 +178,17 @@ def request_stop() -> bool:
     """Ask the running training to end at its next step. False when nothing is training."""
     global _stop
     with _LOCK:
-        if _now["state"] != "training":
+        if _now["state"] == "paused":
+            ended = True                                  # nothing is running: the run simply ends
+        elif _now["state"] != "training":
             return False
-        _stop = True
-        _now["message"] = "Stopping"
-        return True
+        else:
+            ended = False
+            _stop = True
+            _now["message"] = "Stopping"
+    if ended:
+        finish("stopped")
+    return True
 
 
 def stop_requested() -> bool:

@@ -128,7 +128,10 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
         torch.cuda.empty_cache()
     _card("at the start of the run", mm, torch)
     try:
-        return _run(model, clip, vae, audio_vae, set_name, cfg, prompt_id)
+        result = _run(model, clip, vae, audio_vae, set_name, cfg, prompt_id)
+        model = clip = vae = audio_vae = None             # a paused or finished run lets the card go: the pipeline's preview or the next run needs it
+        _free_the_card(mm, torch)
+        return result
     except BaseException as exc:
         traceback.clear_frames(exc.__traceback__)
         model = clip = vae = audio_vae = None
@@ -144,8 +147,16 @@ def _run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str =
     import safetensors.torch
 
     from ..._core import registry
-    run_id = jobs.begin(set_name, cfg["name"], cfg["steps"], cfg, prompt_id)        # first, so a refusal below is shown in the window and not only in ComfyUI's log
+    resume, failed = None, None
+    if cfg.get("resume"):
+        try:
+            resume = loop.load_checkpoint(cfg["resume"], torch)
+        except ValueError as exc:
+            failed = exc
+    run_id = jobs.begin(set_name, cfg["name"], cfg["steps"], cfg, prompt_id, {"run": cfg["resume"], "loss": resume["loss"]} if resume else None)        # first, so a refusal below is shown in the window and not only in ComfyUI's log
     try:
+        if failed:
+            raise failed
         if model is None:
             model = load_model(cfg.get("model_name"), cfg.get("weight_dtype", "default"), cfg.get("compute_dtype", "default"))
         adapt = registry.current().ask("training_adapt", model)
@@ -205,7 +216,12 @@ def _run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str =
         shim = adapt["shims"]() if adapt and adapt.get("shims") else _nothing()
         watch = _watch(nt, mm, torch, _swapper(adapt, cfg, mm, torch))
         if adapt and adapt.get("lora_targets"):
-            lora = loop.train(model, payload, conds, cfg, adapt, nt, mm, torch, watch, shim)       # our own loop, ComfyUI carries the batches
+            lora, paused = loop.train(model, payload, conds, cfg, adapt, nt, mm, torch, watch, shim, resume, run_id)       # our own loop, ComfyUI carries the batches
+            if paused:
+                preview = _save(lora, f"{cfg['name']}_preview", folder_paths, safetensors.torch, set_name, cfg, keep=True)
+                jobs.pause(paused.reason, paused.step, preview)
+                log.info("FunPack LoRA training", f"paused at step {paused.step} ({paused.reason}); the LoRA so far is {preview}")
+                return ""
         else:
             losses = _loss_hook(nt, cfg["steps"] * cfg["grad_accumulation"])
             with shim, losses, watch:
@@ -218,6 +234,7 @@ def _run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str =
                     existing_lora=["[None]"], bucket_mode=[False], bypass_mode=[cfg["bypass"]])
             lora = (out.result if hasattr(out, "result") else out)[0]
         file = _save(lora, cfg["name"], folder_paths, safetensors.torch, set_name, cfg)
+        discard(run_id, cfg["name"])
         jobs.finish("done", lora=file)
         return file
     except Stopped:
@@ -467,13 +484,28 @@ class _loss_hook:
         return False
 
 
-def _save(lora, name, folder_paths, safetensors_torch, set_name, cfg) -> str:
-    """Into the first loras folder, as <name>.safetensors, or <name>_2 and so on rather than over an earlier one."""
+def _preview_name(name) -> str:
+    stem = "".join(c for c in f"{name}_preview" if c.isalnum() or c in "-_ .").strip() or "funpack_lora_preview"
+    return f"{stem}.safetensors"
+
+
+def discard(run, name) -> None:
+    """A run that is over (finished, stopped) keeps neither its saved state nor its preview file."""
+    import folder_paths
+    loop.forget_checkpoint(run)
+    try:
+        (Path(folder_paths.get_folder_paths("loras")[0]) / _preview_name(name.removesuffix("_preview"))).unlink()
+    except OSError:
+        pass
+
+
+def _save(lora, name, folder_paths, safetensors_torch, set_name, cfg, keep=False) -> str:
+    """Into the first loras folder, as <name>.safetensors, or <name>_2 and so on rather than over an earlier one. `keep`: replace the file of that name (the preview)."""
     folder = Path(folder_paths.get_folder_paths("loras")[0])
     folder.mkdir(parents=True, exist_ok=True)
     stem = "".join(c for c in name if c.isalnum() or c in "-_ .") .strip() or "funpack_lora"
     n, path = 1, folder / f"{stem}.safetensors"
-    while path.exists():
+    while path.exists() and not keep:
         n += 1
         path = folder / f"{stem}_{n}.safetensors"
     meta = {"software": "ComfyUI-FunPack", "training_set": set_name, "algorithm": cfg["algorithm"], "rank": str(cfg["rank"]),

@@ -351,3 +351,49 @@ def test_block_modulation_is_out_of_place_while_training_and_put_back_after():
         assert torch.allclose(m._mod_gate(x0, gate, other, segs), want_x)
         assert torch.equal(x0, x)
     assert (m._mod_scale_shift, m._mod_gate) == before
+
+
+def test_a_run_pauses_for_a_preview_and_carries_on_to_the_same_end(run_env):
+    import safetensors.torch
+    from modules.training.lora import train
+    tmp_path, jobs = run_env
+    first = train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=6, preview_every=2))
+    snap = jobs.snapshot()
+    assert first == "" and snap["state"] == "paused"
+    assert snap["paused"]["reason"] == "preview" and snap["paused"]["step"] == 2 and snap["step"] == 2
+    preview = tmp_path / "loras" / snap["paused"]["preview"]
+    assert preview.name == "tiny_lora_preview.safetensors"
+    assert any(k.endswith(".lora_up.weight") for k in safetensors.torch.load_file(str(preview)))
+    run = snap["run"]
+    # the person looks at the preview, and training carries on from where it stopped
+    second = train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=6, preview_every=2, resume=run))
+    snap = jobs.snapshot()
+    assert second == "" and snap["run"] == run and snap["paused"]["step"] == 4 and len(snap["loss"]) == 4
+    done = train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=6, preview_every=2, resume=run))
+    snap = jobs.snapshot()
+    assert done == "tiny_lora.safetensors" and snap["state"] == "done" and len(snap["loss"]) == 6
+    assert not preview.exists(), "the preview file stays after the run is over"
+    assert not (tmp_path / "training" / "checkpoints" / f"{run}.pt").exists()
+
+
+def test_pause_button_waits_at_the_next_step_and_stop_ends_a_paused_run(run_env, monkeypatch):
+    from modules.training.lora import jobs as j, train
+    tmp_path, jobs = run_env
+    real = j.step
+
+    def press(loss):
+        real(loss)
+        j.request_pause()
+    monkeypatch.setattr(j, "step", press)
+    train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=6))
+    snap = jobs.snapshot()
+    assert snap["state"] == "paused" and snap["paused"]["reason"] == "user" and snap["paused"]["step"] == 1
+    assert j.request_stop() and jobs.snapshot()["state"] == "stopped"
+
+
+def test_a_run_that_cannot_be_resumed_says_why(run_env):
+    from modules.training.lora import train
+    _, jobs = run_env
+    with pytest.raises(ValueError, match="saved state is gone"):
+        train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(resume="0123456789ab"))
+    assert jobs.snapshot()["state"] == "error"
