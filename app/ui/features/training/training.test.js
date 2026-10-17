@@ -21,6 +21,7 @@ function fake({ enabled = true } = {}) {
     trainSets: async () => ({ sets: [{ name: "cats", count: 2 }] }),
     trainSet: async () => structuredClone(doc),
     trainSaveSet: async (name, d) => { calls.push(["save", name, d]); return d; },
+    trainClips: async () => ({ clips: { "output:/v.mp4": { frames: 124, fps: 24 } } }),
     trainAdd: async () => ({ set: doc, added: 0 }),
     trainRated: async () => ({ results: [], counts: { liked: 3 } }),
     trainTaggers: async () => ({ taggers: [{ id: "wd_vit_v3", title: "WD ViT v3", state: "absent", hint: "", done: 0, total: 0 }] }),
@@ -271,5 +272,16 @@ test("rated results are shown as pictures, and only the picked ones are added", 
   await wait(40);
   assert.equal(added[0].length, 1);
   assert.equal(added[0][0].src.filename, "y.png");
+  off();
+});
+
+test("Tags step: a clip's frame count and rate show beside its label", async () => {
+  const f = fake();
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Next: tags").click();
+  await wait(100);
+  assert.ok(text().includes("124 f · 24 fps"));
   off();
 });

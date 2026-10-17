@@ -135,3 +135,10 @@ def test_every_clip_is_read_for_as_many_frames_as_the_shortest_one_gives(tmp_pat
         train._fit_frames({"fps": 0, "frames": 120}, {**h3, "fit": lambda a: 0}, items)
     with pytest.raises(ValueError, match="s.mp4"):
         media_io.clip_frames(short, 80, 24, "start", 64, 48)
+
+
+def test_clip_info_is_none_for_a_file_that_is_not_a_video(tmp_path):
+    bad = tmp_path / "x.mp4"
+    bad.write_bytes(b"not a video")
+    assert media_io.clip_info(bad) is None
+    assert media_io.clip_info(tmp_path / "missing.mp4") is None

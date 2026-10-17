@@ -1,7 +1,7 @@
 // Step 1, Training data: pick or make a set, then put media in it from any mix of sources.
 // Skippable: a set that already has what you want goes straight on to tags or to training.
 import { composer as c } from "../../composer/composer.js";
-import { LABEL_WORDS, stillOf } from "./state.js";
+import { LABEL_WORDS, clipWords, srcKey, stillOf } from "./state.js";
 
 export const RATED = [
   { value: "liked", label: "Liked results" },
@@ -59,13 +59,16 @@ export function dataStep({ app, session, go, ui }) {
   const picked = ui.picked;
   const pickedNote = c.text.sm({ text: `${picked.size} picked` });
   const usable = ui.bin.filter((m) => m.kind === "image" || m.kind === "video");
-  const gallery = c.gallery.adaptive({ id: "training-bin", cols: 3, items: usable.map((m) => ({ id: m.id, label: m.name, thumb: `/funpack/api/media/${encodeURIComponent(m.id)}/thumb`, badge: m.kind })), selection: [...picked],
+  const binSrc = (m) => ({ kind: "bin", id: m.id });
+  const binItems = () => usable.map((m) => ({ id: m.id, label: m.name, thumb: `/funpack/api/media/${encodeURIComponent(m.id)}/thumb`, badge: m.kind === "video" ? clipWords(ui.clips[srcKey(binSrc(m))]) || m.kind : m.kind }));
+  const gallery = c.gallery.adaptive({ id: "training-bin", cols: 3, items: binItems(), selection: [...picked],
     empty: "Your Bin has no pictures or clips yet", onActivate: (item) => {
       if (picked.has(item.id)) picked.delete(item.id); else picked.add(item.id);
       gallery.setValue([...picked]);
       pickedNote.setText(`${picked.size} picked`);
       addBin.node.disabled = !picked.size;
     } });
+  ui.needClips(usable.filter((m) => m.kind === "video").map(binSrc), () => { gallery.setItems(binItems()); gallery.setValue([...picked]); });
   const addBin = c.button.sm({ label: "Add picked", tone: "primary", disabled: !picked.size || !open, onClick: async () => {
     const chosen = usable.filter((m) => picked.has(m.id));
     await added(chosen.map(binEntry), "the Bin");
@@ -91,7 +94,8 @@ export function dataStep({ app, session, go, ui }) {
   function showRated() {
     const all = shownRated();
     for (const k of [...ratedPicked]) if (!all.some((r) => keyOf(r) === k)) ratedPicked.delete(k);
-    ratedGallery.setItems(all.map((r) => ({ id: keyOf(r), label: r.media.filename, thumb: stillOf({ src: { kind: "output", ...r.media }, media_kind: r.media.filename.match(/\.(mp4|webm|mov|mkv|avi)$/i) ? "video" : "image" }), badge: r.label })));
+    ratedGallery.setItems(all.map((r) => ({ id: keyOf(r), label: r.media.filename, thumb: stillOf({ src: { kind: "output", ...r.media }, media_kind: r.media.filename.match(/\.(mp4|webm|mov|mkv|avi)$/i) ? "video" : "image" }), badge: [r.label, clipWords(ui.clips[keyOf(r)])].filter(Boolean).join(" · ") })));
+    ui.needClips(all.filter((r) => /\.(mp4|webm|mov|mkv|avi)$/i.test(r.media.filename)).map((r) => ({ kind: "output", ...r.media })), () => showRated());
     ratedGallery.setValue([...ratedPicked]);
     const n = all.length, p = ratedPicked.size;
     ratedNote.setText(n ? `${n} rated result${n > 1 ? "s" : ""} found in your projects. ${p ? `${p} picked: only those are added.` : "None picked: all are added."}` : "None found yet. Rate results in your projects and they appear here.");

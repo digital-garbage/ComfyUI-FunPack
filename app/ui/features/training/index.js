@@ -5,7 +5,7 @@ import { dataStep } from "./data.js";
 import { applyTagging, tagsStep } from "./tags.js";
 import { monitor, settingsOf, trainStep } from "./train.js";
 import { resultsStep } from "./results.js";
-import { makeSession } from "./state.js";
+import { makeSession, srcKey } from "./state.js";
 
 const TABS = [{ value: "data", label: "1  Data" }, { value: "tags", label: "2  Tags" }, { value: "train", label: "3  Train" }, { value: "results", label: "Results" }];
 const POLL = 1000;
@@ -26,12 +26,20 @@ export default {
     const api = app.api;
     const session = makeSession(api);
     const ui = {
-      tab: "data", picked: new Set(), ratedPicked: new Set(), bin: [], rated: { results: [], counts: {} }, ratedKind: "liked", include: ["main"], selected: new Set(), filter: "all", tag: "", limit: 48,
+      tab: "data", clips: {}, picked: new Set(), ratedPicked: new Set(), bin: [], rated: { results: [], counts: {} }, ratedKind: "liked", include: ["main"], selected: new Set(), filter: "all", tag: "", limit: 48,
       tagger: { id: "wd_vit_v3", list: [], job: null, general: 0.35, limit: 0, characters: false, mode: "add", scope: "untagged" },
       advanced: false, runs: [], chosenRun: "", record: null,
       run: { shown: false, active: false, state: "idle", loss: [], smooth: [], step: 0, total: 0, elapsed: 0, message: "", error: "", lora: "", before: "" },
       monitorBox: null, redraw: () => draw(), pollTaggers: () => pollTaggers(true), loadRecord: (id) => loadRecord(id), loadRuns: () => loadRuns(),
       start: () => start(), stop: () => stop(),
+      /** Ask for the frame counts of clips not known yet; `then` runs when new numbers arrived. */
+      async needClips(srcs, then) {
+        const fresh = srcs.filter((x) => !(srcKey(x) in ui.clips));
+        if (!fresh.length) return;
+        fresh.forEach((x) => { ui.clips[srcKey(x)] = null; });
+        try { Object.assign(ui.clips, (await api.trainClips(fresh)).clips || {}); } catch { fresh.forEach((x) => { delete ui.clips[srcKey(x)]; }); return; }
+        if (then) then();
+      },
     };
     let win = null, body = null, timers = [], offSession = null, tagPoll = null, runPoll = null;
 

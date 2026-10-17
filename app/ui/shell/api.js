@@ -87,6 +87,7 @@ export const api = {
   trainDeleteSet: (name) => call("DELETE", `${TRAIN}/sets/${encodeURIComponent(name)}`),
   trainAdd: (name, entries) => call("POST", `${TRAIN}/sets/${encodeURIComponent(name)}/add`, { entries }),
   trainBulk: (name, body) => call("POST", `${TRAIN}/sets/${encodeURIComponent(name)}/bulk`, body),
+  trainClips: (srcs) => call("POST", `${TRAIN}/clips`, { srcs }),
   trainRated: (include) => call("GET", `${TRAIN}/rated${include && include.length ? `?include=${encodeURIComponent(include.join(","))}` : ""}`),
   trainTaggers: () => call("GET", `${TRAIN}/taggers`),
   trainDownloadTagger: (tagger) => call("POST", `${TRAIN}/taggers/download`, { tagger }),

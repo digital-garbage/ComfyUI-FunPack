@@ -9,7 +9,7 @@ H3 trains picture and sound together; the repairs its latent and its rotary op n
 used when this module asks. UNTESTED on real weights or hardware: proven only on tiny stand-in models on CPU.
 """
 
-from . import captions, jobs, plan, rated, store, taggers, train
+from . import captions, jobs, media_io, plan, rated, store, taggers, train
 from .nodes import FunPackTrainLora
 
 ID = "training_lora"
@@ -116,6 +116,21 @@ def routes(table, base, web):
             found = [r for r in found if r["label"] == want]
         counts = {label: sum(1 for r in found if r["label"] == label) for label in rated.LABEL_TITLES}
         return web.json_response({"results": found, "counts": counts})
+
+    @table.post(base + "/clips")
+    async def _clips(req):
+        """Frame count and rate of video sources, by source key: what the pickers show beside a clip."""
+        body = await req.json()
+        out, roots = {}, train.roots()
+        for raw in (body.get("srcs") or [])[:500] if isinstance(body, dict) else []:
+            src = store.clean_src(raw)
+            if src is None:
+                continue
+            path = store.resolve(src, roots, train.bin_path)
+            info = media_io.clip_info(path) if path and store.kind_of(path.name) == "video" else None
+            if info:
+                out[store.src_key(src)] = info
+        return web.json_response({"clips": out})
 
     # --- automatic tagging
     @table.get(base + "/taggers")

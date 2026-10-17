@@ -1,6 +1,6 @@
 // Step 2, Tags: every item with its caption beside its picture, bulk edits, a tag cloud, and automatic tagging.
 import { composer as c } from "../../composer/composer.js";
-import { LABEL_TONES, LABEL_WORDS, stillOf } from "./state.js";
+import { LABEL_TONES, LABEL_WORDS, clipWords, srcKey, stillOf } from "./state.js";
 import { addTags, bulk, frequency, joinTags, splitTags } from "./captions.js";
 
 const PAGE = 48;
@@ -28,10 +28,11 @@ export function tagsStep({ app, session, go, ui, peek }) {
 
   const cards = list.slice(0, ui.limit).map((item) => {
     const card = c.captioned.cell({ title: item.name || item.src.filename || item.src.id, src: stillOf(item), kind: item.media_kind, caption: item.caption,
-      badge: LABEL_WORDS[item.label], tone: LABEL_TONES[item.label], selected: sel.has(item.id),
+      badge: [LABEL_WORDS[item.label], clipWords(ui.clips[srcKey(item.src)])].filter(Boolean).join(" · "), tone: LABEL_TONES[item.label], selected: sel.has(item.id),
       onChange: (text) => session.edit(() => { item.caption = text; }),
       onSelect: (on) => { if (on) sel.add(item.id); else sel.delete(item.id); sync(); },
       onOpen: () => peek(item) });
+    if (item.media_kind === "video") ui.needClips([item.src], () => card.setBadge([LABEL_WORDS[item.label], clipWords(ui.clips[srcKey(item.src)])].filter(Boolean).join(" · ")));
     return card;
   });
   const grid = cards.length ? c.grid.cards({ children: cards }) : c.hint.default({ text: ui.filter === "untagged" ? "Everything has tags." : "Nothing to show." });

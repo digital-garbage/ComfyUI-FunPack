@@ -58,6 +58,21 @@ def size_of(path, kind: str) -> tuple[int, int]:
         return int(s.codec_context.width), int(s.codec_context.height)
 
 
+def clip_info(path) -> dict | None:
+    """{"frames", "fps"} of a video file at its own rate, or None when it cannot be read."""
+    try:
+        import av
+        with av.open(str(path)) as box:
+            s = box.streams.video[0]
+            src = float(s.average_rate or s.guessed_rate or 24.0)
+            total = int(s.frames or 0)
+            if not total and s.duration and s.time_base:
+                total = int(float(s.duration * s.time_base) * src)
+    except Exception:                                     # noqa: BLE001 -- an unreadable file is just left without a number
+        return None
+    return {"frames": total, "fps": round(src, 3)} if total else None
+
+
 def frames_at(path, fps: float) -> int:
     """How many frames a clip gives when read at `fps` (0 = its own rate)."""
     import av

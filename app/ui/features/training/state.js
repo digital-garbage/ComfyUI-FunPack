@@ -15,6 +15,11 @@ export function stillOf(item) {
   return item.media_kind === "video" ? `/funpack/api/m/render/poster?${q}` : `/view?${q}`;
 }
 
+/** The key a source has on the server (store.src_key). */
+export const srcKey = (src) => (src.kind === "bin" ? `bin:${src.id}` : `${src.type || "output"}:${src.subfolder || ""}/${src.filename}`);
+/** "124 frames, 24 fps" for a clip whose numbers are known, else "". */
+export const clipWords = (info) => (info ? `${info.frames} f · ${info.fps} fps` : "");
+
 export function makeSession(api) {
   const listeners = new Set();
   const s = { name: "", doc: null, sets: [], error: "", saving: false, state: null };
