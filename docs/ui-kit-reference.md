@@ -1,0 +1,201 @@
+# UI kit reference
+
+The kit is called the Composer: `app/ui/composer/`. It is the only code that styles or builds raw DOM. For when to use which element, read [UI design guidelines](ui-design-guidelines.md). This page is the reference.
+
+## How elements work
+
+```js
+import { composer } from "../../composer/composer.js";
+
+const save = composer.button.md({ label: "Save", tone: "primary", onClick: save });
+host.appendChild(save.node);
+save.setBusy(true);
+// later
+save.destroy();
+```
+
+- An element is `composer.<group>.<variant>(props)`. It returns a **handle**: `{ node, destroy, ...methods }`.
+- `node` is the DOM node to place. `destroy()` removes listeners and the node. A feature that creates elements after `setup` returns must destroy them itself.
+- Methods differ by element. The common ones are `setValue`, `get`, `setText`, `setItems`, `setDisabled`, `setBusy`, `setPressed`, `open` and `close`. Read the factory in `composer/elements/<file>.js` for the exact set.
+- **Content is text.** Every string prop goes through `asText` (`internals/text.js`) and is shown as text, never parsed. A prop that would take HTML does not exist.
+- **Containers take handles**, not nodes or markup: `panel.default({ children: [handleA, handleB] })`.
+- **Unknown elements throw `UnknownElement`.** `composer.button.huge(...)` fails with the list of known variants. A feature that asks for an element that does not exist therefore hides itself instead of showing something approximate.
+- The kit's own CSS classes start with `cx-`. App frame classes start with `fp-` (`shell/frame.css`). Never use either from a feature.
+
+### Where each group lives
+
+| File | Groups |
+|---|---|
+| `text.js` | `brand`, `code`, `header`, `hint`, `label`, `text` |
+| `button.js` | `button`, `buttonGroup`, `iconButton` |
+| `input.js` | `filterList`, `input`, `number`, `search`, `stepper`, `textarea` |
+| `choice.js` | `checkbox`, `checkboxRow`, `checklist`, `color`, `radioGroup`, `segmented`, `select`, `toggle` |
+| `slider.js` | `range`, `slider` |
+| `layout.js` | `actionBar`, `collapsible`, `field`, `frame`, `group`, `list`, `panel`, `region`, `settingsRow`, `sidebar`, `splitPane`, `tabs`, `toolbar`, `workspace` |
+| `status.js` | `banner`, `chip`, `dot`, `dropzone`, `emptyState`, `inlineError`, `progress`, `skeleton`, `spinner`, `toast` |
+| `modal.js` | `modal` |
+| `popover.js` | `autocomplete`, `menu`, `popover`, `splitButton`, `tooltip` |
+| `floating.js` | `floating`, `overlay`, `slideOver` |
+| `gallery.js` | `gallery`, `ruler`, `viewer` |
+| `track.js`, `nle.js` | `track`, `timeline` |
+| `wheel.js` | `wheel` |
+
+## Elements
+
+Variants are listed after the group. Props shown are the ones every use needs; the catalogue (`catalogue/elements.html`) and `catalogue/demos.js` show each element with a working set.
+
+### Text
+
+| Element | Variants | Main props |
+|---|---|---|
+| `header` | `display`, `xl`, `lg`, `md`, `sm` | `text` |
+| `text` | `lg`, `md`, `sm`, `xs` | `text`. Has `setText`. |
+| `hint` | `default` | `text` |
+| `label` | `field`, `section` | `text`, `for` |
+| `code` | `inline`, `block` | `text`, `label` (block) |
+| `brand` | `default` | `name` |
+
+### Actions
+
+| Element | Variants | Main props |
+|---|---|---|
+| `button` | `xl`, `lg`, `md`, `sm`, `menu` | `label`, `onClick`, `tone` (`neutral`, `primary`, `danger`, `ghost`, `render`), `icon`, `disabled`, `busy`, `type`, `title`, `pressed`. Methods `setBusy`, `setDisabled`, `setPressed`, `setLabel`. |
+| `iconButton` | `md`, `sm`, `micro` | `icon`, `label` (required), `onClick`, `tone`, `disabled`, `pressed` |
+| `buttonGroup` | `md` | `label`, `value`, `items` |
+| `splitButton` | `md` | `label`, `items`, `onClick` |
+
+### Inputs and choices
+
+| Element | Variants | Main props |
+|---|---|---|
+| `input` | `md`, `sm` | `value`, `placeholder`, `label`, `onCommit` |
+| `search` | `md` | `placeholder`, `label` |
+| `textarea` | `md` | `value`, `rows`, `label` |
+| `number` | `md` | `value`, `min`, `max`, `step`, `precision`, `unit`, `snap`, `onChange`, `disabled`, `id`, `label` |
+| `stepper` | `md` | `value`, `min`, `max`, `step`, `label` |
+| `slider` | `md`, `sm`, `readout`, `macro` | `value`, `min`, `max`, `step`, `label`, `onChange`, `onCommit` |
+| `range` | `md` | `from`, `to`, `min`, `max`, `step`, `label` |
+| `toggle` | `default` | `label`, `hint`, `checked`, `onChange` |
+| `checkbox` | `default` | `checked`, `label` |
+| `checkboxRow` | `default` | `label`, `hint`, `checked` |
+| `checklist` | `default` | `label`, `values`, `items` |
+| `radioGroup` | `default` | `label`, `value`, `options` |
+| `segmented` | `md`, `sm` | `label`, `value`, `options`, `onChange` |
+| `select` | `md`, `sm` | `label`, `value`, `options`, `onChange` |
+| `filterList` | `md` | `value`, `items` |
+| `autocomplete` | `default` | anchored to an input; sits above modals |
+| `color` | `swatch` | `label`, `value` |
+| `wheel` | `picker`, `half` | `edge`, `items` |
+| `dropzone` | `default` | `label`, `hint` |
+
+`options` is a list of `{ value, label }`. Changes are reported as the value, not as an event.
+
+### Layout
+
+| Element | Variants | Notes |
+|---|---|---|
+| `frame` | `app` | The page frame. Owned by the shell. |
+| `workspace` | `docked` | Docked areas around a centre. |
+| `splitPane` | `h`, `v` | Two children with a draggable divider. |
+| `region` | `stack` | `children`, `gap`, `label`, `fill`. `.set(children)` replaces them. |
+| `panel` | `default`, `zone` | A titled card. |
+| `group` | `default` | A quiet sub-block. |
+| `field` | `default`, `row` | A label, a control and a hint. |
+| `settingsRow` | `default` | The row the Settings window uses. |
+| `collapsible` | `default` | |
+| `tabs` | `underline`, `dock` | `value`, `tabs`. |
+| `sidebar` | `rail` | `value`, `items`. |
+| `toolbar`, `actionBar` | `default`, `sticky` | Toolbars wrap; an action bar sticks to the bottom of its scroll area. |
+| `list` | `rows` | Grouped rows. |
+
+### Status and feedback
+
+| Element | Variants | Main props |
+|---|---|---|
+| `banner` | `info`, `warn`, `danger` | `text` |
+| `chip` | `neutral`, `good`, `warn`, `danger`, `info` | `label` |
+| `dot` | `default` | `tone`, `label` |
+| `inlineError` | `default` | `text` |
+| `toast` | `info`, `good`, `warn`, `danger` | `text`, `action`, `duration` (default 3200 ms) |
+| `progress` | `bar`, `indeterminate` | `value`, `max`, `label` |
+| `spinner` | `md`, `sm` | `label` |
+| `skeleton` | `line`, `block`, `grid` | `count`, `label` |
+| `emptyState` | `default` | `icon`, `title`, `hint` |
+
+### Overlays
+
+| Element | Variants | Main props |
+|---|---|---|
+| `modal` | `generic`, `stacked`, `dialogue`, `prompt`, `choice` | `generic`: `title`, `subtitle`, `size` (`sm`, `md`, `lg`, `xl`), `body`, `actions`, `onClose`, `closeOnOutside`, `closeOnEsc`. `dialogue`: `title`, `message`, `tone`, `confirmLabel`, `cancelLabel`, `onResult`, and a `.result` promise. |
+| `popover` | `anchored` | Positioned by `internals/anchor.js`, flips at an edge. |
+| `menu` | `dropdown`, `context` | A context menu is anchored to a point, not an element. |
+| `tooltip` | `default` | |
+| `floating` | `window` | A draggable window (the Settings and Sampler windows). |
+| `slideOver` | `md` | A panel that slides in from the side. |
+| `overlay` | `blocking` | `message`. Blocks the page while something runs. |
+
+All overlays use the portal, the z-ladder and the dismiss stack.
+
+### Media and time
+
+| Element | Variants | Main props |
+|---|---|---|
+| `gallery` | `adaptive`, `icons`, `list`, `rows`, `cards`, `strip` | `id`, `cols`, `items`. Density through `internals/density.js`. |
+| `viewer` | `media` | `src`, `empty` |
+| `ruler` | `default` | `label`, `total`, `marks` |
+| `track` | `default` | `label`, `pxPerSecond`, `playhead`, `selection`, `items` |
+| `timeline` | `stage` | `pxPerSecond`, `lanes`. Methods `setLanes`, `setPlayhead`, `setZoom`. |
+
+## Internals
+
+Used by elements. A feature does not import them. They exist in `composer/internals/`:
+
+| File | Does |
+|---|---|
+| `register.js` | `define`, `UnknownElement`, lookups. |
+| `el.js`, `text.js` | Safe DOM building, `asText`, `setText`. |
+| `ids.js` | Unique ids for label and control pairs. |
+| `zlayer.js` | The z-ladder. The only place a `z-index` is written. |
+| `portal.js` | Where overlays are drawn. |
+| `dismiss.js` | One Escape and outside-click stack. |
+| `focus.js` | `trap` and `roving`. |
+| `anchor.js` | Pure placement (measure, flip, clamp) plus `anchorTo`. |
+| `drag.js`, `dragReorder.js`, `snap.js`, `swapping.js` | Dragging, reordering and snapping. |
+| `density.js` | Grid columns 0 to 4, saved per id. |
+| `motion.js` | Reduced motion check and shared timings. |
+
+## Adding an element
+
+1. **Write it** in the right file under `composer/elements/` (or a new file). Call `define(group, variant, factory)` once per variant. The factory takes props and returns a handle. Use only `el`, `asText` and the internals. Never write `innerHTML`.
+2. **Register the file.** A new file is imported in `elements/index.js` and its stylesheet is added to `composer.css` before `polish.css`.
+3. **Style it** with tokens only, using `cx-` class names. Cover both themes and reduced motion.
+4. **Add a demo** to `catalogue/demos.js` under `"<group>.<variant>"`. A registered element with no demo fails the suite. A demo is a props object, or a function that receives `composer` when the props need other handles.
+5. **Teach the content test** any new string prop name. `composer/tests/rule_content_is_data.test.js` attacks every string under the names in `CONTENT_KEYS` with a markup payload and proves it comes back as text. If your prop name is not in the set (for example `caption` or `empty`), add it, or the test fails with a message naming the demo.
+6. **Test behaviour** in `composer/tests/elements_behaviour.test.js` or a new `*.test.js` beside it: what the element does when used, not only that it renders.
+7. **Look at it** in `catalogue/elements.html` in dark and light.
+
+## Rule tests that run over the whole kit
+
+| Test | Proves |
+|---|---|
+| `rule_content_is_data.test.js` | Every string prop of every demo is shown as text. |
+| `rule_unknown_element_hides.test.js` | Asking for a missing element throws and hides the feature. |
+| `rule_no_module_styling.test.js` | `tools/kit_lint` finds nothing in `modules/`, and its own fixtures (`tests/lint_fixtures`) still trip every rule. |
+| `register.test.js` | Duplicate definitions are refused. |
+| `overlays.test.js`, `dismiss.test.js`, `zlayer.test.js`, `portal.test.js` | Layering, Escape and portal behaviour. |
+| `panel_schema.test.js` | `panel.js` draws every setting type. |
+
+## `panel.js` and the catalogue
+
+`composer/panel.js` renders a module's `SETTINGS` as a panel with the allowed `ui` renderers. The live app does not use it for Settings (it uses `features/settings/field.js`); the catalogue and the tests do. So a `ui` value changes what the catalogue shows, not what Settings > Engine draws. See [Module reference](module-reference.md#renderers).
+
+## The catalogue
+
+Open `/funpack/app/ui/catalogue/` with the devserver running (`python tools/devserver.py 8199`).
+
+| Page | Shows |
+|---|---|
+| `index.html` | Tokens: type, colour, spacing, radius, motion. |
+| `elements.html` | Every registered element in both themes. |
+| `hide.html` | What happens when a module is broken or missing. |
+| `log.html` | The Log view. |
