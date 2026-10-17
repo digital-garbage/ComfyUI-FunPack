@@ -174,6 +174,7 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
         gc.collect()
         mm.unload_all_models()
         mm.soft_empty_cache()
+        _train_on_a_plain_copy(model)
         losses = _loss_hook(nt, cfg["steps"] * cfg["grad_accumulation"])
         jobs.say("Training", "training")
         shim = adapt["shims"]() if adapt and adapt.get("shims") else _nothing()
@@ -206,6 +207,19 @@ class _nothing:
 
     def __exit__(self, *exc):
         return False
+
+
+def _train_on_a_plain_copy(model):
+    """The trainer copies the model with clone(force_deepcopy=True). On a dynamic-VRAM model that copy is dynamic too, and the
+    trainer then loads it in full beside the original: two models on the card. Ask for a plain copy, loaded once."""
+    is_dynamic = getattr(model, "is_dynamic", None)
+    if not (callable(is_dynamic) and is_dynamic()):
+        return
+    clone = model.clone
+
+    def plain(*args, **kwargs):
+        return clone(*args, **{**kwargs, "disable_dynamic": True})
+    model.clone = plain
 
 
 class _loss_hook:

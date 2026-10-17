@@ -212,3 +212,27 @@ def test_a_picture_model_trains_from_pictures_of_different_shapes(plain_env):
     store.add("tiny", [{"src": {"kind": "output", "type": "input", "subfolder": "", "filename": "wide.png"}, "media_kind": "image", "label": "own", "caption": "wide"}])
     train.run(tiny_sd_patcher(), FakeClip32(), FakeVae4(), None, "tiny", settings(aspect_buckets=True, batch_size=1, steps=3))
     assert jobs.snapshot()["state"] == "done"
+
+
+def test_a_dynamic_model_is_copied_as_a_plain_one_for_the_trainer():
+    from modules.training.lora import train
+
+    class Dynamic:
+        calls = []
+
+        def is_dynamic(self):
+            return True
+
+        def clone(self, disable_dynamic=False, force_deepcopy=False):
+            self.calls.append((disable_dynamic, force_deepcopy))
+    m = Dynamic()
+    train._train_on_a_plain_copy(m)
+    m.clone(force_deepcopy=True)
+    assert m.calls == [(True, True)]
+
+    class Plain(Dynamic):
+        def is_dynamic(self):
+            return False
+    p = Plain()
+    train._train_on_a_plain_copy(p)
+    assert "clone" not in vars(p)
