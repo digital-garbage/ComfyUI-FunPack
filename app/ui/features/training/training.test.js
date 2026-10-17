@@ -433,3 +433,31 @@ test("Results: a finished run has a Download LoRA button that saves the file und
     off();
   } finally { globalThis.fetch = realFetch; }
 });
+
+test("Results: steps and the preview can be picked and downloaded, not only the final file", async () => {
+  const f = fake();
+  const urls = [], saved = [];
+  f.app.dom.saveBlob = (blob, name) => saved.push(name);
+  f.api.trainLoraUrl = (id, file) => `/lora/${id}?file=${file || ""}`;
+  f.api.trainRuns = async () => [{ run: "r6", name: "cats", set: "cats", state: "stopped", steps: 120, total: 500 }];
+  f.api.trainRunRecord = async () => ({ run: "r6", state: "stopped", steps: 120, total: 500, set: "cats", loss: [0.2], lora: "", files: ["cats_step50.safetensors", "cats_step100.safetensors", "cats_preview.safetensors"], settings: {} });
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => { urls.push(String(url)); return String(url).startsWith("/lora/") ? { ok: true, blob: async () => new Blob(["w"]) } : realFetch(url); };
+  try {
+    const { button, off } = await open(f);
+    button.click();
+    await wait(60);
+    tab("Results").click();
+    await wait(80);
+    const pick = [...document.querySelectorAll("select")].find((s) => [...s.options].some((o) => o.textContent === "Step 100"));
+    assert.ok(pick, "a choice of files");
+    pick.value = "cats_step100.safetensors";
+    pick.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await wait(20);
+    click("Download LoRA").click();
+    await wait(60);
+    assert.deepEqual(saved, ["cats_step100.safetensors"]);
+    assert.ok(urls.includes("/lora/r6?file=cats_step100.safetensors"));
+    off();
+  } finally { globalThis.fetch = realFetch; }
+});

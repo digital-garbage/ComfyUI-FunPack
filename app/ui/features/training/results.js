@@ -29,18 +29,27 @@ export function resultsStep({ app, ui }) {
       rec && rec.error ? c.inlineError.default({ text: rec.error }) : null,
       rec && rec.resumable && ["error", "stopped"].includes(rec.state) ? c.banner.info({ text: `The state at step ${rec.steps || 0} or earlier is kept. Restore and continue picks the training up from it with the Train step's current settings.` }) : null,
       chart, c.hint.default({ text: settings }),
-      c.toolbar.default({ items: [...(rec && rec.lora ? [download(app, rec)] : []), ...(rec && rec.resumable && !ui.run.active && !["training", "queued", "previewing", "paused"].includes(ui.run.state) ? [c.button.sm({ label: "Restore and continue", tone: "primary", title: "Carry on from the saved state", onClick: async () => { await ui.restore(chosen.run); } })] : [])], trailing: [c.button.sm({ label: "Delete this record", tone: "ghost", title: "Removes the record only, not the LoRA file", onClick: async () => { await app.api.trainForgetRun(chosen.run); ui.chosenRun = ""; await ui.loadRuns(); ui.redraw(); } })] }),
+      c.toolbar.default({ items: [...(rec ? downloads(app, ui, rec) : []), ...(rec && rec.resumable && !ui.run.active && !["training", "queued", "previewing", "paused"].includes(ui.run.state) ? [c.button.sm({ label: "Restore and continue", tone: "primary", title: "Carry on from the saved state", onClick: async () => { await ui.restore(chosen.run); } })] : [])], trailing: [c.button.sm({ label: "Delete this record", tone: "ghost", title: "Removes the record only, not the LoRA file", onClick: async () => { await app.api.trainForgetRun(chosen.run); ui.chosenRun = ""; await ui.loadRuns(); ui.redraw(); } })] }),
     ].filter(Boolean) })] }),
   ] });
 }
 
-/** Saves the finished LoRA through the browser, to wherever the person keeps files: an instance's own disk is gone when it is. */
-function download(app, rec) {
-  return c.button.sm({ label: "Download LoRA", tone: "primary", title: `Save ${rec.lora} to this computer`, onClick: async () => {
+const nameOf = (file, rec) => file === rec.lora ? "Finished LoRA" : /_preview(_\d+)?\.safetensors$/.test(file) ? "Last preview" : `Step ${(/_step(\d+)/.exec(file) || [])[1]}`;
+
+/** Saves a LoRA of the run through the browser, to wherever the person keeps files: an instance's own disk is gone when it is. */
+function downloads(app, ui, rec) {
+  const files = rec.files || (rec.lora ? [rec.lora] : []);
+  if (!files.length) return [];
+  ui.fileChoice = ui.fileChoice || {};
+  const chosen = () => (files.includes(ui.fileChoice[rec.run]) ? ui.fileChoice[rec.run] : files[0]);
+  const file = chosen();
+  const pick = files.length > 1 ? [c.select.sm({ label: "File to download", options: files.map((f) => ({ value: f, label: nameOf(f, rec) })), value: file, onChange: (v) => { ui.fileChoice[rec.run] = v; } })] : [];
+  return [...pick, c.button.sm({ label: "Download LoRA", tone: "primary", title: `Save ${file} to this computer`, onClick: async () => {
+    const file = chosen();
     try {
-      const res = await fetch(app.api.trainLoraUrl(rec.run));
+      const res = await fetch(app.api.trainLoraUrl(rec.run, file === rec.lora ? "" : file));
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).why || `The server refused (${res.status}).`);
-      app.dom.saveBlob(await res.blob(), rec.lora);
+      app.dom.saveBlob(await res.blob(), file);
     } catch (err) { c.toast.warn({ text: err.message }); }
-  } });
+  } })];
 }

@@ -156,3 +156,33 @@ def test_a_finished_run_can_be_downloaded_and_only_its_own_file(tmp_path, monkey
     status, disposition, body, refused = asyncio.run(go())
     assert status == 200 and body == b"weights" and "attachment" in disposition and "cats.safetensors" in disposition
     assert refused == [404, 404, 404, 404]
+
+
+def test_a_run_lists_its_saved_copies_and_preview_and_serves_each(tmp_path, monkeypatch):
+    import json
+    import folder_paths
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from core import config
+    from modules.training import lora
+    from modules.training.lora import jobs
+    monkeypatch.setattr(config, "TRAINING_DIR", tmp_path)
+    loras = tmp_path / "loras"
+    loras.mkdir()
+    for f in ("cats.safetensors", "cats_step200.safetensors", "cats_step50.safetensors", "cats_step50_2.safetensors", "cats_preview.safetensors", "dogs_step50.safetensors", "cats_stepx.safetensors"):
+        (loras / f).write_bytes(f.encode())
+    monkeypatch.setattr(folder_paths, "get_folder_paths", lambda kind: [str(loras)])
+    (jobs._dir() / "aaaaaaaaaaaa.json").write_text(json.dumps({"run": "aaaaaaaaaaaa", "name": "cats", "lora": "cats.safetensors"}))
+
+    async def go():
+        app, table = web.Application(), web.RouteTableDef()
+        lora.routes(table, "/m", web)
+        app.add_routes(table)
+        async with TestClient(TestServer(app)) as c:
+            rec = await (await c.get("/m/runs/aaaaaaaaaaaa")).json()
+            one = await c.get("/m/runs/aaaaaaaaaaaa/lora?file=cats_step200.safetensors")
+            other = await c.get("/m/runs/aaaaaaaaaaaa/lora?file=dogs_step50.safetensors")
+            return rec["files"], await one.read(), other.status
+    files, body, other = asyncio.run(go())
+    assert files == ["cats.safetensors", "cats_step50.safetensors", "cats_step50_2.safetensors", "cats_step200.safetensors", "cats_preview.safetensors"]
+    assert body == b"cats_step200.safetensors" and other == 404

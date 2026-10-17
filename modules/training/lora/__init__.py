@@ -25,6 +25,32 @@ def _bad(web, why, status=400):
     return web.json_response({"why": why}, status=status)
 
 
+def _loras_folders():
+    from pathlib import Path
+    try:
+        import folder_paths
+        return [Path(f) for f in folder_paths.get_folder_paths("loras")]
+    except Exception:                                      # noqa: BLE001 -- no ComfyUI folders here
+        return []
+
+
+def saved_files(rec) -> list[str]:
+    """The files a run left in the loras folder: its finished LoRA, the copies saved along the way (name_stepN) and its preview."""
+    import re
+    name = (rec or {}).get("name") or ""
+    stem = "".join(c for c in name if c.isalnum() or c in "-_ .").strip() or "funpack_lora"
+    pattern = re.compile(rf"{re.escape(stem)}_(step(\d+)|preview)(_\d+)?\.safetensors")
+    found = set()
+    for folder in _loras_folders():
+        try:
+            found.update(p.name for p in folder.iterdir() if p.is_file() and pattern.fullmatch(p.name))
+        except OSError:
+            pass
+    final = (rec or {}).get("lora") or ""
+    order = lambda f: (0, 0, f) if f == final else ((2, 0, f) if "_preview" in f else (1, int(re.search(r"_step(\d+)", f).group(1)), f))
+    return sorted(found | ({final} if final and any((d / final).is_file() for d in _loras_folders()) else set()), key=order)
+
+
 def routes(table, base, web):
     from ..._core import addons, projects, shortcuts
 
@@ -231,22 +257,17 @@ def routes(table, base, web):
     @table.get(base + "/runs/{run}")
     async def _record(req):
         rec = jobs.record(req.match_info["run"])
-        return web.json_response({**rec, "resumable": loop.has_checkpoint(rec.get("run"))}) if rec else _bad(web, "There is no such run.", 404)
+        return web.json_response({**rec, "resumable": loop.has_checkpoint(rec.get("run")), "files": saved_files(rec)}) if rec else _bad(web, "There is no such run.", 404)
 
     @table.get(base + "/runs/{run}/lora")
     async def _download(req):
         from pathlib import Path
         from urllib.parse import quote
         rec = jobs.record(req.match_info["run"])
-        name = (rec or {}).get("lora") or ""
-        if not name or Path(name).name != name or not name.endswith(".safetensors"):
-            return _bad(web, "This run has no saved LoRA file.", 404)
-        try:
-            import folder_paths
-            folders = [Path(f) for f in folder_paths.get_folder_paths("loras")]
-        except Exception:                                  # noqa: BLE001 -- no ComfyUI folders here
-            folders = []
-        path = next((f / name for f in folders if (f / name).is_file()), None)
+        name = req.query.get("file") or (rec or {}).get("lora") or ""
+        if not rec or name not in saved_files(rec) or Path(name).name != name:
+            return _bad(web, "This run has no such saved LoRA file.", 404)
+        path = next((f / name for f in _loras_folders() if (f / name).is_file()), None)
         if path is None:
             return _bad(web, f"{name} is no longer in your loras folder.", 404)
         return web.FileResponse(path, headers={"Content-Type": "application/octet-stream", "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
