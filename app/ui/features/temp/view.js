@@ -6,7 +6,7 @@ const ICON = { image: "▦", video: "▶", audio: "♪" };
 const url = (f) => `/view?${new URLSearchParams({ filename: f.filename, subfolder: f.subfolder || "", type: "temp" })}`;
 const size = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
-export function mount({ setFooter, close }) {
+export function mount({ dom, setFooter, close }) {
   const body = composer.region.stack({ gap: "sm", fill: true, label: "Temp files" });
 
   async function load() {
@@ -27,7 +27,7 @@ export function mount({ setFooter, close }) {
             hint: `${f.kind} · ${size(Number(f.size) || 0)} · ${new Date((Number(f.mtime) || 0) * 1000).toLocaleTimeString()}`,
             thumb: f.kind === "image" ? url(f) : null,
           })),
-          onActivate: (cell) => window.open(url(files.find((f) => id(f) === cell.id)), "_blank", "noopener"),
+          onActivate: (cell) => dom.openTab(url(files.find((f) => id(f) === cell.id))),
         })
       : composer.emptyState.default({ icon: "▤", title: "Nothing in the temp directory", hint: payload.detail || "" })]);
     setFooter({ note: payload.path || "", actions: [

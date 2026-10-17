@@ -156,25 +156,13 @@ export const models = (app) => function mount() {
   const mine = (t, id) => t.startsWith(`${id}:`) || t.startsWith(`${id}.`)
     || ((slotsNow().find((s) => s.id === id) || {}).roles || []).some((r) => r.label && t.startsWith(`${r.label} is `));
   const nodeCard = (slot) => {
-    const node = document.createElement("button");
-    node.type = "button"; node.className = "fp-node-card cx-focusable";
     const skipped = Boolean((ps.skipped && ps.skipped() || {})[slot.id]);      // optional, and not available: the run goes without it
     const needs = !skipped && (specs[slot.node] === null || ps.incomplete().some((t) => mine(t, slot.id)));
-    const head = Object.assign(document.createElement("span"), { className: "fp-node-title", textContent: label(slot) });
-    const dot = Object.assign(document.createElement("span"), { className: `fp-node-state${needs ? " fp-needs" : ""}`, title: skipped ? "Skipped: not available" : needs ? "Needs attention" : "Ready" });
-    const sub = Object.assign(document.createElement("span"), { className: "fp-node-sub", textContent: skipped ? "skipped: not available" : summary(slot) });
-    node.append(dot, head, sub);
-    node.addEventListener("click", () => { openId = slot.id; draw(); });
-    return { node };
+    return c.tile.node({ title: label(slot), sub: skipped ? "skipped: not available" : summary(slot), state: skipped ? "skipped" : needs ? "needs" : "ready",
+      onClick: () => { openId = slot.id; draw(); } });
   };
-  const addCard = () => {
-    const node = document.createElement("button");
-    node.type = "button"; node.className = "fp-node-card fp-node-add cx-focusable";
-    node.append(Object.assign(document.createElement("span"), { className: "fp-node-title", textContent: "＋ Add a node" }),
-      Object.assign(document.createElement("span"), { className: "fp-node-sub", textContent: `to ${group}` }));
-    node.addEventListener("click", async () => { const cls = await pickNode(api, `Add a node to ${group}`); if (cls) structural({ action: "add", node: cls, group }); });
-    return { node };
-  };
+  const addCard = () => c.tile.add({ title: "＋ Add a node", sub: `to ${group}`,
+    onClick: async () => { const cls = await pickNode(api, `Add a node to ${group}`); if (cls) structural({ action: "add", node: cls, group }); } });
 
   // A problem that names no slot first (a loop: "a feeds b feeds a") has no card of its own: its words are shown as they are,
   // and every slot it names counts as broken, so the simple view cannot hide it.
@@ -203,7 +191,7 @@ export const models = (app) => function mount() {
     specs = {}; await describe(); say(r.refused.length ? `Not changed: ${r.refused[0]}` : "");
   }
   async function importWorkflow() {
-    const file = await new Promise((resolve) => { const i = Object.assign(document.createElement("input"), { type: "file", accept: ".json,application/json" }); i.onchange = () => resolve(i.files[0]); i.oncancel = () => resolve(null); i.click(); });
+    const file = await app.dom.pickFile(".json,application/json");
     if (!file) return;
     let got;
     try { got = await api.importWorkflow(JSON.parse(await file.text())); } catch (err) { return say(err instanceof SyntaxError ? "That file is not valid JSON." : err.message); }
@@ -216,9 +204,8 @@ export const models = (app) => function mount() {
   async function card() {
     let url;
     try { url = URL.createObjectURL(await api.settingsCard(slotsNow(), app.project.project && app.project.project.name, app.theme && app.theme.get ? app.theme.get() : "dark")); } catch (err) { return say(`Could not render the card: ${err.message}`); }
-    const img = Object.assign(document.createElement("img"), { src: url, alt: "Pipeline settings", style: "max-width:100%" });
-    const win = c.modal.generic({ title: "Pipeline settings", size: "lg", body: { node: img }, onClose: () => URL.revokeObjectURL(url) });
-    win.setFooter({ actions: [c.button.sm({ label: "Save PNG", tone: "primary", onClick: () => Object.assign(document.createElement("a"), { href: url, download: "funpack-settings.png" }).click() })] });
+    const win = c.modal.generic({ title: "Pipeline settings", size: "lg", body: c.viewer.media({ src: url, kind: "image" }), onClose: () => URL.revokeObjectURL(url) });
+    win.setFooter({ actions: [c.button.sm({ label: "Save PNG", tone: "primary", onClick: () => app.dom.download(url, "funpack-settings.png") })] });
   }
 
   function draw() {
@@ -231,8 +218,7 @@ export const models = (app) => function mount() {
     if (openId && !open) openId = null;                       // removed or swapped away
     if (open) {
       const back = c.button.sm({ label: `‹ ${open.group || "Other"}`, tone: "ghost", onClick: () => { openId = null; draw(); } });
-      const detail = c.region.stack({ gap: "md", children: slotBlock(open) });
-      detail.node.classList.add("fp-card");
+      const detail = c.card.default({ children: slotBlock(open) });
       return page.set([back, note ? c.banner.warn({ text: note }) : null, ...status(open.id), detail].filter(Boolean));
     }
     let everything = false;
@@ -240,10 +226,9 @@ export const models = (app) => function mount() {
     const show = (on) => { try { on ? localStorage.setItem(ALL_KEY, "1") : localStorage.removeItem(ALL_KEY); } catch { /* this visit only */ } draw(); };
     const loose = unclaimed();
     const chosen = slots.filter((x) => needsChoice(x, specs[x.node], specs[x.node] === null || ps.incomplete().some((t) => mine(t, x.id)) || namedIn(x.id, loose)));
-    const grid = c.region.stack({ gap: "none", children: everything
+    const grid = c.grid.cards({ children: everything
       ? [...slots.filter((x) => (x.group || "Other") === group).map(nodeCard), group ? addCard() : null].filter(Boolean)
       : chosen.map(nodeCard) });
-    grid.node.classList.add("fp-node-grid");
     const rest = slots.length - chosen.length;
     page.set([tools(), note ? c.banner.warn({ text: note }) : null, ...status(),
       !slots.length ? c.emptyState.default({ icon: "⬡", title: "No pipeline loaded", hint: "Is ComfyUI reachable? Or start from a model's starting point above." }) : null,
@@ -252,7 +237,7 @@ export const models = (app) => function mount() {
       grid].filter(Boolean));
   }
   // A redraw while a box has focus would eat what is being typed: it waits for the focus to leave.
-  const typing = () => page.node.contains(document.activeElement) && /^(input|textarea)$/i.test(document.activeElement.tagName);
+  const typing = () => app.dom.typingIn(page.node);
   page.node.addEventListener("focusout", () => setTimeout(() => { if (!typing()) draw(); }));
   draw();
   ps.ensureLoaded().then(async () => { opened = ps.snapshot(); await describe(); draw(); });

@@ -19,7 +19,7 @@ export function settingRow(id, name, spec, values, onChange) {
     control = slider ? c.slider.readout({ label, value, min: spec.min, max: spec.max, step, precision: spec.type === "int" ? 0 : 2, onCommit: set })
       : c.number.md({ label, value, min: spec.min, max: spec.max, step, precision: spec.type === "int" ? 0 : undefined, onChange: set });
   } else if (spec.type === "enum") control = c.select.md({ label, value, options: (spec.options || []).map((o) => ({ value: o.value, label: o.label || o.value })), onChange: set });
-  else if (spec.type === "color") control = c.color.swatch({ label, value: value || "#000000", onChange: set });
+  else if (spec.type === "color") control = c.color.swatch({ label, value: value || undefined, onChange: set });
   else control = (spec.type === "multiline" ? c.textarea.md({ label, value: value || "", rows: 3, onCommit: set }) : c.input.md({ label, value: value || "", onCommit: set }));
   return c.settingsRow.default({ label, hint, control });
 }

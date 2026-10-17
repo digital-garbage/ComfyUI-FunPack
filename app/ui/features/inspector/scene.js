@@ -45,7 +45,7 @@ function trimRows(p, sc, open) {
 }
 
 /** A group of fields on one rounded card. */
-export const card = (...children) => { const n = c.region.stack({ gap: "md", children: children.flat().filter(Boolean) }); n.node.classList.add("fp-card"); return n; };
+export const card = (...children) => c.card.default({ children: children.flat().filter(Boolean) });
 
 export function sceneRows(p, app) {
   const sc = p.selected, open = p.project;

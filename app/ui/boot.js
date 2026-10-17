@@ -12,6 +12,7 @@ import { createPlayhead } from "./shell/playhead.js";
 import { createMaintenance } from "./shell/maintenance.js";
 import { syncSeparated } from "./shell/audio.js";
 import { createKeys } from "./shell/keys.js";
+import { createDom } from "./shell/dom.js";
 import { createDock } from "./shell/dock.js";
 import { hostFor } from "./shell/mounts.js";
 import paths from "./modules.js";
@@ -29,7 +30,7 @@ const link = linkPipeline({ project, pipeline, onOpen: (fn) => on((what) => { if
 const frame = build(document.getElementById("app"));
 const selection = createSelection({ project });
 selection.on(() => say("select"));
-const app = { editorSettings: [], timelineLanes: [], timelineView: {}, mediaMenu: [], mediaPeek: {}, sceneSections: [], clipTags: [], has: new Set(), actions: [], inputHooks: [], beforeRun: [], promptPrefix: [], lastRun: { typed: undefined, n: 0 }, runner: {}, project, pipeline, pipelineOwned: link.owns, pipelineWhy: link.why, generate, api, on, say, title: frame.setZoneTitle, selection, playhead: createPlayhead(), theme: window.ComposerTheme, dock: createDock(), maintenance: createMaintenance({ api, flush: async () => { await project.flush(); if (project.unsaved) throw new Error("Your latest edits could not be saved, so nothing was changed. Try again in a moment."); } }), keys: createKeys(), resetLayout: () => { frame.resetLayout(); app.dock.reset(); } };
+const app = { editorSettings: [], timelineLanes: [], timelineView: {}, mediaMenu: [], mediaPeek: {}, sceneSections: [], clipTags: [], has: new Set(), actions: [], inputHooks: [], beforeRun: [], promptPrefix: [], lastRun: { typed: undefined, n: 0 }, runner: {}, project, pipeline, pipelineOwned: link.owns, pipelineWhy: link.why, generate, api, on, say, title: frame.setZoneTitle, selection, playhead: createPlayhead(), theme: window.ComposerTheme, dock: createDock(), maintenance: createMaintenance({ api, flush: async () => { await project.flush(); if (project.unsaved) throw new Error("Your latest edits could not be saved, so nothing was changed. Try again in a moment."); } }), keys: createKeys(), dom: createDom(), resetLayout: () => { frame.resetLayout(); app.dock.reset(); } };
 // Which backend modules the server has (loaded, even if this model cannot use them). Unknown (server down) = assume all, so nothing is hidden by a failed fetch.
 const installed = await Promise.race([api.modules(), new Promise((_, no) => setTimeout(() => no(new Error("slow")), 4000))])      // a stalled server must not leave the page blank
   .then((m) => (Array.isArray(m.modules) ? new Set([...m.modules, ...(m.incompatible || [])].map((x) => x.id)) : null)).catch(() => null);

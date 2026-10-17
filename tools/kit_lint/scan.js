@@ -34,8 +34,7 @@ export function scanSource(source, rules) {
   const body = code(source);
   const found = [];
   for (const rule of rules) {
-    const line = body.split("\n").findIndex((l) => rule.test.test(l));
-    if (line !== -1) found.push({ rule: rule.name, why: rule.why, line: line + 1 });
+    body.split("\n").forEach((l, at) => { if (rule.test.test(l)) found.push({ rule: rule.name, why: rule.why, line: at + 1 }); });
   }
   return found;
 }

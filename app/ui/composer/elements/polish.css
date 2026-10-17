@@ -99,9 +99,9 @@ body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
 .cx-viewer-media { border-radius: var(--r-3); }
 
 /* inspector: related fields share one rounded card */
-.fp-card { background: var(--elev-2); border-radius: var(--r-5); padding: var(--sp-6); gap: var(--sp-5); }
-.fp-card .cx-input, .fp-card .cx-textarea, .fp-card .cx-select { background: var(--elev-3); }
-.fp-card .cx-segmented { background: var(--elev-3); }
+.cx-card { background: var(--elev-2); border-radius: var(--r-5); padding: var(--sp-6); gap: var(--sp-5); }
+.cx-card .cx-input, .cx-card .cx-textarea, .cx-card .cx-select { background: var(--elev-3); }
+.cx-card .cx-segmented { background: var(--elev-3); }
 .cx-panel-body > .cx-eyebrow, .cx-stack > .cx-eyebrow { margin-block-start: var(--sp-4); }
 
 /* list views read as a grouped card, like a settings list */

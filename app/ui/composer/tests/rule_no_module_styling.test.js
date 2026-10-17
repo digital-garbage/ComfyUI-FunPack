@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 
 import { scan, scanSource, code } from "../../../../tools/kit_lint/scan.js";
-import { MODULE_RULES, KIT_RULES } from "../../../../tools/kit_lint/rules.js";
+import { MODULE_RULES, KIT_RULES, FEATURE_RULES } from "../../../../tools/kit_lint/rules.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..", "..", "..");
@@ -34,6 +34,12 @@ test("the kit never interprets content", () => {
 
 test("the shell never interprets content either", () => {
   assert.deepEqual(scan(join(repo, "app", "ui", "shell"), KIT_RULES), []);
+});
+
+test("every UI feature is built from the kit and touches the page only through app", () => {
+  const violations = scan(join(repo, "app", "ui", "features"), FEATURE_RULES);
+  assert.deepEqual(violations, [],
+    violations.map((v) => `${v.file.replace(repo, "")}:${v.line} ${v.rule}`).join("\n"));
 });
 
 // --- the scanner has to actually catch things ------------------------------

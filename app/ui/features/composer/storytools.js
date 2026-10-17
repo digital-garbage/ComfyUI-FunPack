@@ -76,7 +76,7 @@ export function variablesPanel(app, own) {
     c.hint.default({ text: "Write $name in a prompt; it becomes the variable's text when you generate." }),
   ]); };
   draw();
-  own(app.on(() => { const typing = page.node.contains(document.activeElement) && /^(input|textarea)$/i.test(document.activeElement.tagName); if (!typing && shown !== JSON.stringify([p.project && p.project.id, rows()])) draw(); }));
+  own(app.on(() => { const typing = app.dom.typingIn(page.node); if (!typing && shown !== JSON.stringify([p.project && p.project.id, rows()])) draw(); }));
   return page;
 }
 

@@ -3,15 +3,7 @@ import { composer as c } from "../../composer/composer.js";
 import { list } from "../../shell/project.js";
 
 const SEEN = "funpack_welcomed";
-// A tile: title over its one-line hint, the whole tile pressable.
-const card = (title, hint, onClick) => {
-  const node = document.createElement("button");
-  node.type = "button"; node.className = "fp-tile cx-focusable";
-  const t = document.createElement("span"), h = document.createElement("span");
-  t.className = "fp-tile-title"; t.textContent = title; h.className = "fp-tile-hint"; h.textContent = hint;
-  node.append(t, h); node.addEventListener("click", onClick);
-  return { node };
-};
+const card = (title, sub, onClick) => c.tile.action({ title, sub, onClick });
 
 export default {
   id: "welcome",
@@ -37,10 +29,9 @@ export default {
       if (win) return;
       const recent = app.project.project;
       const done = () => { markSeen(); if (win) win.close("done"); };
-      const tiles = c.region.stack({ gap: "sm", children: [
+      const tiles = c.grid.pair({ children: [
         card("Update", "Pull the newest version from origin, install missing requirements and restart ComfyUI (after a running generation finishes)", () => app.maintenance.update()), card("Switch branch", "Pick another branch", () => app.maintenance.switchBranch()),
         card("Restart ComfyUI", "Reload the server without updating", () => app.maintenance.restart()), card("Rollback update", "Undo the last update", () => app.maintenance.rollback())] });
-      tiles.node.classList.add("fp-tiles");
       win = c.modal.generic({
         title: "Welcome to FunPack", size: "lg",
         body: c.region.stack({ gap: "md", children: [

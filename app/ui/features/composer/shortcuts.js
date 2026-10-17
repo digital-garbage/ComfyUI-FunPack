@@ -32,13 +32,11 @@ export function shortcuts(app, own) {
   /** Export / import / new category / delete all. */
   function tools(anchor, lib) {
     const did = (p) => p.then(draw).catch((err) => tell(err.message));
-    c.menu.dropdown({ anchor: anchor || document.body, items: [{ id: "export", label: "Export all…" }, { id: "import", label: "Import…" }, { id: "category", label: "New category…" }, { separator: true }, { id: "clear", label: "Delete all", danger: true, disabled: !(lib.shortcuts || []).length }],
+    c.menu.dropdown({ anchor: anchor || app.dom.body, items: [{ id: "export", label: "Export all…" }, { id: "import", label: "Import…" }, { id: "category", label: "New category…" }, { separator: true }, { id: "clear", label: "Delete all", danger: true, disabled: !(lib.shortcuts || []).length }],
       onPick: async (id) => {
-        if (id === "export") return Object.assign(document.createElement("a"), { href: "/funpack/api/shortcuts/export", download: "funpack_shortcuts.json" }).click();
+        if (id === "export") return app.dom.download("/funpack/api/shortcuts/export", "funpack_shortcuts.json");
         if (id === "import") {
-          const input = Object.assign(document.createElement("input"), { type: "file", accept: ".json,application/json" });
-          input.onchange = async () => {
-            const file = input.files && input.files[0];
+          const picked = async (file) => {
             if (!file) return;
             let data;
             try { data = JSON.parse(await file.text()); } catch { return tell("That file is not valid JSON."); }
@@ -46,7 +44,7 @@ export function shortcuts(app, own) {
               items: [{ id: "merge", label: "Merge into my library" }, { id: "replace", label: "Replace my library (deletes the shortcuts you have now)" }],
               onPick: (mode) => did(app.api.importShortcuts(data, mode)) });       // closing the window imports nothing
           };
-          return input.click();
+          return picked(await app.dom.pickFile(".json,application/json"));
         }
         if (id === "category") {
           const category = await c.modal.prompt({ title: "New category", label: "Category", confirmLabel: "Next" }).result;

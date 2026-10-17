@@ -9,7 +9,7 @@ import { widgetControl } from "../settings/models.js";
 export default {
   id: "sampler",
   mount: "timeline.status",
-  needs: ["pipeline"],
+  needs: ["pipeline", "dom"],
   setup({ host, app }) {
     const ps = app.pipeline;
     let pop = null, specs = {}, unreadable = false;
@@ -74,7 +74,7 @@ export default {
       body.set([...unread, ...rows, ...mods.flatMap((m) => [mods.length > 1 ? c.label.section({ text: m.title || m.id }) : null,
         ...Object.entries(m.settings).filter(([, spec]) => whenSatisfied(values, m.id, spec.when)).map(([name, spec]) => settingRow(m.id, name, spec, values, change))])].filter(Boolean));
     };
-    const typing = () => body.node.contains(document.activeElement) && /^(input|textarea)$/i.test(document.activeElement.tagName);
+    const typing = () => app.dom.typingIn(body.node);
     const off = ps.subscribe(() => { if (pop && !typing()) describe().then(draw); });
     const show = () => { button.node.hidden = !sampling().length && !marked().length && !seeds().length; if (button.node.hidden && pop) pop.close(); };
     ps.ensureLoaded().then(show);

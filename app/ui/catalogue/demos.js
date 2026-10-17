@@ -141,6 +141,13 @@ export const DEMOS = {
     ],
   }),
   "brand.default": { name: "FunPack" },
+  "card.default": (c) => ({ children: [c.field.default({ label: "Prompt", control: c.input.md({ value: "A slow push in on the rooftop" }) }), c.hint.default({ text: "Related fields share one card." })] }),
+  "grid.pair": (c) => ({ children: [c.tile.action({ title: "Update", sub: "Pull the newest version" }), c.tile.action({ title: "Restart", sub: "Reload the server" })] }),
+  "grid.cards": (c) => ({ children: [c.tile.node({ title: "Load checkpoint", sub: "model.safetensors" }), c.tile.node({ title: "Sampler", sub: "Needs a choice", state: "needs" }), c.tile.add({ title: "＋ Add a node", sub: "to Sampling" })] }),
+  "tile.action": { title: "Update", sub: "Pull the newest version from origin" },
+  "tile.node": { title: "Load checkpoint", sub: "model.safetensors", state: "ready" },
+  "tile.add": { title: "＋ Add a node", sub: "to Loaders" },
+  "hero.default": { title: "FunPack 5", hint: "“Cunning Cranberry” · Cutting Room" },
   "panel.default": (c) => ({
     title: "Scene 3",
     actions: [c.iconButton.sm({ icon: "✎", label: "Rename" }), c.iconButton.sm({ icon: "✕", label: "Remove" })],

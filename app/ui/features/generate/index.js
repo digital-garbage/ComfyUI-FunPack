@@ -17,7 +17,7 @@ export const renderFor = (sc, p, media, unitSec, promptId, text) => ({ media, ..
 export default {
   id: "generate",
   mount: "timeline.actions",
-  needs: ["project", "pipeline", "generate", "api", "selection"],
+  needs: ["project", "pipeline", "generate", "api", "selection", "dom"],
   setup({ host, app }) {
     const p = app.project, g = app.generate;
     let said = false;
@@ -57,8 +57,7 @@ export default {
       let made = 0;
       said = false;
       try {
-        const typing = document.activeElement;           // a field still being typed in commits first, however Generate was started
-        if (typing && typing !== document.body && typeof typing.blur === "function") typing.blur();
+        app.dom.blur();           // a field still being typed in commits first, however Generate was started
         await Promise.all((app.beforeRun || []).map((f) => f().catch(() => {})));      // an edit still on its way (the Story box) lands first
         // A project's pipeline still going in is the one this run uses, not the last one's.
         // a typed value is already live and is never waited on; only a pipeline still going in, or a node change, is

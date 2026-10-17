@@ -9,7 +9,7 @@ const base = (id) => `/funpack/api/media/${encodeURIComponent(id)}`;
 export default {
   id: "media",
   mount: "assets.media",
-  needs: ["project", "api"],
+  needs: ["project", "api", "dom"],
   setup({ host, app }) {
     const p = app.project, api = app.api;
     let items = [];
@@ -82,7 +82,7 @@ export default {
         if (!name || !name.trim()) return;
         try { await api.renameMedia(it.id, name.trim()); await refresh(); } catch (err) { tell(err.message); }
       },
-      export: (it) => { const m = items.find((x) => x.id === it.id); Object.assign(document.createElement("a"), { href: `${base(it.id)}/file`, download: m ? m.name : it.id }).click(); },
+      export: (it) => { const m = items.find((x) => x.id === it.id); app.dom.download(`${base(it.id)}/file`, m ? m.name : it.id); },
       delete: async (it) => {
         const name = (items.find((m) => m.id === it.id) || {}).name || "this file";
         if (!(await c.modal.dialogue({ title: "Delete media", message: `Delete “${name}” from the bin for good? Scenes in other projects that use it will lose it too.`, tone: "danger", confirmLabel: "Delete" }).result)) return;

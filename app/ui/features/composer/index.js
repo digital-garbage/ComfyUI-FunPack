@@ -30,7 +30,7 @@ const story = (app, own) => {
   app.api.storyMarkers().then((r) => { words = r.markers || words; marker = words[0]; sync(); }).catch(() => {});
   function sync() {
     warn.setText(p.project && clash(p.project, words) ? `A scene's own text contains a cut word (${words.join(", ")}), so the story shows it as two scenes. Remove the word from that scene.` : "");
-    if (!p.project || document.activeElement === area || timer) return;           // never rewrite the box while it is being typed in
+    if (!p.project || app.dom.focusOn(area) || timer) return;           // never rewrite the box while it is being typed in
     const next = joinStory(p.project, marker);
     if (area.value !== next) box.setValue(next);
   }
@@ -63,7 +63,7 @@ const sheets = { story, shortcuts, build, cuts,
 export default {
   id: "composer",
   mount: "timeline.status",
-  needs: ["project", "api", "pipeline"],
+  needs: ["project", "api", "pipeline", "dom"],
   setup({ host, app }) {
     let win = null, owned = [];
     const cleanup = () => { owned.forEach((f) => f()); owned = []; };

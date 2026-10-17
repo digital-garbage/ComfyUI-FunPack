@@ -45,3 +45,17 @@ export const KIT_RULES = [
   { name: "eval", why: "nothing in the kit is compiled at runtime",
     test: /\beval\s*\(|new\s+Function\s*\(/ },
 ];
+
+// A UI feature (app/ui/features) is app code, not a module, but it follows the
+// same discipline: it builds with kit elements and reaches the page only through
+// `app`. What it may not do is the module list, plus the frame's and the kit's
+// private class names. localStorage is allowed (per-browser preferences).
+export const FEATURE_RULES = [
+  ...MODULE_RULES.filter((r) => !["reaching-for-globals", "raw-element"].includes(r.name)),
+  { name: "document", why: "the page is reached through app.dom, never directly",
+    test: /(?<![\w./])document\s*[.[,;)]|createElementNS|\[\s*['"`]createElement['"`]\s*\]/ },
+  { name: "reaching-for-globals", why: "the page is reached through app.dom, never directly",
+    test: /\bglobalThis\b|(?<![\w./])window\s*[.[]|\bself\s*\[/ },
+  { name: "class-name", why: "classes belong to the kit (cx-) and the frame (fp-); a feature names elements",
+    test: /\bclassName\b|['"`.][^'"`\n]*\b(?:fp|cx)-[a-z]/ },
+];

@@ -11,6 +11,7 @@ import "./input.js";
 import "./choice.js";
 import "./slider.js";
 import "./layout.js";
+import "./tile.js";
 import "./status.js";
 import "./modal.js";
 import "./popover.js";

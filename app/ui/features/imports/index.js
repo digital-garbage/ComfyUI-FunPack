@@ -6,23 +6,14 @@ import { onMediaDrop } from "../../shell/dnd.js";
 import { addScene } from "../../shell/edits.js";
 import { isVideoClip, isSubclip } from "../../shell/scenes.js";
 
-/** How long a bin file is, from the browser's own reading of it (null when it cannot say). */
-const lengthOf = (asset) => new Promise((resolve) => {
-  const m = document.createElement(asset.kind === "audio" ? "audio" : "video");
-  const done = (v) => { m.removeAttribute("src"); m.load(); resolve(v); };
-  m.preload = "metadata";
-  m.onloadedmetadata = () => done(Number.isFinite(m.duration) ? m.duration : null);
-  m.onerror = () => done(null);
-  setTimeout(() => done(null), 8000);
-  m.src = `/funpack/api/media/${encodeURIComponent(asset.id)}/file`;
-});
 
 export default {
   id: "imports",
   mount: "timeline.toolbar",
-  needs: ["project", "api", "playhead"],
+  needs: ["project", "api", "playhead", "dom"],
   setup({ host, app }) {
     const p = app.project;
+    const lengthOf = (asset) => app.dom.length(asset.kind, `/funpack/api/media/${encodeURIComponent(asset.id)}/file`);       // null when the browser cannot say
 
     async function choose(kind) {
       let bin;
@@ -50,10 +41,10 @@ export default {
     const at = (e) => (app.timelineView && app.timelineView.timeAt ? app.timelineView.timeAt(e.clientX) : app.playhead.at);
     const asset = async (item) => { let list = []; try { list = (await app.api.media()).media || []; } catch { /* the drop does nothing */ } return list.find((m) => m.id === item.id); };
     const offs = [
-      onMediaDrop(".cx-nle-lane.cx-nle-lane-video", async (item, lane, e) => {
+      onMediaDrop("lane:video", async (item, lane, e, where) => {
         const a = await asset(item);
         if (!a || !p.project) return;
-        const clip = e.target.closest && e.target.closest(".cx-nle-clip[data-id]"), id = clip && clip.dataset.id;
+        const id = where.clipId;
         if (a.kind === "video") return add(a);
         if (a.kind !== "image") return c.toast.warn({ text: "A sound goes on an audio lane." });
         const hit = id && p.scenes.find((s) => s.id === id);
@@ -65,7 +56,7 @@ export default {
         const made = p.edit((pr) => { const sc = addScene(pr, "image"); sc.source_image = a.id; return sc; });
         if (made) p.select(made.id);
       }),
-      onMediaDrop(".cx-nle-lane.cx-nle-lane-audio", async (item, lane, e) => {
+      onMediaDrop("lane:audio", async (item, lane, e) => {
         const a = await asset(item);
         if (!a || a.kind !== "audio" || !p.project) return a && c.toast.warn({ text: "Only a sound can go on an audio lane." });
         const seconds = await lengthOf(a);

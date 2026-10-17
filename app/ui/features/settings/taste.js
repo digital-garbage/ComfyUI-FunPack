@@ -20,8 +20,7 @@ export const taste = (app) => function mount() {
     try {
       const r = await fetch(app.api.tasteKeyUrl(name));
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).why || `The server refused (${r.status}).`);
-      const link = Object.assign(document.createElement("a"), { download: `${name}.zip`, href: URL.createObjectURL(await r.blob()) });
-      link.click(); URL.revokeObjectURL(link.href);
+      app.dom.saveBlob(await r.blob(), `${name}.zip`);
     } catch (err) { tell(err.message); }
   };
   async function bring([file]) {
@@ -49,8 +48,7 @@ export const taste = (app) => function mount() {
     try {
       const r = await fetch(app.api.blockInfluenceExportUrl(key));
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).why || `The server refused (${r.status}).`);
-      const link = Object.assign(document.createElement("a"), { download: `${key}.block_influence.pt`, href: URL.createObjectURL(await r.blob()) });
-      link.click(); URL.revokeObjectURL(link.href);
+      app.dom.saveBlob(await r.blob(), `${key}.block_influence.pt`);
     } catch (err) { tell(err.message); }
   };
   const clearInfluence = async (key) => {

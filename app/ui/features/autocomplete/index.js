@@ -8,7 +8,7 @@ const BOXES = new Set(["Story", "Prompt"]);          // aria-labels of the promp
 export default {
   id: "autocomplete",
   mount: "menubar.menus",
-  needs: ["project", "api"],
+  needs: ["project", "api", "dom"],
   setup({ app }) {
     const p = app.project;
     let library = [], fetched = 0, span = null;
@@ -39,11 +39,11 @@ export default {
       const t = e.target;
       if (t instanceof HTMLTextAreaElement && BOXES.has(t.getAttribute("aria-label"))) { refresh(); attach(t); }
     };
-    document.addEventListener("focusin", onFocus);
+    const offFocus = app.dom.onPage("focusin", onFocus);
 
     app.editorSettings.push(() => c.region.stack({ gap: "sm", children: [
       c.toggle.default({ label: "Prompt autocomplete", hint: "Suggest matching shortcuts while you type in the Story and scene prompts. Shows the trigger and its prompt.",
         checked: p.pref("autocomplete", true), onChange: (v) => p.setPref("autocomplete", v) })] }));
-    return () => document.removeEventListener("focusin", onFocus);
+    return offFocus;
   },
 };

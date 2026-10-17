@@ -59,7 +59,7 @@ export function enhance(app, own) {
   ps.ensureLoaded().then(draw);
   app.api.enhancerEncoders().then((r) => { encoders = { files: r.files || [], families: r.families || [] }; draw(); }).catch(() => {});
   // Another project's pipeline, or an edit made elsewhere: redraw, but never under a field being typed in.
-  const typing = () => page.node.contains(document.activeElement);
+  const typing = () => app.dom.typingIn(page.node);
   own(ps.subscribe(() => { if (!typing()) draw(); }));
   app.api.enhancerDefaults().then((d) => { defaults = d; draw(); }).catch(() => {});
   const fetchRuns = () => app.api.enhancerRuns().then((r) => { last = (r.runs || []).slice(-1)[0] || null; if (!typing()) draw(); }).catch(() => {});

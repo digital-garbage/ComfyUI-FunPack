@@ -28,7 +28,7 @@ export function chat(app, own) {
     if (!alive) return;
     const here = ((app.pipeline && app.pipeline.slots()) || []).some((s) => s.node === NODE);
     const list = rounds(), ok = last && last.ok, next = JSON.stringify([p.project && p.project.id, list, last && last.after, here]);
-    if (!force && (next === key || (page.node.contains(document.activeElement) && document.activeElement.tagName === "TEXTAREA"))) return;       // not under the caret
+    if (!force && (next === key || app.dom.typingIn(page.node, "TEXTAREA"))) return;       // not under the caret
     key = next;
     if (!p.project) return page.set([c.hint.default({ text: "Open a project first." })]);
     // Comments would reach nothing: said here, the way Enhance says it (they stay, for a pipeline that has one).

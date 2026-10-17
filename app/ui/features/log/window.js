@@ -16,7 +16,7 @@ const EVERY = 2000;
 /** mount({ poll, setFooter, close }) -> { node, destroy }. See tempfiles.js's
  *  mount() for why setFooter/close are the only things asked for -- `destroy`
  *  additionally stops the poll, since this one runs a timer nothing else does. */
-export function mount({ poll = EVERY, setFooter = () => {}, close = () => {} } = {}) {
+export function mount({ dom, poll = EVERY, setFooter = () => {}, close = () => {} }) {
   let timer = null;
   let follow = true;                 // stick to the end until the user scrolls off it
   let last = "";
@@ -24,10 +24,7 @@ export function mount({ poll = EVERY, setFooter = () => {}, close = () => {} } =
   const view = composer.code.block({ text: "Reading…" });
   const body = composer.region.stack({ gap: "sm", fill: true, children: [view] });
 
-  const selecting = () => {
-    const sel = document.getSelection();
-    return sel && !sel.isCollapsed && view.node.contains(sel.anchorNode);
-  };
+  const selecting = () => dom.selectingIn(view.node);
 
   // Following the end is the default and stops being it the moment someone
   // scrolls up -- otherwise reading anything older than two seconds is a fight.
@@ -75,10 +72,10 @@ export function mount({ poll = EVERY, setFooter = () => {}, close = () => {} } =
   return { node: body.node, destroy: () => { clearInterval(timer); timer = null; body.destroy(); } };
 }
 
-export function open({ poll = EVERY } = {}) {
+export function open({ dom, poll = EVERY }) {
   let window_ = null;
   const content = mount({
-    poll,
+    dom, poll,
     setFooter: (f) => window_ && window_.setFooter(f),
     close: () => window_ && window_.close("done"),
   });

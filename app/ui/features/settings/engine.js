@@ -28,7 +28,7 @@ export const engine = (app) => function mount() {
   }
   draw();
   ps.ensureLoaded().then(draw);
-  const typing = () => page.node.contains(document.activeElement) && /^(input|textarea)$/i.test(document.activeElement.tagName);
+  const typing = () => app.dom.typingIn(page.node);
   page.node.addEventListener("focusout", () => setTimeout(() => { if (!typing()) draw(); }));
   const off = ps.subscribe(() => { if (!typing()) draw(); });
   return { node: page.node, destroy: () => { off(); page.node.remove(); } };

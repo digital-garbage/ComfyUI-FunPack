@@ -25,8 +25,9 @@ for (const size of ["lg", "md", "sm", "xs"]) {
 }
 
 // One hint, one look. v4 had ten class names for this exact thing.
-define("hint", "default", ({ text, id } = {}) =>
-  handle(el("p", { cls: "cx-hint", text, attrs: { id } })));
+// `low`: the first thing to go when the row runs out of room.
+define("hint", "default", ({ text, id, low = false } = {}) =>
+  handle(el("p", { cls: ["cx-hint", low ? "cx-hint-low" : null], text, attrs: { id } })));
 
 define("label", "field", ({ text, for: htmlFor } = {}) =>
   handle(el("label", { cls: "cx-label", text, attrs: { for: htmlFor } })));

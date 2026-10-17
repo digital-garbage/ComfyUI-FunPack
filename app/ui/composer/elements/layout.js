@@ -4,7 +4,7 @@
 // kit made, and insisting on one is what stops "just let me pass a div" becoming
 // the hole through which modules build their own markup.
 
-import { define } from "../internals/register.js";
+import { define, lookup } from "../internals/register.js";
 import { el } from "../internals/el.js";
 import { setText } from "../internals/text.js";
 import { uid } from "../internals/ids.js";
@@ -57,6 +57,14 @@ define("settingsRow", "default", ({ label, hint, control, danger } = {}) => {
     inner ? el("div", { cls: "cx-settings-control", children: inner }) : null,
   ].filter(Boolean) });
 
+  const hintNode = () => node.querySelector(".cx-hint");
+  return { node, setHint: (value) => { const h = hintNode(); if (h) setText(h, value); }, destroy: () => node.remove() };
+});
+
+/** The mark, a big title and one line under it. The top of an About page. */
+define("hero", "default", ({ title, hint } = {}) => {
+  const node = el("div", { cls: ["cx-stack", "cx-stack-none", "cx-settings-hero"], children: [
+    lookup("brand", "default")({ name: "" }).node, lookup("header", "xl")({ text: title }).node, lookup("hint", "default")({ text: hint }).node] });
   return { node, destroy: () => node.remove() };
 });
 

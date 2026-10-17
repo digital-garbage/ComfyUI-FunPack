@@ -10,7 +10,7 @@ const sceneIds = (p) => segments(p).filter((s) => s.kind === "scene").map((s) =>
 export default {
   id: "menus",
   mount: "menubar.menus",
-  needs: ["project", "selection"],
+  needs: ["project", "selection", "dom"],
   setup({ host, app }) {
     const p = app.project, sel = app.selection;
     const ask = (title, value, confirmLabel) => c.modal.prompt({ title, label: "Name", value, confirmLabel }).result;
@@ -24,9 +24,8 @@ export default {
     const actions = {
       save: async () => {
         await p.flush();
-        const open = p.project, link = Object.assign(document.createElement("a"), { download: `${open.name || "project"}.json`,
-          href: URL.createObjectURL(new Blob([JSON.stringify(open, null, 2)], { type: "application/json" })) });
-        link.click(); URL.revokeObjectURL(link.href);
+        const open = p.project;
+        app.dom.saveBlob(new Blob([JSON.stringify(open, null, 2)], { type: "application/json" }), `${open.name || "project"}.json`);
       },
       load: () => choose("Load project file", "a FunPack project .json", ".json,application/json", false, async ([file]) => {
         let data; try { data = JSON.parse(await file.text()); } catch { throw new Error("That is not a project file."); }

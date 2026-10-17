@@ -9,7 +9,7 @@ import { gridOf, learnGrid } from "../../shell/frame_grid.js";
 export default {
   id: "inspector",
   mount: "inspector",
-  needs: ["project"],
+  needs: ["project", "dom"],
   setup({ host, app }) {
     const p = app.project;
     let tab = "scene", key = "";
@@ -28,7 +28,7 @@ export default {
     // The scene's text is in the key, so an edit made elsewhere (the Story box) is shown -- but not while this panel's
     // own box is being typed in: that would rebuild it under the caret. It catches up when the focus leaves.
     let shownText;
-    const typing = () => body.node.contains(document.activeElement) && /^(input|textarea)$/i.test(document.activeElement.tagName);
+    const typing = () => app.dom.typingIn(body.node);
     // Catch up once focus leaves the panel. Focus moving to a button or select inside it is a click under way: rebuilding
     // between its mouse-down and mouse-up dropped the click; the change it makes redraws afterwards anyway.
     body.node.addEventListener("focusout", (e) => { if (!(e.relatedTarget && body.node.contains(e.relatedTarget))) setTimeout(() => { if (!typing()) draw(); }); });

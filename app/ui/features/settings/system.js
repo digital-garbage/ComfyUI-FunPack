@@ -11,7 +11,7 @@ export const system = (app) => function mount() {
   m.hints().then((h) => rows.forEach((r) => {
     if (!r.hint) return;
     r.button.setDisabled(!h.ok || (r.hint === "rollback" && !h.rollbackOk));
-    r.node.node.querySelector(".cx-hint").textContent = h[r.hint];
+    r.node.setHint(h[r.hint]);
   }));
   return c.region.stack({ gap: "sm", children: rows.map((r) => r.node) });
 };

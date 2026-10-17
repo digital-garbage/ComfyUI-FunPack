@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { setupDom, teardownDom } from "../../composer/tests/_dom.js";
+import { createDom } from "../../shell/dom.js";
 
 let hub;
 test.before(async () => { setupDom(); hub = (await import("./index.js")).default; });
@@ -14,7 +15,7 @@ const rig = (phase, extra = {}) => {
     waitForTerminal: () => Object.assign(Promise.resolve("done"), { cancel() {} }), ...extra };
   const project = { project: doc, get scenes() { return doc.scenes; }, selected: null,
     edit: (fn) => fn(doc), editFor: async (_id, fn) => fn(doc), pref: (k, d) => ((doc.editor_settings || {})[k] ?? d) };
-  const app = { project, selection: { ids: [] }, lastRun: { n: 0 }, runner: {}, pipeline: { slots: () => [{ id: "s", roles: [{ at: "generation.seed", input: "seed" }], inputs: {} }] }, generate: g, api: { newTasteGeneration: () => Promise.resolve({}) }, on: () => () => {} };
+  const app = { dom: createDom(), project, selection: { ids: [] }, lastRun: { n: 0 }, runner: {}, pipeline: { slots: () => [{ id: "s", roles: [{ at: "generation.seed", input: "seed" }], inputs: {} }] }, generate: g, api: { newTasteGeneration: () => Promise.resolve({}) }, on: () => () => {} };
   const host = document.createElement("div");
   hub.setup({ host, app });
   return { handlers, doc, host, app };

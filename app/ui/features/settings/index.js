@@ -14,7 +14,7 @@ import { shotMemory } from "./shotmemory.js";
 export default {
   id: "settings-sections",
   mount: "settings",
-  needs: ["api", "theme", "pipeline", "maintenance"],
+  needs: ["api", "theme", "pipeline", "maintenance", "dom"],
   setup({ host, app }) {
     const add = (id, title, subtitle, icon, tone, mount, group = "", keywords = "") => host.add({ id, group, title, subtitle, icon, tone, mount, keywords: `${keywords} ${title}` });
     add("about", "About FunPack", "", "◎", "accent", about(app.api), "", "version commit branch cpu memory gpu disk python torch");

@@ -9,7 +9,7 @@ import { RENDER, runJob } from "./job.js";
 export default {
   id: "render-selected",
   mount: "timeline.toolbar",
-  needs: ["project", "selection"],
+  needs: ["project", "selection", "dom"],
   setup({ host, app }) {
     const p = app.project, sel = app.selection;
     const put = inPlace(host);
@@ -33,8 +33,7 @@ export default {
     const exportIt = run(async () => {
       const name = p.project.name, media = await join();         // named for the project it was started in
       if (!media) return;
-      const link = Object.assign(document.createElement("a"), { href: viewUrl(media), download: `${name}.mp4` });
-      link.click();
+      app.dom.download(viewUrl(media), `${name}.mp4`);
     });
     const toBin = run(async () => {
       const name = p.project.name, media = await join();

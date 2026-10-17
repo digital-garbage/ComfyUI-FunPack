@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { setupDom, teardownDom } from "../../composer/tests/_dom.js";
+import { createDom } from "../../shell/dom.js";
 
 let hub;
 test.before(async () => { setupDom(); hub = (await import("./index.js")).default; });
@@ -13,7 +14,7 @@ test("a scene's text changed elsewhere (the Story box) shows in the Prompt box, 
     setText: () => {}, setScene: () => {}, edit: (fn) => fn(doc) };
   const host = document.createElement("div");
   document.body.append(host);
-  hub.setup({ host, app: { project: p, on: (fn) => { fire = fn; return () => {}; }, api: {}, say: () => {} } });
+  hub.setup({ host, app: { dom: createDom(), project: p, on: (fn) => { fire = fn; return () => {}; }, api: {}, say: () => {} } });
   const box = () => [...host.querySelectorAll("textarea")][0];
   assert.equal(box().value, "old");
   doc.scenes[0].text = "from story";
@@ -35,7 +36,7 @@ test("typing in the Prompt box, then pressing a button in the panel, does not re
     setText: () => {}, setScene: () => {}, edit: (fn) => fn(doc) };
   const host = document.createElement("div");
   document.body.append(host);
-  hub.setup({ host, app: { project: p, on: (fn) => { fire = fn; return () => {}; }, api: {}, say: () => {} } });
+  hub.setup({ host, app: { dom: createDom(), project: p, on: (fn) => { fire = fn; return () => {}; }, api: {}, say: () => {} } });
   const box = host.querySelector("textarea");
   box.focus();
   doc.scenes[0].text = "typed here"; fire("change");                 // the box's own edit, as setText would announce it
