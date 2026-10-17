@@ -14,7 +14,7 @@ from comfy_api.latest import io
 from ..._core import log
 from .. import gguf_support, sla_attention
 from .. import int8_convrot as int8_convrot_module
-from ..common import (COMPUTE_DTYPES, WEIGHT_DTYPES, attention_choices, unsupported_dtypes,
+from ..common import (COMPUTE_DTYPES, WEIGHT_DTYPES, attention_choices, fp32_over_bf16, unsupported_dtypes,
                       attention_override, dtype_of, set_fp16_accumulation,
                       slow_int8_build, stored_weights, weight_model_options)
 
@@ -249,6 +249,10 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
         for line in unsupported_dtypes(model, weight_dtype, compute_dtype):
             log.alert("FunPack Diffusion Model Loader", f"{line}; expect noise or broken sound. Set it to default.")
             notes.append(line)
+        mixed = fp32_over_bf16(weight_dtype, compute_dtype, stored)
+        if mixed:
+            log.alert("FunPack Diffusion Model Loader", f"{mixed}; expect a slow or degraded run. Set compute to default or bf16.")
+            notes.append(mixed)
         dtype = dtype_of(compute_dtype)
         if dtype is not None and hasattr(model, "set_model_compute_dtype"):
             # Do NOT clear force_cast_weights afterwards. set_model_compute_dtype

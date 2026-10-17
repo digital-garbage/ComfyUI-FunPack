@@ -397,3 +397,10 @@ def test_a_forced_dtype_the_model_does_not_run_in_is_said():
     assert len(unsupported_dtypes(h3, "fp16", "default")) == 1 and "fp16" in unsupported_dtypes(h3, "fp16", "default")[0]
     assert unsupported_dtypes(h3, "default", "bf16") == []
     assert unsupported_dtypes(h3, "fp8_e4m3fn", "fp16")[0].startswith("compute dtype fp16")
+
+
+def test_fp32_compute_over_bf16_weights_is_said():
+    from modules.loaders.common import fp32_over_bf16
+    assert fp32_over_bf16("default", "fp32", "bf16") and fp32_over_bf16("bf16", "fp32")
+    assert fp32_over_bf16("fp32", "fp32", "bf16") is None and fp32_over_bf16("default", "bf16", "bf16") is None
+    assert fp32_over_bf16("default", "fp32", "int8+bf16") is None
