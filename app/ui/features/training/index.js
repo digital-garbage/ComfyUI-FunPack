@@ -101,6 +101,7 @@ export default {
       await session.flush();
       const settings = settingsOf(doc);
       settings.trigger = doc.trigger || "";
+      settings.postfix = doc.postfix || "";
       setRun({ shown: true, active: true, state: "queued", loss: [], smooth: [], step: 0, total: settings.steps, elapsed: 0, message: "Checking the pipeline", error: "", lora: "" });
       draw();
       let before = "";

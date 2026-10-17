@@ -148,8 +148,7 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
                 raise ValueError(f"{item['name'] or item['id']} cannot be read: {exc}") from exc
         single = bool(adapt) or not cfg["aspect_buckets"]
         buckets = media_io.buckets_for([w / h for w, h in sizes], cfg["resolution"], step, single)
-        trigger = cfg["trigger"]
-        texts = [captions.with_trigger(item["caption"], trigger) for item, _ in items]
+        texts = [captions.with_parts(item["caption"], cfg["trigger"], cfg.get("postfix", "")) for item, _ in items]
 
         if adapt and adapt.get("video"):
             cfg = _fit_frames(cfg, adapt, items)

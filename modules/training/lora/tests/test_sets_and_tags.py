@@ -17,8 +17,11 @@ def out(name, **extra):
 
 def test_tags_are_trimmed_and_unique():
     assert captions.split_tags(" a,B ,, a\nc ") == ["a", "B", "c"]
-    assert captions.with_trigger("red, zq, tall", "zq") == "zq, red, tall"
-    assert captions.with_trigger("red", "") == "red"
+    assert captions.with_parts("red, tall", "zq", "end") == "zq, red, tall, end"
+    assert captions.with_parts("red", "", "") == "red" and captions.with_parts("", "zq", "") == "zq"
+    assert captions.with_parts("A fox runs.\nIt jumps, twice.", " zq ", None) == "zq, A fox runs.\nIt jumps, twice."
+    assert captions.add_tags("a fox, running home.", ["A  Fox", "grass", "sky"]) == "a fox, running home., grass, sky"
+    assert captions.add_tags("", ["x", "y"]) == "x, y" and captions.add_tags("a long prompt,", ["x"]) == "a long prompt, x"
 
 
 def test_bulk_edits_only_the_chosen_items():

@@ -37,7 +37,7 @@ class FunPackTrainLora(io.ComfyNode):
                 io.Int.Input("frames", default=33, min=1, max=1025, tooltip="Frames taken from each clip, for video models. H3 rounds to its own grid (17 x n + 5)."),
                 io.Float.Input("fps", default=0.0, min=0.0, max=120.0, step=0.5, tooltip="Frames per second to read the clips at. 0 uses each clip's own rate (H3: 24)."),
                 io.Combo.Input("start", options=["start", "middle"], default="start", tooltip="Where in a clip to take the frames from."),
-                io.String.Input("trigger", default="", tooltip="A word put at the start of every caption, to call the LoRA up later."),
+                io.String.Input("trigger", default="", tooltip="The prefix: text put at the start of every caption, for example a word to call the LoRA up later."),
                 io.Int.Input("seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF, tooltip="Seed for the noise and the LoRA's starting weights."),
                 io.Combo.Input("training_dtype", options=["bf16", "fp32", "none"], default="bf16", tooltip="Precision used while training. bf16 is right for nearly everything."),
                 io.Combo.Input("lora_dtype", options=["bf16", "fp32"], default="bf16", tooltip="Precision the LoRA is stored in."),
@@ -47,6 +47,7 @@ class FunPackTrainLora(io.ComfyNode):
                 io.String.Input("model_name", default="", tooltip="The diffusion model file to train on, as the loader lists it. The trainer loads it itself, once, with no loader node in front."),
                 io.Combo.Input("weight_dtype", options=["default", "fp8_e4m3fn", "fp8_e5m2", "fp16", "bf16", "fp32"], default="default", tooltip="How the model file's weights are stored when it is loaded here."),
                 io.Combo.Input("compute_dtype", options=["default", "fp16", "bf16", "fp32"], default="default", tooltip="What the maths runs in when the model is loaded here."),
+                io.String.Input("postfix", default="", tooltip="Text put at the end of every caption."),
             ],
             outputs=[io.String.Output(display_name="lora")],
         )
@@ -54,7 +55,7 @@ class FunPackTrainLora(io.ComfyNode):
     @classmethod
     def execute(cls, clip, vae, set_name, name, use, steps, learning_rate, rank, algorithm, optimizer, loss, batch_size,
                 grad_accumulation, resolution, aspect_buckets, frames, fps, start, trigger, seed, training_dtype, lora_dtype,
-                gradient_checkpointing, offloading, bypass, model=None, audio_vae=None, model_name="", weight_dtype="default", compute_dtype="default") -> io.NodeOutput:
+                gradient_checkpointing, offloading, bypass, model=None, audio_vae=None, model_name="", weight_dtype="default", compute_dtype="default", postfix="") -> io.NodeOutput:
         if not addons.enabled("lora_training"):
             raise RuntimeError("LoRA training is switched off. Turn it on in Settings > Modules.")
         cfg = {"name": name, "use": use, "steps": steps, "learning_rate": learning_rate, "rank": rank, "algorithm": algorithm,
@@ -62,5 +63,5 @@ class FunPackTrainLora(io.ComfyNode):
                "resolution": resolution, "aspect_buckets": aspect_buckets, "frames": frames, "fps": fps, "start": start,
                "trigger": trigger, "seed": seed, "training_dtype": training_dtype, "lora_dtype": lora_dtype,
                "gradient_checkpointing": gradient_checkpointing, "offloading": offloading, "bypass": bypass,
-               "model_name": model_name, "weight_dtype": weight_dtype, "compute_dtype": compute_dtype}
+               "model_name": model_name, "weight_dtype": weight_dtype, "compute_dtype": compute_dtype, "postfix": postfix}
         return io.NodeOutput(train.run(model, clip, vae, audio_vae, set_name, cfg))

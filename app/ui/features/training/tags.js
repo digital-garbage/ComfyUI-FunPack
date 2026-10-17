@@ -1,7 +1,7 @@
 // Step 2, Tags: every item with its caption beside its picture, bulk edits, a tag cloud, and automatic tagging.
 import { composer as c } from "../../composer/composer.js";
 import { LABEL_TONES, LABEL_WORDS, stillOf } from "./state.js";
-import { bulk, frequency, joinTags, splitTags } from "./captions.js";
+import { addTags, bulk, frequency, joinTags, splitTags } from "./captions.js";
 
 const PAGE = 48;
 const FILTERS = [
@@ -28,7 +28,7 @@ export function tagsStep({ app, session, go, ui, peek }) {
 
   const cards = list.slice(0, ui.limit).map((item) => {
     const card = c.captioned.cell({ title: item.name || item.src.filename || item.src.id, src: stillOf(item), kind: item.media_kind, caption: item.caption,
-      badge: LABEL_WORDS[item.label], tone: LABEL_TONES[item.label], selected: sel.has(item.id), suggestions: cloud.map((x) => x.tag).slice(0, 400),
+      badge: LABEL_WORDS[item.label], tone: LABEL_TONES[item.label], selected: sel.has(item.id),
       onChange: (text) => session.edit(() => { item.caption = text; }),
       onSelect: (on) => { if (on) sel.add(item.id); else sel.delete(item.id); sync(); },
       onOpen: () => peek(item) });
@@ -67,12 +67,15 @@ export function tagsStep({ app, session, go, ui, peek }) {
       ui.redraw();
     } });
 
-  // --- trigger word
-  const trigger = c.input.md({ label: "Trigger word", placeholder: "none", value: doc.trigger || "",
-    onCommit: (v) => session.edit((d) => { d.trigger = v.split(/\s+/).filter(Boolean).join(" ").slice(0, 80); }) });
+  // --- text put before and after every caption when training (the set's own; the project's prefix and postfix are not used)
+  const phrase = (key, label, hint) => c.field.default({ label, hint, control: c.input.md({ label, placeholder: "none", value: doc[key] || "",
+    onCommit: (v) => session.edit((d) => { d[key] = v.split(/\s+/).filter(Boolean).join(" ").slice(0, 80); }) }) });
 
   return c.region.stack({ gap: "md", children: [
-    c.field.default({ label: "Trigger word", hint: "Put first in every caption when training, so you can call the LoRA up later by writing it. Optional.", control: trigger }),
+    c.field.row({ fields: [
+      phrase("trigger", "Prefix", "Put before every caption when training, for example a word to call the LoRA up later. Optional."),
+      phrase("postfix", "Postfix", "Put after every caption when training. Optional."),
+    ] }),
     c.group.default({ label: "Automatic tagging", rows: [autoTag({ app, session, ui })] }),
     c.group.default({ label: "Tags in this set", hint: "Click one to show only the items that have it. The x removes it from all.", rows: [cloudEl] }),
     c.toolbar.default({ items: [filter, count], trailing: [everyone, none] }),
@@ -141,7 +144,7 @@ export function applyTagging(session, job, mode) {
     for (const item of d.items) {
       const found = (job.results || {})[item.id];
       if (!found) continue;
-      const text = joinTags(mode === "replace" ? found : [...splitTags(item.caption), ...found]);
+      const text = mode === "replace" ? joinTags(found) : addTags(item.caption, found);
       if (text !== item.caption) { item.caption = text; n += 1; }
     }
   });

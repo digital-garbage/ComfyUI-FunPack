@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { setupDom, teardownDom } from "../../composer/tests/_dom.js";
-import { bulk, frequency, joinTags, splitTags } from "./captions.js";
+import { addTags, bulk, frequency, joinTags, splitTags } from "./captions.js";
 
 let feature;
 test.before(async () => { setupDom(); feature = (await import("./index.js")).default; });
@@ -59,6 +59,12 @@ test("captions: tags are trimmed and unique, counts are per caption, bulk edits 
   assert.equal(bulk(items, "prepend", "zq"), 2);
   assert.equal(items[1].caption, "zq, lion");
   assert.equal(bulk(items, "add", ""), 0);
+  const prose = [{ id: "p", caption: "A fox runs.\nIt jumps, twice,  home" }];
+  assert.equal(bulk(prose, "add", "sky"), 1);
+  assert.equal(prose[0].caption, "A fox runs.\nIt jumps, twice, home, sky", "only commas are touched: the words stay as written");
+  assert.equal(addTags("a fox, running home.", ["A  Fox", "grass", "sky"]), "a fox, running home., grass, sky");
+  assert.equal(addTags("", ["x", "y"]), "x, y");
+  assert.equal(addTags("a long prompt,", ["x"]), "a long prompt, x");
 });
 
 test("the window is hidden while the add-on is off", async () => {
@@ -81,7 +87,7 @@ test("the Data step lists the sets, offers the three sources and can be skipped"
   off();
 });
 
-test("Tags step: a card per item; editing a caption saves the set", async () => {
+test("Tags step: a text box per item under its picture; typing saves the set and keeps the text as typed", async () => {
   const f = fake();
   const { button, off } = await open(f);
   button.click();
@@ -89,10 +95,13 @@ test("Tags step: a card per item; editing a caption saves the set", async () => 
   click("Next: tags").click();
   await wait(20);
   assert.equal(document.querySelectorAll(".cx-captioned").length, 2);
-  document.querySelector(".cx-captioned .cx-tag-x").click();                       // takes "cat" off the first item
+  const box = document.querySelector(".cx-captioned textarea");
+  assert.equal(box.value, "cat, grey");
+  box.value = "A cat\nsits, calmly";
+  box.dispatchEvent(new window.Event("input", { bubbles: true }));
   await wait(700);
   const saved = f.calls.filter((c) => c[0] === "save").pop();
-  assert.equal(saved[2].items[0].caption, "grey");
+  assert.equal(saved[2].items[0].caption, "A cat\nsits, calmly");
   off();
 });
 
@@ -128,6 +137,33 @@ test("Train step: More settings stays open while an option in it is changed", as
   select.dispatchEvent(new Event("change", { bubbles: true }));
   await wait(40);
   assert.equal(more().open, true);
+  off();
+});
+
+test("Tags step: the prefix and postfix are the set's own, saved with it and sent to the run", async () => {
+  const f = fake();
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Next: tags").click();
+  await wait(20);
+  const field = (label) => [...document.querySelectorAll(".cx-field")].find((x) => x.textContent.startsWith(label)).querySelector("input");
+  for (const [label, text] of [["Prefix", "zq"], ["Postfix", "end"]]) {
+    const input = field(label);
+    input.value = text;
+    input.dispatchEvent(new window.Event("change", { bubbles: true }));
+  }
+  await wait(700);
+  const saved = f.calls.filter((c) => c[0] === "save").pop();
+  assert.equal(saved[2].trigger, "zq");
+  assert.equal(saved[2].postfix, "end");
+  click("Next: train").click();
+  await wait(20);
+  click("Start training").click();
+  await wait(40);
+  const plan = f.calls.find((c) => c[0] === "plan");
+  assert.equal(plan[2].trigger, "zq");
+  assert.equal(plan[2].postfix, "end");
   off();
 });
 

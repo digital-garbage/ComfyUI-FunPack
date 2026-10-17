@@ -10,6 +10,18 @@ export const splitTags = (text) => {
 };
 export const joinTags = (tags) => splitTags((tags || []).join(", ")).join(", ").slice(0, 4000);
 
+const same = (a, b) => String(a).split(/\s+/).filter(Boolean).join(" ").toLowerCase() === String(b).split(/\s+/).filter(Boolean).join(" ").toLowerCase();
+/** The comma separated pieces of a caption as typed: trimmed, no empties, nothing dropped or reworded. */
+export const parts = (text) => String(text ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+
+/** The caption with these tags added at its end after a comma, skipping any it has; the caption itself stays as typed. */
+export function addTags(caption, tags) {
+  const have = parts(caption);
+  const fresh = splitTags((tags || []).join(", ")).filter((t) => !have.some((h) => same(t, h)));
+  const text = String(caption ?? "").trimEnd().replace(/,+$/, "").trimEnd();
+  return (text ? [text, ...fresh] : fresh).join(", ").slice(0, 4000);
+}
+
 /** Every tag with how many captions hold it, most common first. */
 export function frequency(items) {
   const counts = new Map();
@@ -24,20 +36,19 @@ export function frequency(items) {
 export function bulk(items, op, tag, to, ids) {
   tag = String(tag ?? "").split(/\s+/).filter(Boolean).join(" ");
   if (!tag || !["add", "prepend", "remove", "replace"].includes(op)) return 0;
-  const low = tag.toLowerCase();
   to = String(to ?? "").split(/\s+/).filter(Boolean).join(" ");
   if (op === "replace" && !to) op = "remove";
   let changed = 0;
   for (const item of items) {
     if (ids && !ids.has(item.id)) continue;
-    let tags = splitTags(item.caption);
-    const has = tags.some((t) => t.toLowerCase() === low);
+    let tags = parts(item.caption);
+    const has = tags.some((t) => same(t, tag));
     if (op === "add" && !has) tags.push(tag);
-    else if (op === "prepend") tags = [tag, ...tags.filter((t) => t.toLowerCase() !== low)];
-    else if (op === "remove" && has) tags = tags.filter((t) => t.toLowerCase() !== low);
-    else if (op === "replace" && has) tags = tags.map((t) => (t.toLowerCase() === low ? to : t));
+    else if (op === "prepend") tags = [tag, ...tags.filter((t) => !same(t, tag))];
+    else if (op === "remove" && has) tags = tags.filter((t) => !same(t, tag));
+    else if (op === "replace" && has) tags = tags.map((t) => (same(t, tag) ? to : t));
     else continue;
-    const text = joinTags(tags);
+    const text = tags.join(", ").slice(0, 4000);
     if (text !== item.caption) { item.caption = text; changed += 1; }
   }
   return changed;

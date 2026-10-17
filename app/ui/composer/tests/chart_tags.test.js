@@ -242,15 +242,17 @@ test("a cloud tag is shown as text, never as markup", () => {
 
 // --- captioned ---------------------------------------------------------------
 
-test("a captioned card shows its tags as chips and hands the whole line back after an edit", () => {
+test("a captioned card shows its caption in a text box as written and hands the whole text back as it is typed", () => {
   const heard = [];
-  const c = mount(composer.captioned.cell({ title: "a.png", caption: "red, blue, red", onChange: (v) => heard.push(v) }));
-  assert.deepEqual([...c.node.querySelectorAll(".cx-tag-text")].map((n) => n.textContent), ["red", "blue"]);
-  c.node.querySelector(".cx-tag-x").click();
-  assert.deepEqual(heard, ["blue"]);
+  const c = mount(composer.captioned.cell({ title: "a.png", caption: "A fox runs.\nred, blue, red", onChange: (v) => heard.push(v) }));
+  const box = c.node.querySelector("textarea");
+  assert.equal(box.value, "A fox runs.\nred, blue, red");
+  box.value = "A fox sleeps, red";
+  box.dispatchEvent(new window.Event("input", { bubbles: true }));
+  assert.deepEqual(heard, ["A fox sleeps, red"]);
   c.setCaption("one, two");
   assert.equal(c.getCaption(), "one, two");
-  assert.deepEqual(heard, ["blue"], "setCaption does not call onChange");
+  assert.deepEqual(heard, ["A fox sleeps, red"], "setCaption does not call onChange");
 });
 
 test("a captioned card takes its picture and caption as text, selects, opens and marks a clip", () => {
@@ -258,7 +260,7 @@ test("a captioned card takes its picture and caption as text, selects, opens and
   const c = mount(composer.captioned.side({ title: "<b>x</b>", caption: "<i>t</i>", kind: "video", src: "/thumb.png", badge: "Clip", tone: "good",
     onSelect: (on) => events.push(["select", on]), onOpen: () => events.push(["open"]) }));
   assert.equal(c.node.querySelector(".cx-captioned-title").textContent, "<b>x</b>");
-  assert.equal(c.node.querySelector(".cx-tag-text").textContent, "<i>t</i>");
+  assert.equal(c.node.querySelector("textarea").value, "<i>t</i>");
   assert.ok(c.node.querySelector(".cx-captioned-play"), "a clip is marked");
   assert.equal(c.node.querySelector(".cx-captioned-badge").textContent, "Clip");
   c.node.querySelector(".cx-captioned-view").click();

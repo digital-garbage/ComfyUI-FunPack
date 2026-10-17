@@ -71,7 +71,7 @@ export function trainStep({ app, session, go, ui }) {
   stop.node.hidden = !busy;
 
   return c.region.stack({ gap: "md", children: [
-    c.hint.default({ text: used.length ? `${used.length} item${used.length > 1 ? "s" : ""} will be learned from (${caption} with tags). ${used.length - caption ? "Items without tags are learned from with only the trigger word." : ""}`.trim()
+    c.hint.default({ text: used.length ? `${used.length} item${used.length > 1 ? "s" : ""} will be learned from (${caption} with tags). ${used.length - caption ? "Items without a caption are learned from with only the prefix and postfix." : ""}`.trim()
       : `Nothing in "${session.name}" fits "${(USES.find((u) => u.value === v.use) || {}).label}". Add media or change the choice below.` }),
     hasAudioVae ? c.banner.info({ text: "This pipeline has an audio VAE, so it trains picture and sound together (H3). One clip at a time, so training is slow and needs a lot of memory." }) : null,
     c.group.default({ label: "Basics", rows: [name, preset,
