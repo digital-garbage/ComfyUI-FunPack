@@ -1,3 +1,5 @@
+import os
+
 import av
 import numpy as np
 import pytest
@@ -31,10 +33,22 @@ def test_auto_falls_back_to_the_cpu_when_there_is_no_gpu_encoder(tmp_path, monke
     assert "libx264" in nodes.encode(path, _clip(10), 24.0, encoder="auto")
 
 
-def test_gpu_demanded_without_one_says_so(tmp_path, monkeypatch):
+def test_gpu_choice_still_saves_on_the_cpu_when_the_encoder_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(nodes, "NVENC", {"h264": ("no_such_encoder_x", {})})
-    with pytest.raises(RuntimeError, match="NVENC"):
-        nodes.encode(str(tmp_path / "c.mp4"), _clip(5), 24.0, encoder="gpu")
+    path = str(tmp_path / "c.mp4")
+    assert "libx264" in nodes.encode(path, _clip(5), 24.0, encoder="gpu")
+    assert os.path.getsize(path) > 0
+
+
+def test_a_refused_gpu_open_leaves_no_half_file_and_the_cpu_saves_it(tmp_path, monkeypatch):
+    # a codec that exists but refuses to open with these options, as NVENC does on a driver mismatch
+    monkeypatch.setattr(nodes, "NVENC", {"h264": ("libx264", {"preset": "no-such-preset-x", "crf": "abc"})})
+    alerts = []
+    monkeypatch.setattr(nodes.log, "once", lambda key, level, who, msg: alerts.append(msg))
+    path = str(tmp_path / "e.mp4")
+    assert "libx264" in nodes.encode(path, _clip(5), 24.0, encoder="gpu")
+    assert os.path.getsize(path) > 0
+    assert alerts and "Saved as H.264 on the CPU" in alerts[0]
 
 
 def test_h265_is_tagged_hvc1_so_a_mac_browser_plays_it(tmp_path, monkeypatch):

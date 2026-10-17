@@ -26,6 +26,9 @@ CODECS = ("h264", "h265")
 NVENC = {"h265": ("hevc_nvenc", {"preset": "p5", "rc": "vbr", "cq": "23", "b:v": "0"}),
          "h264": ("h264_nvenc", {"preset": "p5", "rc": "vbr", "cq": "23", "b:v": "0"})}
 X264 = ("libx264", {"crf": "23"})
+# FFmpeg's "minimum required driver" line compares the driver library the PROCESS loaded, not what nvidia-smi reports
+_HINT = (" (nvidia-smi can look fine while FFmpeg loads an older or missing libnvidia-encode.so.1; "
+         "in a container check it is there and that the NVIDIA 'video' capability is on)")
 
 
 def _write(path, frames, fps, audio, metadata, codec):
@@ -57,27 +60,27 @@ def _write(path, frames, fps, audio, metadata, codec):
 
 
 def encode(path, frames, fps, audio=None, metadata=None, encoder="auto", codec="h264"):
-    """-> which encoder wrote the file. `frames`: uint8 [T, H, W, 3]. GPU first unless told otherwise;
-    a GPU attempt that fails leaves no half file and falls back to CPU H.264, unless "gpu" was demanded."""
+    """-> which encoder wrote the file. `frames`: uint8 [T, H, W, 3]. GPU first unless "cpu" is chosen;
+    a GPU attempt that fails leaves no half file and falls back to CPU H.264 with a Log alert saying why."""
     if audio is not None and not bool(audio["waveform"].isfinite().all()):      # NaN/Inf sound (typically the model loaded in fp16): AAC refuses it, so the video is kept without it
         audio = None
         log.alert("FunPack Save Video", "The audio contains NaN/Inf values, so you are most likely using the wrong precision for this model (fp16?). The audio has been removed; the video was saved without it.")
     gpu = NVENC[codec]
-    if encoder != "cpu" and gpu[0] in av.codecs_available:
-        try:
-            _write(path, frames, fps, audio, metadata, gpu)
-            return f"{codec.upper()} on NVENC (GPU)"
-        except Exception as exc:                               # noqa: BLE001 -- no encoder on this card, or a driver refusal
-            if os.path.exists(path):
-                os.remove(path)
-            if encoder == "gpu":
-                raise RuntimeError(f"the GPU encoder (NVENC) failed: {exc}") from exc
-            log.once("save_nvenc", log.ALERT, "FunPack Save Video", f"GPU encoder unavailable ({exc}); using H.264 on the CPU")
-    elif encoder == "gpu":
-        raise RuntimeError(f"this PyAV build has no NVENC encoder ({gpu[0]}); pick auto or cpu")
+    why = None
+    if encoder != "cpu":
+        if gpu[0] not in av.codecs_available:
+            why = f"this PyAV build has no NVENC encoder ({gpu[0]} missing)"
+        else:
+            try:
+                _write(path, frames, fps, audio, metadata, gpu)
+                return f"{codec.upper()} on NVENC (GPU)"
+            except Exception as exc:                           # noqa: BLE001 -- no encoder on this card, or a driver refusal
+                if os.path.exists(path):
+                    os.remove(path)
+                why = f"the GPU encoder (NVENC) could not start: {exc}{_HINT}"
     _write(path, frames, fps, audio, metadata, X264)
-    if encoder == "auto":
-        log.once("save_no_nvenc", log.ALERT, "FunPack Save Video", f"no NVENC in this PyAV build ({gpu[0]} missing): saved on the CPU")
+    if why:                                                    # the video is saved either way; never lose a generation to the encoder
+        log.once("save_nvenc", log.ALERT, "FunPack Save Video", f"{why}. Saved as H.264 on the CPU instead.")
     return "H.264 on libx264 (CPU, all cores)"
 
 
@@ -95,7 +98,7 @@ class FunPackSaveVideo(io.ComfyNode):
                 io.Float.Input("fps", default=24.0, min=1.0, max=240.0, step=0.01),
                 io.String.Input("filename_prefix", default="FunPack"),
                 io.Combo.Input("encoder", options=list(ENCODERS), default="auto", optional=True,
-                               tooltip="auto: GPU (NVENC) if available, else H.264 on the CPU. gpu: fail rather than use the CPU. cpu: H.264 (libx264) on every core."),
+                               tooltip="auto and gpu: the GPU encoder (NVENC) when it works, otherwise H.264 on the CPU so the video is still saved. cpu: H.264 (libx264) on every core."),
                 io.Combo.Input("codec", options=list(CODECS), default="h264", optional=True,
                                tooltip="For the GPU encoder. H.264: plays in every browser. H.265: smaller files, but Firefox may not play it."),
             ],
