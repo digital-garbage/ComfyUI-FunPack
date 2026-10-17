@@ -138,7 +138,7 @@ class Sampler:
     """Handed to ComfyUI's guider in place of a sampler: instead of denoising, it trains. Built lazily so this file imports without comfy."""
 
     @staticmethod
-    def make(nt, torch, comfy_samplers, custom_sampler, lora, optimizer, criterion, cfg, dtype, stopped, first=0):
+    def make(nt, torch, comfy_samplers, custom_sampler, lora, optimizer, criterion, cfg, dtype, stopped, first=0, saver=None):
         class OwnSampler(comfy_samplers.Sampler):
             def sample(self, model_wrap, sigmas, extra_args, callback, noise, latent_image=None, denoise_mask=None, disable_pbar=False):
                 model_wrap.conds = nt.process_cond_list(model_wrap.conds)
@@ -148,6 +148,7 @@ class Sampler:
                 sampling = model_wrap.inner_model.model_sampling
                 total = cfg["steps"] * accumulate
                 every = -(-int(cfg.get("preview_every") or 0) // accumulate) * accumulate        # a preview waits for a whole optimizer step
+                keep = -(-int(cfg.get("save_every") or 0) // accumulate) * accumulate
                 for i in range(first, total):
                     gen = torch.Generator().manual_seed(seed + i)
                     pick = torch.randperm(size, generator=gen)[:1].tolist()
@@ -174,6 +175,8 @@ class Sampler:
                         optimizer.step()
                         optimizer.zero_grad()
                         if (i + 1) < total:
+                            if saver and keep and (i + 1) % keep == 0:
+                                saver(lora.state(), i + 1)
                             if jobs.pause_requested():
                                 raise Paused("user", i + 1)
                             if every and (i + 1) % every == 0:
@@ -183,7 +186,7 @@ class Sampler:
         return OwnSampler()
 
 
-def train(model, payload, conds, cfg, adapt, nt, mm, torch, watch, shim, resume=None, run=None):
+def train(model, payload, conds, cfg, adapt, nt, mm, torch, watch, shim, resume=None, run=None, saver=None):
     """Train a LoRA on `model` with ComfyUI's guider carrying each batch. Returns the file's tensors."""
     import comfy.samplers
     import comfy_extras.nodes_custom_sampler as custom_sampler
@@ -217,7 +220,7 @@ def train(model, payload, conds, cfg, adapt, nt, mm, torch, watch, shim, resume=
             optimizer.load_state_dict(resume["optimizer"])
             first = int(resume["step"])
             log.info("FunPack LoRA training", f"carrying on from step {first}")
-        sampler = Sampler.make(nt, torch, comfy.samplers, custom_sampler, lora, optimizer, criterion, cfg, dtype, stopped, first)
+        sampler = Sampler.make(nt, torch, comfy.samplers, custom_sampler, lora, optimizer, criterion, cfg, dtype, stopped, first, saver)
         if cfg["offloading"]:
             log.warning("FunPack LoRA training", "ComfyUI's own 'keep weights in system memory' is ignored by this training loop: it has brought ComfyUI down on H3. Use 'Blocks kept in system memory' instead")
         guider = nt.TrainGuider(model, offloading=False)

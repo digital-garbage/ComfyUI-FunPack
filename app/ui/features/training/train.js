@@ -4,7 +4,7 @@ import { stillOf } from "./state.js";
 
 /** The node's own defaults. A set remembers what was changed from them. */
 export const DEFAULTS = {
-  name: "funpack_lora", use: "all", preview_every: 0, steps: 500, learning_rate: 0.0001, rank: 16, algorithm: "LoRA", optimizer: "AdamW", loss: "MSE",
+  name: "funpack_lora", use: "all", preview_every: 0, save_every: 0, steps: 500, learning_rate: 0.0001, rank: 16, algorithm: "LoRA", optimizer: "AdamW", loss: "MSE",
   batch_size: 1, grad_accumulation: 1, resolution: 512, aspect_buckets: false, frames: 33, fps: 0, start: "start", seed: 0,
   training_dtype: "bf16", lora_dtype: "bf16", gradient_checkpointing: true, offloading: false, bypass: false, swap_blocks: 0,
 };
@@ -83,6 +83,7 @@ export function trainStep({ app, session, go, ui }) {
       num("steps", "Steps", "More steps learn more and can overdo it.", { min: 1, max: 100000, step: 10 }),
       num("learning_rate", "Learning rate", "How big each step is. Lower is safer and slower.", { min: 0.0000001, max: 1, step: 0.0001, precision: 7 }),
       num("rank", "Rank", "How much it can learn. Higher holds more detail and makes a bigger file.", { min: 1, max: 128, step: 1 }),
+      num("save_every", "Save a copy every (steps)", "0 saves only the finished LoRA. Otherwise a copy of the LoRA so far goes to your loras folder every this many steps, named like yourname_step200, so you can pick the best moment.", { min: 0, max: 100000, step: 10 }),
       num("preview_every", "Preview every (steps)", "0 never. Otherwise training waits every this many steps while your pipeline makes a picture or clip with the LoRA so far (the picked scene, the project's own settings), then carries on. Needs a LoRA loader in the pipeline; each wait loads the models again.", { min: 0, max: 100000, step: 10 })] }),
     c.group.default({ label: "Pictures and clips", rows: [
       num("resolution", "Size", "Pixels per side. Everything is fitted to about this area.", { min: 64, max: 2048, step: 32 }),

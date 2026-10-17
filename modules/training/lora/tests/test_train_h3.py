@@ -397,3 +397,11 @@ def test_a_run_that_cannot_be_resumed_says_why(run_env):
     with pytest.raises(ValueError, match="saved state is gone"):
         train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(resume="0123456789ab"))
     assert jobs.snapshot()["state"] == "error"
+
+
+def test_copies_of_the_lora_so_far_are_saved_as_name_stepN(run_env):
+    tmp_path, jobs = run_env
+    from modules.training.lora import train
+    train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=6, save_every=2))
+    names = sorted(p.name for p in (tmp_path / "loras").glob("*.safetensors"))
+    assert names == ["tiny_lora.safetensors", "tiny_lora_step2.safetensors", "tiny_lora_step4.safetensors"]

@@ -216,7 +216,10 @@ def _run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str =
         shim = adapt["shims"]() if adapt and adapt.get("shims") else _nothing()
         watch = _watch(nt, mm, torch, _swapper(adapt, cfg, mm, torch))
         if adapt and adapt.get("lora_targets"):
-            lora, paused = loop.train(model, payload, conds, cfg, adapt, nt, mm, torch, watch, shim, resume, run_id)       # our own loop, ComfyUI carries the batches
+            def keep(state, step):                        # a copy of the LoRA so far, in the loras folder, never over an earlier file
+                name = _save(state, f"{cfg['name']}_step{step}", folder_paths, safetensors.torch, set_name, cfg)
+                log.info("FunPack LoRA training", f"saved {name} at step {step}")
+            lora, paused = loop.train(model, payload, conds, cfg, adapt, nt, mm, torch, watch, shim, resume, run_id, keep)       # our own loop, ComfyUI carries the batches
             if paused:
                 preview = _save(lora, f"{cfg['name']}_preview", folder_paths, safetensors.torch, set_name, cfg, keep=True)
                 jobs.pause(paused.reason, paused.step, preview)
