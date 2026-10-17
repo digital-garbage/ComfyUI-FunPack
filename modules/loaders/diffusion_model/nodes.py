@@ -245,6 +245,9 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
             raise RuntimeError(
                 f"Could not detect a diffusion model in {model_name}. Loading a text "
                 f"encoder or a VAE file here is the usual cause.")
+        if not gguf and not int8_convrot and hasattr(model, "cached_patcher_init") and model.cached_patcher_init is None and hasattr(comfy.sd, "load_diffusion_model"):
+            # What LoRA training clones the model from: core's own loaders set it, and a plain file is the one case this loader can say how to read again.
+            model.cached_patcher_init = (comfy.sd.load_diffusion_model, (path, model_options))
 
         for line in unsupported_dtypes(model, weight_dtype, compute_dtype):
             log.alert("FunPack Diffusion Model Loader", f"{line}; expect noise or broken sound. Set it to default.")

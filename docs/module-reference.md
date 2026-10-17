@@ -160,7 +160,7 @@ A capability is a name in `PROVIDES`. Core defines none: the contract is between
 
 ## Helpers a module may import from `_core`
 
-`from ..._core import ...` offers exactly these: `addons`, `chain`, `config`, `contract`, `control`, `dit_hooks`, `input_steer`, `log`, `media`, `patching`, `projects`, `rated_dial`, `registry`, `relations`, `run`, `schema`, `shortcuts`, `streams`, `temp_files`, `traits`, `vae_tiles`. Adding one means editing `modules/_core.py` in both of its branches.
+`from ..._core import ...` offers exactly these: `addons`, `chain`, `config`, `contract`, `control`, `dit_hooks`, `graph`, `input_steer`, `log`, `media`, `patching`, `projects`, `rated_dial`, `registry`, `relations`, `run`, `schema`, `shortcuts`, `streams`, `temp_files`, `traits`, `vae_tiles`. Adding one means editing `modules/_core.py` in both of its branches.
 
 Most used:
 

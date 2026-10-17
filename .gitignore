@@ -34,6 +34,7 @@ app/playwright-report/
 # source code for loading media into the graph.
 /projects/
 /media/
+/training/
 /shortcuts.json
 /markers.json
 /quarantine.json

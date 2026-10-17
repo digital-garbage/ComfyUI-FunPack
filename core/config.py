@@ -43,3 +43,6 @@ QUARANTINE_FILE = ROOT / "quarantine.json"
 
 # Optional features the user switched on (core/addons.py). Per machine: a new rental starts without them.
 ADDONS_FILE = ROOT / "addons.json"
+
+# LoRA training (modules/training/lora): training sets, tagger models, run history. Per machine, like media.
+TRAINING_DIR = ROOT / "training"

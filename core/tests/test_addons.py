@@ -44,7 +44,7 @@ def test_switching_on_waits_for_the_restart_and_off_keeps_the_packages(here):
 
 def test_an_add_on_this_machine_cannot_run_is_not_offered(here, monkeypatch):
     monkeypatch.setitem(addons._BY_ID["nvidia_vsr"], "offered", lambda: False)
-    assert [a["id"] for a in addons.listing()] == ["camera"]
+    assert [a["id"] for a in addons.listing()] == ["camera", "lora_training"]
     assert addons.set_wanted("nvidia_vsr", True) is False
     assert addons.set_wanted("no-such-addon", True) is False
 
@@ -107,7 +107,7 @@ def test_the_routes_list_and_switch(comfyui, here):
             ok = await (await client.post("/funpack/api/addons", json={"id": "camera", "enabled": True})).json()
             return got, bad.status, ok
     got, bad, ok = asyncio.run(go())
-    assert {a["id"] for a in got["addons"]} == {"nvidia_vsr", "camera"}
+    assert {a["id"] for a in got["addons"]} == {"nvidia_vsr", "camera", "lora_training"}
     assert bad == 400
     assert next(a["state"] for a in ok["addons"] if a["id"] == "camera") == "pending"
     assert json.loads(config.ADDONS_FILE.read_text())["wanted"] == ["camera"]
@@ -119,3 +119,12 @@ def test_an_add_on_this_machine_cannot_run_is_not_enabled_even_if_wanted_and_ins
     assert addons.enabled("nvidia_vsr")
     monkeypatch.setitem(addons._BY_ID["nvidia_vsr"], "offered", lambda: False)     # the folder moved to a machine without the card
     assert not addons.enabled("nvidia_vsr")
+
+
+def test_an_add_on_that_is_not_legacy_is_not_switched_on_by_its_package_being_there(here):
+    """onnxruntime is common: a machine that already has it must not get LoRA training turned on for it."""
+    here.add("lora_training")
+    assert not addons.enabled("lora_training")
+    assert next(a["state"] for a in addons.listing() if a["id"] == "lora_training") == "disabled"
+    addons.set_wanted("lora_training", True)
+    assert addons.enabled("lora_training")
