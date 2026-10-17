@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 from ..._core import log
-from . import captions, jobs, media_io, store
+from . import captions, jobs, media_io, store, swap
 
 POSITIVE = ("own", "liked")
 NEGATIVE = ("disliked", "bad_composition", "bad_image")
@@ -204,7 +204,7 @@ def _run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str =
         losses = _loss_hook(nt, cfg["steps"] * cfg["grad_accumulation"])
         jobs.say("Training", "training")
         shim = adapt["shims"]() if adapt and adapt.get("shims") else _nothing()
-        with shim, losses, _watch(nt, mm, torch):
+        with shim, losses, _watch(nt, mm, torch, _swapper(adapt, cfg, mm, torch)):
             out = nt.TrainLoraNode.execute(
                 model=[model], latents=payload, positive=conds, batch_size=[batch], steps=[cfg["steps"]],
                 grad_accumulation_steps=[cfg["grad_accumulation"]], learning_rate=[cfg["learning_rate"]], rank=[cfg["rank"]],
@@ -318,8 +318,9 @@ class _watch:
     """While open, a Log line after each stage of the trainer's setup, so an out-of-memory says which stage filled the card."""
     STAGES = ("_prepare_latents_and_count", "_setup_lora_adapters", "_setup_lora_adapters_bypass", "_create_optimizer")
 
-    def __init__(self, nt, mm, torch):
-        self.nt, self.mm, self.torch, self.put = nt, mm, torch, []
+    def __init__(self, nt, mm, torch, after_load=None):
+        self.nt, self.mm, self.torch, self.put, self.after_load = nt, mm, torch, [], after_load
+        self.state = {"backward": False, "recomputes": 0}
 
     def __enter__(self):
         def wrap(owner, name, label):
@@ -329,6 +330,8 @@ class _watch:
 
             def watched(*args, **kwargs):
                 out = original(*args, **kwargs)
+                if label == "loading the model" and self.after_load:
+                    self.after_load(args[0] if args else kwargs.get("models"))
                 _card(f"after {label}", self.mm, self.torch)
                 return out
             setattr(owner, name, watched)
@@ -337,7 +340,29 @@ class _watch:
             wrap(self.nt, name, name.strip("_").replace("_", " "))
         wrap(self.mm, "load_models_gpu", "loading the model")
         self._backward()
+        self._recomputes()
         return self
+
+    def _recomputes(self):
+        """A Log line for the first block recomputes of the backward pass: how the card fills block by block."""
+        nt, mm, torch, state = self.nt, self.mm, self.torch, self.state
+        original, counter = nt.patch, [0]
+
+        def patch(m, offloading=False):
+            idx, forward = counter[0], getattr(m, "forward", None)
+            counter[0] += 1
+            if forward is not None:
+                def logged(*args, **kwargs):
+                    if state["backward"]:
+                        state["recomputes"] += 1
+                        n = state["recomputes"]
+                        if n <= 8 or n % 10 == 0:
+                            _card(f"backward recompute {n} (module {idx}, peak {torch.cuda.max_memory_allocated() / 1024 ** 3:.1f} GiB)", mm, torch)
+                    return forward(*args, **kwargs)
+                m.forward = logged
+            return original(m, offloading)
+        nt.patch = patch
+        self.put.append((nt, "patch", original))
 
     def _backward(self):
         """A Log line just before the first backward passes: what the forward pass left on the card (the part that grows with clip length)."""
@@ -345,6 +370,7 @@ class _watch:
         original = autograd.backward
 
         def watched(*args, **kwargs):
+            self.state["backward"] = True
             if seen[0] < 2:
                 seen[0] += 1
                 _card(f"before backward pass {seen[0]} (peak so far {torch.cuda.max_memory_allocated() / 1024 ** 3:.1f} GiB)", self.mm, torch)
@@ -356,6 +382,27 @@ class _watch:
         for owner, name, original in reversed(self.put):
             setattr(owner, name, original)
         return False
+
+
+def _swapper(adapt, cfg, mm, torch):
+    """After the model is on the card: the weights of the chosen blocks go to system memory (block swap), or None when not asked for."""
+    count = int(cfg.get("swap_blocks") or 0)
+    if count <= 0:
+        return None
+    if not (adapt and adapt.get("blocks")):
+        log.warning("FunPack LoRA training", "block swap is asked for, but this model has no block list to swap: the whole model stays on the card")
+        return None
+
+    def after(patchers):
+        for patcher in patchers or []:
+            blocks = adapt["blocks"](patcher.model.diffusion_model)
+            done = swap.move(blocks, count, torch)
+            if done["blocks"]:
+                log.info("FunPack LoRA training", f"block swap: {done['blocks']} of {len(blocks)} blocks ({done['bytes'] / 1024 ** 3:.1f} GiB) now wait in system memory")
+                _card("after block swap", mm, torch)
+            elif not swap.still_away(blocks, count):
+                log.warning("FunPack LoRA training", "block swap: ComfyUI moved the weights back to the card")
+    return after
 
 
 def _free_the_card(mm, torch):

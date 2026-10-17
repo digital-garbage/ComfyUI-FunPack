@@ -5,7 +5,7 @@ import { composer as c } from "../../composer/composer.js";
 export const DEFAULTS = {
   name: "funpack_lora", use: "normal", steps: 500, learning_rate: 0.0005, rank: 16, algorithm: "LoRA", optimizer: "AdamW", loss: "MSE",
   batch_size: 1, grad_accumulation: 1, resolution: 512, aspect_buckets: false, frames: 33, fps: 0, start: "start", seed: 0,
-  training_dtype: "bf16", lora_dtype: "bf16", gradient_checkpointing: true, offloading: false, bypass: false,
+  training_dtype: "bf16", lora_dtype: "bf16", gradient_checkpointing: true, offloading: false, bypass: false, swap_blocks: 0,
 };
 export const PRESETS = [
   { value: "check", label: "Quick check", steps: 100, rank: 8 },
@@ -58,7 +58,8 @@ export function trainStep({ app, session, go, ui }) {
     pickOf("lora_dtype", "LoRA precision", "How the file is stored.", opts(["bf16", "fp32"])),
     num("seed", "Seed", "The same seed repeats the same run.", { min: 0, step: 1 }),
     flag("gradient_checkpointing", "Save memory (gradient checkpointing)", "Slower, but needs far less memory."),
-    flag("offloading", "Keep weights in system memory", "For cards that cannot hold the model. Slower."),
+    num("swap_blocks", "Blocks kept in system memory", "Block swap: this many transformer blocks wait in system memory and come to the card one layer at a time. Slower; each block frees about 0.75 GiB (H3 has 50). 0 keeps the whole model on the card.", { min: 0, max: 128, step: 1 }),
+    flag("offloading", "Keep weights in system memory (ComfyUI's own)", "Slower. It brought ComfyUI down with H3 on a rental: prefer Blocks kept in system memory."),
     flag("bypass", "Bypass mode", "Applies the LoRA by hooks, for quantized models."),
   ] }) });
 

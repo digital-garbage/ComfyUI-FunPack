@@ -301,3 +301,33 @@ def test_a_tiny_h3_trains_when_run_the_way_comfyui_runs_a_node(run_env):
         patcher = tiny_h3_patcher()
         train.run(patcher, FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=2))
     assert jobs.snapshot()["state"] == "done"
+
+
+def test_block_swap_moves_the_last_blocks_to_system_memory_and_leaves_trainable_weights():
+    import torch
+    from modules.training.lora import swap
+
+    class Layer(torch.nn.Linear):
+        comfy_cast_weights = False
+
+    def block():
+        b = torch.nn.Sequential(Layer(4, 4), Layer(4, 4))
+        for p in b[1].parameters():
+            p.requires_grad_(True)               # a trainable weight is never moved
+        return b
+
+    blocks = [block() for _ in range(4)]
+    done = swap.move(blocks, 2, torch)
+    assert done["blocks"] == 2
+    assert all(l.comfy_cast_weights for l in blocks[3].modules() if isinstance(l, Layer)), "the swapped layers fetch their weights"
+    assert not any(l.comfy_cast_weights for l in blocks[0].modules() if isinstance(l, Layer))
+    assert swap.move(blocks, 2, torch)["blocks"] == 0, "asking twice moves nothing again"
+    assert swap.move(blocks, 0, torch)["blocks"] == 0
+
+
+def test_a_tiny_h3_trains_with_block_swap_on(run_env):
+    from modules.training.lora import train
+    tmp_path, jobs = run_env
+    file = train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=2, gradient_checkpointing=True, swap_blocks=1))
+    snap = jobs.snapshot()
+    assert file.endswith(".safetensors") and snap["state"] == "done" and all(x == x for x in snap["loss"])

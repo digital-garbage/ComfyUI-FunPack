@@ -48,6 +48,7 @@ class FunPackTrainLora(io.ComfyNode):
                 io.Combo.Input("weight_dtype", options=["default", "fp8_e4m3fn", "fp8_e5m2", "fp16", "bf16", "fp32"], default="default", tooltip="How the model file's weights are stored when it is loaded here."),
                 io.Combo.Input("compute_dtype", options=["default", "fp16", "bf16", "fp32"], default="default", tooltip="What the maths runs in when the model is loaded here."),
                 io.String.Input("postfix", default="", tooltip="Text put at the end of every caption."),
+                io.Int.Input("swap_blocks", default=0, min=0, max=128, tooltip="How many transformer blocks keep their weights in system memory, fetched one layer at a time: slower, and each one frees about a block's weight on the card. 0 keeps the whole model on the card."),
             ],
             outputs=[io.String.Output(display_name="lora")],
         )
@@ -55,7 +56,7 @@ class FunPackTrainLora(io.ComfyNode):
     @classmethod
     def execute(cls, clip, vae, set_name, name, use, steps, learning_rate, rank, algorithm, optimizer, loss, batch_size,
                 grad_accumulation, resolution, aspect_buckets, frames, fps, start, trigger, seed, training_dtype, lora_dtype,
-                gradient_checkpointing, offloading, bypass, model=None, audio_vae=None, model_name="", weight_dtype="default", compute_dtype="default", postfix="") -> io.NodeOutput:
+                gradient_checkpointing, offloading, bypass, model=None, audio_vae=None, model_name="", weight_dtype="default", compute_dtype="default", postfix="", swap_blocks=0) -> io.NodeOutput:
         if not addons.enabled("lora_training"):
             raise RuntimeError("LoRA training is switched off. Turn it on in Settings > Modules.")
         cfg = {"name": name, "use": use, "steps": steps, "learning_rate": learning_rate, "rank": rank, "algorithm": algorithm,
@@ -63,5 +64,5 @@ class FunPackTrainLora(io.ComfyNode):
                "resolution": resolution, "aspect_buckets": aspect_buckets, "frames": frames, "fps": fps, "start": start,
                "trigger": trigger, "seed": seed, "training_dtype": training_dtype, "lora_dtype": lora_dtype,
                "gradient_checkpointing": gradient_checkpointing, "offloading": offloading, "bypass": bypass,
-               "model_name": model_name, "weight_dtype": weight_dtype, "compute_dtype": compute_dtype, "postfix": postfix}
+               "model_name": model_name, "weight_dtype": weight_dtype, "compute_dtype": compute_dtype, "postfix": postfix, "swap_blocks": swap_blocks}
         return io.NodeOutput(train.run(model, clip, vae, audio_vae, set_name, cfg))
