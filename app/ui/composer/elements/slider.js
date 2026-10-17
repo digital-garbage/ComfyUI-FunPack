@@ -18,19 +18,20 @@ function makeRange({ value, min, max, step, disabled, label, describedBy }) {
   input.value = String(value);
   // The filled portion is drawn from a variable rather than a background image,
   // so it follows the theme's accent without the JS knowing a colour.
-  const paint = () => input.style.setProperty("--fill", `${pct(Number(input.value), min, max)}%`);
+  let top = max;
+  const paint = () => input.style.setProperty("--fill", `${pct(Number(input.value), min, top)}%`);
   paint();
   input.addEventListener("input", paint);
-  return { input, paint };
+  return { input, paint, setMax(next) { top = next; input.max = String(next); paint(); } };
 }
 
 function sliderBase(cls, { value = 0, min = 0, max = 1, step = 0.01, onChange, onCommit, disabled, label } = {}) {
-  const { input, paint } = makeRange({ value, min, max, step, disabled, label });
+  const { input, paint, setMax } = makeRange({ value, min, max, step, disabled, label });
   if (onChange) input.addEventListener("input", () => onChange(Number(input.value)));
   if (onCommit) input.addEventListener("change", () => onCommit(Number(input.value)));
   const node = el("div", { cls, children: input });
   return {
-    node, input, paint,
+    node, input, paint, setMax,
     get value() { return Number(input.value); },
     setValue(v) { input.value = String(v); paint(); },
     destroy: () => node.remove(),

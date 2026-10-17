@@ -1,6 +1,6 @@
 // Windows and panels that live above the app.
 
-import { define } from "../internals/register.js";
+import { define, lookup } from "../internals/register.js";
 import { el } from "../internals/el.js";
 import { setText } from "../internals/text.js";
 import { uid } from "../internals/ids.js";
@@ -203,6 +203,36 @@ define("floating", "window", ({
 });
 
 /** A full-screen "please wait" that genuinely blocks. */
+/**
+ * A small button inside the bottom-right corner of `anchor`, left of its resize grip, on the box it belongs to and never over a
+ * neighbour's controls. It follows the anchor every frame (a window dragged, resized or scrolled reports to no page event) and calls
+ * `onGone` once when the anchor has left the page or been hidden with its panel.
+ */
+define("floating", "corner", ({ anchor, label, title, onClick, onGone } = {}) => {
+  // A handle, or the node a focus event named (the box a person just clicked into is not something this code built).
+  const target = anchor && anchor.node ? anchor.node : anchor;
+  if (!target || target.nodeType !== 1) throw new TypeError("floating.corner needs the element to sit in.");
+  const raf = (fn) => (globalThis.requestAnimationFrame || ((f) => setTimeout(f, 16)))(fn);
+  const caf = (id) => (globalThis.cancelAnimationFrame || clearTimeout)(id);
+  const button = lookup("button", "sm")({ label, tone: "ghost", title, onClick });
+  const node = button.node;
+  node.style.position = "fixed";
+  mount(node);
+  const layer = claimFor("popover", node);
+  let frame = 0, alive = true;
+  const place = () => {
+    const r = target.isConnected ? target.getBoundingClientRect() : null;
+    if (!r || !r.width) { destroy(); if (onGone) onGone(); return; }
+    const b = node.getBoundingClientRect();
+    node.style.left = `${Math.max(r.left + 4, r.right - b.width - 16)}px`;
+    node.style.top = `${Math.max(r.top + 2, r.bottom - b.height - 4)}px`;
+  };
+  const follow = () => { place(); if (alive) frame = raf(follow); };
+  function destroy() { if (!alive) return; alive = false; caf(frame); layer.release(); unmount(node); }
+  follow();
+  return { node, isOverlay: true, destroy };
+});
+
 define("overlay", "blocking", ({ message, progress, cancel } = {}) => {
   const words = el("p", { cls: "cx-t cx-t-sm", text: message });
   const card = el("div", { cls: "cx-blocking-card", children: [

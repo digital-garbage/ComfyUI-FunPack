@@ -156,3 +156,11 @@
 .cx-pick-row.cx-on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 27%, transparent); }
 .cx-pick-name { flex: 1; min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cx-pick-hint { font-size: var(--fs-6); color: var(--faint); font-variant-numeric: tabular-nums; }
+
+.cx-viewer-stage { overflow: hidden; }
+:has(> .cx-viewer-cover) { position: relative; }
+.cx-viewer-cover { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; background: var(--elev-1); padding: var(--sp-4); box-sizing: border-box; }
+.cx-viewer-cover[hidden] { display: none; }
+.cx-viewer-cover-media { max-inline-size: 100%; max-block-size: 100%; object-fit: contain; }
+.cx-viewer-cover-audio { inline-size: 80%; }
+.cx-viewer-cover > .cx-btn { position: absolute; inset-block-start: var(--sp-3); inset-inline-end: var(--sp-3); }

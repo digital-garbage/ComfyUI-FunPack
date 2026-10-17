@@ -32,16 +32,14 @@ export function fxStyle(fx = {}, within = 0, dur = 0, fps = 25) {
 export default {
   id: "preview-fx",
   mount: "preview",
-  needs: ["project", "playhead"],
+  needs: ["project", "playhead", "monitor"],
   setup({ host, app }) {
     const p = app.project, head = app.playhead;
     function draw() {
-      const v = host.querySelector("video"), open = p.project;
-      if (!v) return;
+      const open = p.project;
       const seg = open && segments(open).find((s) => s.kind === "scene" && head.at >= s.start - 1e-6 && head.at < s.start + s.dur - 1e-6);
       const st = fxStyle(seg ? seg.scene.effects : {}, seg ? head.at - seg.start : 0, seg ? seg.dur : 0, seg ? num(seg.scene.fps_mode === "project" ? open.frame_rate : seg.scene.fps, 25) || 25 : 25);
-      Object.assign(v.style, st);
-      if (v.parentElement) v.parentElement.style.overflow = "hidden";       // a zoom or crop punches in: the frame stays put
+      app.monitor.look({ transform: st.transform, filter: st.filter, fit: st.objectFit, opacity: st.opacity === "" ? null : st.opacity });
     }
     const off = [head.on(draw), app.on(draw)];
     draw();

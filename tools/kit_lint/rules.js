@@ -53,9 +53,9 @@ export const KIT_RULES = [
 export const FEATURE_RULES = [
   ...MODULE_RULES.filter((r) => !["reaching-for-globals", "raw-element"].includes(r.name)),
   { name: "document", why: "the page is reached through app.dom, never directly",
-    test: /(?<![\w./])document\s*[.[,;)]|createElementNS|\[\s*['"`]createElement['"`]\s*\]/ },
+    test: /(?<![\w./])document(?:\.[A-Za-z_$]|\s*\[)|[(=,]\s*document\s*[,;)]|createElementNS|\[\s*['"`]createElement['"`]\s*\]/ },
   { name: "reaching-for-globals", why: "the page is reached through app.dom, never directly",
-    test: /\bglobalThis\b|(?<![\w./])window\s*[.[]|\bself\s*\[/ },
+    test: /\bglobalThis\b|(?<![\w./])window(?:\.[A-Za-z_$]|\s*\[)|\bself\s*\[/ },
   { name: "class-name", why: "classes belong to the kit (cx-) and the frame (fp-); a feature names elements",
     test: /\bclassName\b|['"`.][^'"`\n]*\b(?:fp|cx)-[a-z]/ },
 ];

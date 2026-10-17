@@ -10,29 +10,24 @@ export default {
   needs: ["generate"],
   setup({ host, app }) {
     const g = app.generate;
-    const bar = c.progress.bar({ value: 0, max: 100, label: "Generating" });
-    const text = c.text.sm({ text: "" });
-    const wrap = document.createElement("span");
-    wrap.style.cssText = "display:inline-flex;align-items:center;gap:8px;min-inline-size:0";
-    bar.node.style.inlineSize = "90px";
-    wrap.append(bar.node, text.node);
-    wrap.hidden = true;
-    host.append(wrap);
+    const bar = c.progress.inline({ label: "Generating" });
+    bar.setHidden(true);
+    host.append(bar.node);
     let since = 0;
     const draw = () => {
       const s = g.state(), working = s.phase === QUEUED || s.phase === RUNNING;
       if (working && !since) since = Date.now();
       if (!working) since = 0;
-      wrap.hidden = !working;
+      bar.setHidden(!working);
       if (!working) { return; }
       const pr = s.progress;
       bar.setValue(pr && pr.max ? (pr.value / pr.max) * 100 : 0);
-      text.setText(`${s.phase === QUEUED ? "Queued" : pr && pr.max ? `Step ${pr.value}/${pr.max}` : "Running"} · ${elapsed(Date.now() - since)}`);
+      bar.setText(`${s.phase === QUEUED ? "Queued" : pr && pr.max ? `Step ${pr.value}/${pr.max}` : "Running"} · ${elapsed(Date.now() - since)}`);
 
     };
     const off = g.subscribe(draw);
     const timer = setInterval(() => { if (since) draw(); }, 1000);       // the clock ticks between ComfyUI's messages
     draw();
-    return () => { off(); clearInterval(timer); wrap.remove(); };
+    return () => { off(); clearInterval(timer); bar.destroy(); };
   },
 };

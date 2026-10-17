@@ -10,6 +10,8 @@ export function createDom(doc = document) {
     typingIn(node, only) { const a = doc.activeElement; return !!a && node.contains(a) && (only ? a.tagName === only : field.test(a.tagName)); },
     /** `node` itself has the focus. */
     focusOn: (node) => doc.activeElement === node,
+    /** The focus is `node` or something inside it. */
+    holdsFocus: (node) => !!doc.activeElement && node.contains(doc.activeElement),
     /** Let go of whatever has the focus, so a field being typed in commits first. */
     blur() { const a = doc.activeElement; if (a && a !== doc.body && typeof a.blur === "function") a.blur(); },
     /** Listen on the page / the window. Each returns the function that stops listening. */
@@ -42,6 +44,15 @@ export function createDom(doc = document) {
       setTimeout(() => done(null), 8000);
       m.src = src;
     }),
+    /** A part of the screen by name: "menubar", "main", "zone:0" (Assets, Preview, Properties, Timeline) or "button:<label start>". */
+    landmark(name) {
+      if (name === "menubar") return doc.querySelector(".cx-frame-head");
+      if (name === "main") return doc.querySelector(".cx-frame-main");
+      const [kind, rest] = name.split(/:(.*)/s);
+      if (kind === "zone") return doc.querySelectorAll("section.cx-zone")[Number(rest)] || null;
+      if (kind === "button") return [...doc.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith(rest)) || null;
+      return null;
+    },
     /** The page's body, as an anchor for things that float. */
     body: doc.body,
   };

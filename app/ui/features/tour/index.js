@@ -2,30 +2,29 @@
 // Help ▸ Start tour / Restart tour start it, Exit tour ends it, Skip to FAQ jumps to the last callout.
 import { composer as c } from "../../composer/composer.js";
 
-const zone = (n) => () => document.querySelectorAll("section.cx-zone")[n];
-const button = (text) => () => [...document.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith(text));
+// Each step points at a part of the screen by name: the menu bar, a zone, the page body, or a button by its label.
 const STEPS = [
-  { at: () => document.querySelector(".cx-frame-head"), side: "bottom", title: "Everything starts here", text: "The menu bar above has File, Edit, View and Help. Settings (top right) holds the models, the engine and the updates." },
-  { at: zone(0), side: "right", title: "Assets", text: "Your projects and the media bin. Drop images, clips and audio here; right-click a tile to use it as a reference, rename or delete it." },
-  { at: zone(1), side: "left", title: "Preview", text: "The monitor plays the cut wherever the playhead is. Save frame puts the current picture in the media bin." },
-  { at: zone(2), side: "left", title: "Properties", text: "Project settings (size, length, postfix) and the picked scene's prompt, source, references and length." },
-  { at: zone(3), side: "top", title: "Timeline", text: "One clip per scene. Drag the edges to trim, press S to split, Space to play. Lanes below carry separated sound." },
-  { at: button("◆ Composer"), side: "top", title: "Composer", text: "Write the whole story in one box, cut at the cut word; keep templates, $variables and shortcuts; chat with the prompt enhancer." },
-  { at: button("▶ Generate"), side: "top", title: "Generate", text: "Makes every scene on the timeline, except left-out scenes, video clips and Auto Montage pieces; an earlier render of a scene stays as a take. “Generate this scene” in Properties makes just the picked one; rate a result so FunPack learns your taste." },
-  { at: () => document.querySelector(".cx-frame-main"), side: "bottom", title: "FAQ", text: "Nothing happens? Check the ComfyUI chip at the top right and the Log window. Wrong look? Settings ▸ Appearance. Lost a layout? View ▸ Reset Layout. Lost a project? File ▸ Open recent. That is the tour: Help ▸ Start tour runs it again." },
+  { at: "menubar", side: "bottom", title: "Everything starts here", text: "The menu bar above has File, Edit, View and Help. Settings (top right) holds the models, the engine and the updates." },
+  { at: "zone:0", side: "right", title: "Assets", text: "Your projects and the media bin. Drop images, clips and audio here; right-click a tile to use it as a reference, rename or delete it." },
+  { at: "zone:1", side: "left", title: "Preview", text: "The monitor plays the cut wherever the playhead is. Save frame puts the current picture in the media bin." },
+  { at: "zone:2", side: "left", title: "Properties", text: "Project settings (size, length, postfix) and the picked scene's prompt, source, references and length." },
+  { at: "zone:3", side: "top", title: "Timeline", text: "One clip per scene. Drag the edges to trim, press S to split, Space to play. Lanes below carry separated sound." },
+  { at: "button:◆ Composer", side: "top", title: "Composer", text: "Write the whole story in one box, cut at the cut word; keep templates, $variables and shortcuts; chat with the prompt enhancer." },
+  { at: "button:▶ Generate", side: "top", title: "Generate", text: "Makes every scene on the timeline, except left-out scenes, video clips and Auto Montage pieces; an earlier render of a scene stays as a take. “Generate this scene” in Properties makes just the picked one; rate a result so FunPack learns your taste." },
+  { at: "main", side: "bottom", title: "FAQ", text: "Nothing happens? Check the ComfyUI chip at the top right and the Log window. Wrong look? Settings ▸ Appearance. Lost a layout? View ▸ Reset Layout. Lost a project? File ▸ Open recent. That is the tour: Help ▸ Start tour runs it again." },
 ];
 
 export default {
   id: "tour",
   mount: "menubar.menus",
-  needs: ["project"],
+  needs: ["project", "dom"],
   setup({ app }) {
     let at = -1, pop = null;
     const stop = () => { if (pop) { const p = pop; pop = null; p.close(); } at = -1; };
     function show(i) {
       if (pop) { const p = pop; pop = null; p.close(); }
       let target;
-      while (i >= 0 && i < STEPS.length && !((target = STEPS[i].at()) && target.getBoundingClientRect().width)) i += i >= at ? 1 : -1;      // a part that is hidden right now is skipped
+      while (i >= 0 && i < STEPS.length && !((target = app.dom.landmark(STEPS[i].at)) && target.getBoundingClientRect().width)) i += i >= at ? 1 : -1;      // a part that is hidden right now is skipped
       if (i < 0 || i >= STEPS.length) return stop();
       at = i;
       const s = STEPS[i], last = i === STEPS.length - 1;

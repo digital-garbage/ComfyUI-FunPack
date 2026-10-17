@@ -13,7 +13,7 @@ const writePrefs = (p) => { try { localStorage.setItem(KEY, JSON.stringify(p)); 
 export default {
   id: "wheel",
   mount: "menubar.menus",
-  needs: ["project"],
+  needs: ["project", "dom"],
   setup({ app }) {
     let wheel = null;
     const offs = [
@@ -33,7 +33,7 @@ export default {
         run: () => { const fix = p().pref("random_seed", true) !== false; p().setPref("random_seed", !fix); say(fix ? "Seed fixed: the seed node's own number is used" : "A fresh seed on every Generate"); } }),
     ];
     const onDown = (e) => {
-      if (e.button !== 1 || wheel || document.querySelector('[role="dialog"]')) return;       // nothing behind a dialog
+      if (e.button !== 1 || wheel || app.dom.dialogOpen()) return;       // nothing behind a dialog
       e.preventDefault();
       const prefs = readPrefs(), on = (a) => prefs.enabled ? prefs.enabled.includes(a.id) : !a.optIn;
       const items = (app.actions || []).filter((a) => on(a) && (!a.when || a.when())).slice(0, 12).map((a) => ({ id: a.id, label: a.label, icon: a.icon }));
@@ -51,7 +51,7 @@ export default {
         c.segmented.md({ label: "A half wheel opens", value: prefs.side, onChange: (v) => set({ side: v }), options: [{ value: "left", label: "Left" }, { value: "right", label: "Right" }] }),
         c.checklist.default({ label: "On the wheel", items: offered, values: prefs.enabled || (app.actions || []).filter((a) => !a.optIn).map((a) => a.id), onChange: (v) => set({ enabled: v }) })] });
     });
-    document.addEventListener("mousedown", onDown, true);
-    return () => { document.removeEventListener("mousedown", onDown, true); if (wheel) wheel.close && wheel.close(); offs.concat(toggles).forEach((f) => f()); };
+    const offDown = app.dom.onPage("mousedown", onDown, true);
+    return () => { offDown(); if (wheel) wheel.close && wheel.close(); offs.concat(toggles).forEach((f) => f()); };
   },
 };

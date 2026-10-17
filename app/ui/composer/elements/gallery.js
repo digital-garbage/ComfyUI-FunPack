@@ -9,7 +9,7 @@
 // forgot what was selected when the view changed would be three galleries, not
 // one bin in three views.
 
-import { define } from "../internals/register.js";
+import { define, lookup } from "../internals/register.js";
 import { el } from "../internals/el.js";
 import { applyDensity, recallCols, rememberCols, normaliseCols } from "../internals/density.js";
 import { wireDragReorder } from "../internals/dragReorder.js";
@@ -307,6 +307,17 @@ define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError
   let currentKind = kind;
   let currentFile = null;
   let mediaEl = null;
+  let look = null;
+
+  // How the picture is drawn (zoom, flip, blur, fade, fit): numbers and keywords from a feature, turned into style here.
+  function paintLook() {
+    if (!mediaEl) return;
+    const l = look || {};
+    mediaEl.style.transform = l.transform || "";
+    mediaEl.style.filter = l.filter || "";
+    mediaEl.style.objectFit = l.fit || "";
+    mediaEl.style.opacity = l.opacity == null ? "" : String(l.opacity);
+  }
 
   function show(next, nextKind = kind, file = null) {
     current = next || null;
@@ -335,6 +346,7 @@ define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError
       if (onError) onError(current);
     });
     stage.append(media);
+    paintLook();
   }
 
   show(src, kind);
@@ -349,6 +361,8 @@ define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError
     get file() { return currentFile; },
     /** The <video>/<img> element on screen, or null. */
     get element() { return mediaEl; },
+    /** { transform, filter, fit: "contain" | "cover", opacity } -> how the picture is drawn now; null clears it. Kept across sources. */
+    setLook(next) { look = next || null; paintLook(); },
     setValue: (next) => show(next, kind),
     setSource: (next, nextKind, file) => show(next, nextKind || kind, file),
     /**
@@ -365,5 +379,41 @@ define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError
       return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
     },
     destroy: () => { show(null); node.remove(); },
+  };
+});
+
+/**
+ * A layer over its parent that shows one file (a picture, a clip with controls, a sound with controls) and a close button.
+ * `show({ src, kind })` opens it, `close()` shuts it and gives the connection back. The parent is whatever it is appended to.
+ */
+define("viewer", "cover", ({ onClose, label = "Close preview" } = {}) => {
+  const layer = el("div", { cls: "cx-viewer-cover" });
+  layer.hidden = true;
+  let media = null;
+  const release = () => {
+    if (media && media.tagName !== "IMG") { media.removeAttribute("src"); media.load(); }       // give the connection back
+    media = null;
+    layer.replaceChildren(x.node);
+  };
+  const close = () => {
+    const was = !layer.hidden;
+    release(); layer.hidden = true;
+    if (was && onClose) onClose();
+  };
+  const x = lookup("iconButton", "sm")({ icon: "✕", label, onClick: close });
+  layer.append(x.node);
+  return {
+    node: layer,
+    get isOpen() { return !layer.hidden; },
+    show({ src, kind = "image" } = {}) {
+      release();
+      if (!src) { layer.hidden = true; return; }
+      const tag = kind === "image" ? "img" : kind === "audio" ? "audio" : "video";
+      media = el(tag, { cls: ["cx-viewer-cover-media", `cx-viewer-cover-${tag}`], attrs: { src, controls: tag === "img" ? undefined : "", autoplay: tag === "img" ? undefined : "", alt: tag === "img" ? "" : undefined } });
+      layer.replaceChildren(media, x.node);
+      layer.hidden = false;
+    },
+    close,
+    destroy: () => { release(); layer.remove(); },
   };
 });

@@ -6,28 +6,20 @@ let peek;
 test.before(async () => { setupDom(); globalThis.localStorage = window.localStorage; peek = (await import("./index.js")).default; });
 test.after(() => { delete globalThis.localStorage; teardownDom(); });
 
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const point = (node) => node.dispatchEvent(new window.Event("pointerover", { bubbles: true }));
-
-test("auto-hide: the title bar (Generate, Rate) never opens the timeline; resting on the strip does", async () => {
-  localStorage.setItem("funpack_timeline_peek", "1");
-  document.body.innerHTML = `<div class="fp-main"><div class="fp-row"></div><section><header class="cx-panel-head"><button id="gen">Generate</button><span id="status"></span></header><div class="cx-panel-body"><div id="lane"></div></div></section></div>`;
-  const root = document.documentElement, isOpen = () => root.classList.contains("fp-peek-open");
-  const off = peek.setup({ host: document.getElementById("status") });
-  const strip = document.querySelector(".fp-peek-strip");
-  assert.ok(strip && strip.nextElementSibling.classList.contains("cx-panel-body"), "the strip sits between title bar and timeline");
-
-  point(document.getElementById("gen")); await wait(300);
-  assert.equal(isOpen(), false, "reaching for Generate keeps it shut");
-
-  point(strip); point(document.querySelector(".fp-row")); await wait(300);
-  assert.equal(isOpen(), false, "passing over the strip does not flash it open");
-
-  point(strip); await wait(300);
-  assert.equal(isOpen(), true, "resting on the strip opens it");
-  point(document.getElementById("lane")); await wait(10);
-  assert.equal(isOpen(), true, "the timeline itself keeps it open");
-  point(document.getElementById("gen"));
-  assert.equal(isOpen(), false, "back on the title bar, it shuts");
+test("the button turns the frame's auto-hide on and off, remembers it, and switches it off when removed", () => {
+  localStorage.clear();
+  const calls = [], app = { peek: { set: (on) => calls.push(on) } };
+  const host = document.createElement("div");
+  const off = peek.setup({ host, app });
+  const button = host.querySelector("button");
+  assert.deepEqual(calls, [false]);
+  button.click();
+  assert.deepEqual(calls, [false, true]);
+  assert.equal(localStorage.getItem("funpack_timeline_peek"), "1");
+  assert.equal(button.getAttribute("aria-pressed"), "true");
+  button.click();
+  assert.equal(localStorage.getItem("funpack_timeline_peek"), null);
   off();
+  assert.equal(calls.at(-1), false);
+  assert.equal(host.children.length, 0);
 });

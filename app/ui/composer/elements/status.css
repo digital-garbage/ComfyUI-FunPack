@@ -102,3 +102,6 @@
 .cx-toast-warn   { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
 .cx-toast-danger { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
 @keyframes cx-rise { from { opacity: 0; transform: translateY(8px); } }
+
+.cx-progress-inline { display: inline-flex; align-items: center; gap: var(--sp-4); min-inline-size: 0; }
+.cx-progress-inline .cx-progress { inline-size: 90px; flex: none; }

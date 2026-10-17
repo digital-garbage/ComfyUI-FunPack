@@ -20,3 +20,4 @@ import "./gallery.js";
 import "./track.js";
 import "./nle.js";
 import "./wheel.js";
+import "./stage.js";

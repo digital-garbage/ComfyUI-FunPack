@@ -147,6 +147,10 @@ export const DEMOS = {
   "tile.action": { title: "Update", sub: "Pull the newest version from origin" },
   "tile.node": { title: "Load checkpoint", sub: "model.safetensors", state: "ready" },
   "tile.add": { title: "＋ Add a node", sub: "to Loaders" },
+  "progress.inline": { label: "Generating" },
+  "floating.corner": (c) => ({ anchor: c.textarea.md({ label: "Story", rows: 4 }), label: "💡", title: "Shortcut ideas" }),
+  "viewer.cover": { label: "Close preview" },
+  "stage.overlay": { label: "Overlays" },
   "hero.default": { title: "FunPack 5", hint: "“Cunning Cranberry” · Cutting Room" },
   "panel.default": (c) => ({
     title: "Scene 3",

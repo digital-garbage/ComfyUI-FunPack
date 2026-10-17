@@ -39,7 +39,7 @@ export default {
     const time = c.text.sm({ text: timecode(0, 25) });
     const frame = c.button.sm({ label: "📌 Save frame", tone: "ghost", disabled: true, onClick: saveFrame });
     let target = "", anchorKey = "";
-    const anchor = { node: document.createElement("span") };       // the "save frame to" choice: the bin, or a scene's i2v anchor
+    const anchor = c.region.stack({ gap: "none" });       // the "save frame to" choice: the bin, or a scene's i2v anchor
     function drawAnchor() {
       const scenes = open() ? open().scenes.filter((s) => !s.excluded && !isVideoClip(s) && !isSubclip(s)) : [];       // only a generated scene can start from a picture
       const key = scenes.map((s) => `${s.id}|${(s.text || "").slice(0, 18)}`).join(",") + `|${target}`;
@@ -48,7 +48,7 @@ export default {
       if (!scenes.some((s) => s.id === target)) { target = ""; frame.setLabel("📌 Save frame"); }
       const pick = c.select.sm({ label: "Save frame to", value: target, onChange: (v) => { target = v; frame.setLabel(v ? "📌 Use as anchor" : "📌 Save frame"); },
         options: [{ value: "", label: "— save to Media bin —" }, ...scenes.map((s, i) => ({ value: s.id, label: `anchor → Scene ${i + 1}${s.text ? `: ${s.text.slice(0, 18)}` : ""}` }))] });
-      anchor.node.replaceChildren(pick.node);
+      anchor.set([pick]);
     }
     host.append(viewer.node, empty.node, scrub.node, c.toolbar.default({ items: [stop, play, time,
       anchor, frame] }).node);
@@ -92,9 +92,8 @@ export default {
         const want = from + head.at - seg.start;
         if (Math.abs(v.currentTime - want) > 0.25) v.currentTime = want;
       }
-      scrub.input.max = String(total() || 1);
+      scrub.setMax(total() || 1);
       scrub.setValue(head.at);
-      scrub.input.style.setProperty("--fill", `${Math.min(100, (head.at / (total() || 1)) * 100)}%`);       // the slider drew its fill for 0..1
       time.setText(timecode(head.at, open() && open().frame_rate));
       play.node.firstChild.textContent = playing ? "⏸" : "▶"; play.node.title = playing ? "Pause" : "Play";
       if (playing && viewer.element) viewer.element.paused && viewer.element.play().catch(() => {});
@@ -129,6 +128,7 @@ export default {
       if (s && !(head.at >= s.start && head.at < s.start + s.dur)) head.set(s.start); else sync();
     };
     sync();
+    app.monitor = { look: (look) => viewer.setLook(look) };          // the effects feature draws on the picture through this
     const off = [head.on(sync), app.on((what) => {
       if (what === "select") onSelect();
       else if (what === "play.toggle") (playing ? pause() : start());
@@ -138,6 +138,6 @@ export default {
       else if (what === "open") { pause(); head.set(0); }          // another project: nothing carries over
       else sync();
     })];
-    return () => { clearInterval(walk); off.forEach((f) => f()); viewer.destroy(); };
+    return () => { clearInterval(walk); off.forEach((f) => f()); delete app.monitor; viewer.destroy(); };
   },
 };

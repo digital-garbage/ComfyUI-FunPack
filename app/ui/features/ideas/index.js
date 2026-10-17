@@ -1,7 +1,6 @@
 // 💡 Shortcut ideas: a bulb beside the prompt box you are in. It never opens by itself; it glows while shortcut categories go unused,
 // and its list mixes your own habits (what you paired before, what usually follows the previous shot) with browsing the library.
 import { composer as c } from "../../composer/composer.js";
-import { claimFor } from "../../composer/internals/zlayer.js";
 import { genUnitId, isGenerative, unitRoot } from "../../shell/scenes.js";
 import { analyze, byHabit, presentIn, shuffled } from "../../shell/habits.js";
 
@@ -11,12 +10,11 @@ const first = (sc) => String((sc.triggers || [])[0] || "").trim();
 export default {
   id: "ideas",
   mount: "menubar.menus",
-  needs: ["project", "api", "selection"],
+  needs: ["project", "api", "selection", "dom"],
   setup({ app }) {
     const p = app.project, on = () => p.pref("suggestions", true);
-    let box = null, node = null, layer = null, pop = null, hold = 0;
-    let frame = 0;
-    const closeBulb = () => { cancelAnimationFrame(frame); if (pop) pop.close(); if (node) { node.remove(); layer.release(); node = layer = box = null; } };
+    let box = null, bulb = null, pop = null, hold = 0;
+    const closeBulb = () => { if (pop) pop.close(); if (bulb) { bulb.destroy(); bulb = box = null; } };
     const prevText = () => {                       // the previous shot's prompt, for "your usual next shot" (scene prompt only)
       const open = p.project; if (!open || box.getAttribute("aria-label") !== "Prompt") return "";
       const roots = open.scenes.filter((s) => isGenerative(s) && unitRoot(open, genUnitId(s)) === s), at = roots.findIndex((s) => s.id === app.selection.focus);
@@ -55,40 +53,23 @@ export default {
         body.set([c.toolbar.default({ items: [c.label.section({ text: "Ideas" })], trailing: [c.button.sm({ label: "⟳", tone: "ghost", title: "Shuffle the samples", onClick: draw })] }), ...parts]);
       };
       draw();
-      pop = c.popover.anchored({ anchor: node, body, side: "bottom", align: "end", onClose: () => { pop = null; settle(); } });
+      pop = c.popover.anchored({ anchor: bulb, body, side: "bottom", align: "end", onClose: () => { pop = null; settle(); } });
     }
 
     function show(target) {
       if (box === target || !on()) return;
       closeBulb();
       box = target;
-      const button = c.button.sm({ label: "💡", tone: "ghost", title: "Shortcut ideas", onClick: openList });
-      node = button.node;
-      Object.assign(node.style, { position: "fixed" });
-      document.body.append(node); layer = claimFor("popover", node);
-      // Followed every frame while shown: the box moves with its window (dragged, resized, scrolled inside),
-      // which no page-level event reports.
-      const follow = () => { place(); if (node) frame = requestAnimationFrame(follow); };
-      follow();
-    }
-    function place() {
-      if (!box || !node) return;
-      const r = box.isConnected ? box.getBoundingClientRect() : null;
-      if (!r || !r.width) return closeBulb();        // gone, or hidden with its panel
-      // Inside the box's own bottom-right corner (left of the resize grip): on the box it belongs to, never over a neighbour's controls.
-      const b = node.getBoundingClientRect();
-      Object.assign(node.style, { left: `${Math.max(r.left + 4, r.right - b.width - 16)}px`, top: `${Math.max(r.top + 2, r.bottom - b.height - 4)}px` });
+      bulb = c.floating.corner({ anchor: target, label: "💡", title: "Shortcut ideas", onClick: openList, onGone: () => { bulb = box = null; if (pop) pop.close(); } });
     }
     const onFocus = (e) => { const t = e.target; if (t instanceof HTMLTextAreaElement && BOXES.has(t.getAttribute("aria-label"))) { clearTimeout(hold); show(t); } };
-    const settle = () => { clearTimeout(hold); hold = setTimeout(() => { if (node && box !== document.activeElement && !node.contains(document.activeElement) && !pop) closeBulb(); }, 400); };
-    const onBlur = (e) => { if (e.target === box || (node && node.contains(e.target))) settle(); };
-    const onMove = () => place();
-    document.addEventListener("focusin", onFocus); document.addEventListener("focusout", onBlur);
-    window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
+    const settle = () => { clearTimeout(hold); hold = setTimeout(() => { if (bulb && !app.dom.focusOn(box) && !app.dom.holdsFocus(bulb.node) && !pop) closeBulb(); }, 400); };
+    const onBlur = (e) => { if (e.target === box || (bulb && bulb.node.contains(e.target))) settle(); };
+    const offFocus = [app.dom.onPage("focusin", onFocus), app.dom.onPage("focusout", onBlur)];
 
     app.editorSettings.push(() => c.region.stack({ gap: "sm", children: [
       c.toggle.default({ label: "Shortcut ideas", hint: "Shows a 💡 beside the Story and Prompt boxes while you are in them. Click it for shortcuts to insert: pairings you use, what usually follows the previous shot, and categories this prompt does not use yet.",
         checked: on(), onChange: (v) => { p.setPref("suggestions", v); if (!v) closeBulb(); } })] }));
-    return () => { closeBulb(); clearTimeout(hold); document.removeEventListener("focusin", onFocus); document.removeEventListener("focusout", onBlur); window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); };
+    return () => { closeBulb(); clearTimeout(hold); offFocus.forEach((f) => f()); };
   },
 };

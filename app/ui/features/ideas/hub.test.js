@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createDom } from "../../shell/dom.js";
 import { setupDom, teardownDom } from "../../composer/tests/_dom.js";
 
 let hub;
@@ -11,7 +12,7 @@ test.before(async () => {
 test.after(() => teardownDom());
 
 test("the 💡 sits inside its prompt box's bottom-right corner, and follows the box when its window is moved", async () => {
-  const app = { project: { pref: () => true }, api: {}, selection: {}, editorSettings: [] };
+  const app = { dom: createDom(), project: { pref: () => true }, api: {}, selection: {}, editorSettings: [] };
   const off = hub.setup({ host: document.createElement("div"), app });
   try {
     const box = document.createElement("textarea");

@@ -1,0 +1,5 @@
+.cx-stage { position: absolute; pointer-events: none; overflow: hidden; z-index: 2; }
+.cx-stage-item { position: absolute; pointer-events: auto; cursor: move; touch-action: none; }
+.cx-stage-item img { display: block; }
+.cx-stage-grip { position: absolute; inset-inline-end: -5px; inset-block-end: -5px; inline-size: 10px; block-size: 10px; background: var(--accent); border: var(--bw) solid #000; cursor: nwse-resize; border-radius: var(--r-1); }
+:has(> .cx-stage) { position: relative; }

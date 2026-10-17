@@ -103,8 +103,5 @@ export const taste = (app) => function mount() {
   }
   const hasResearch = !app.hasModule || app.hasModule("block_influence");      // its recording is another module's; without it the part is not shown
   draw(); refresh(); if (hasResearch) refreshResearch();
-  const node = document.createElement("div");
-  node.append(page.node);
-  if (hasResearch) node.append(research.node);
-  return { node, destroy: () => node.remove() };
+  return c.region.stack({ gap: "none", children: [page, hasResearch ? research : null] });
 };

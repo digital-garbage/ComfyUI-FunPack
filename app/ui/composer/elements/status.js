@@ -4,7 +4,7 @@
 // Here there are five tones and one shape of each, which is the whole point: a
 // status looks the same everywhere, so its colour actually means something.
 
-import { define } from "../internals/register.js";
+import { define, lookup } from "../internals/register.js";
 import { el } from "../internals/el.js";
 import { setText } from "../internals/text.js";
 import { portal } from "../internals/portal.js";
@@ -59,6 +59,14 @@ define("progress", "bar", ({ value = 0, max = 100, label } = {}) => {
   };
   set(value);
   return { node, setValue: set, destroy: () => node.remove() };
+});
+
+// A short bar with one line beside it: "Step 3/20 · 00m 12s". Sits in a toolbar or a panel head.
+define("progress", "inline", ({ label } = {}) => {
+  const bar = lookup("progress", "bar")({ value: 0, max: 100, label });
+  const text = lookup("text", "sm")({ text: "" });
+  const node = el("span", { cls: "cx-progress-inline", children: [bar.node, text.node] });
+  return { node, setValue: bar.setValue, setText: text.setText, setHidden: (hidden) => { node.hidden = Boolean(hidden); }, destroy: () => node.remove() };
 });
 
 // For work whose total is genuinely unknown. A bar that invents a percentage is
