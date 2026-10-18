@@ -114,6 +114,7 @@ export default {
       await session.flush();
       const settings = settingsOf(doc);
       delete settings.preset;                         // a starting point the person picked, not a setting of the trainer
+      delete settings.preview_strength;               // used by the previews only
       settings.trigger = doc.trigger || "";
       settings.postfix = doc.postfix || "";
       if (resumeId) settings.resume = resumeId;
@@ -197,6 +198,7 @@ export default {
       refreshLive();
     }
     /** A picture or clip made by the pipeline with the LoRA so far; when `auto`, training carries on afterwards. */
+    const previewStrength = () => { const v = Number(settingsOf(session.doc).preview_strength); return Number.isFinite(v) ? v : 1; };
     async function previewNow(auto) {
       const paused = ui.run.paused;
       if (!paused || !paused.preview) return;
@@ -204,7 +206,7 @@ export default {
       setRun({ state: "previewing", message: `Making a preview with the LoRA at step ${paused.step}` });
       draw();
       let out;
-      try { out = app.runner && app.runner.preview ? await app.runner.preview({ lora: paused.preview }) : { error: "Previews need the app's Generate." }; } catch (err) { out = { error: err.message }; }
+      try { out = app.runner && app.runner.preview ? await app.runner.preview({ lora: paused.preview, strength: previewStrength() }) : { error: "Previews need the app's Generate." }; } catch (err) { out = { error: err.message }; }
       if (out.image) {
         const im = out.image;
         ui.previews.push({ id: `p${ui.previews.length + 1}`, step: paused.step, src: { kind: "output", type: im.type || "output", subfolder: im.subfolder || "", filename: im.filename }, media_kind: VIDEO.test(im.filename) ? "video" : "image" });

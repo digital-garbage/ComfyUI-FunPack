@@ -296,6 +296,7 @@ test("Tags step: a clip's frame count and rate show beside its label", async () 
 
 test("a preview step pauses the run, the pipeline makes a preview with the LoRA so far, and training carries on", async () => {
   const f = fake();
+  f.doc.settings = { preview_strength: -0.8 };
   const previews = [];
   f.app.runner = { preview: async (o) => { previews.push(o); return { image: { filename: "pv.mp4", subfolder: "", type: "output" } }; } };
   let queued = 0, polls = 0;
@@ -318,6 +319,8 @@ test("a preview step pauses the run, the pipeline makes a preview with the LoRA 
   await wait(3600);
   assert.equal(previews.length, 1);
   assert.equal(previews[0].lora, "cats_preview.safetensors");
+  assert.equal(previews[0].strength, -0.8, "the preview uses the strength set for it, here a negative one");
+  assert.ok(!("preview_strength" in f.calls.find((c) => c[0] === "plan")[2]), "and it is not sent to the trainer");
   assert.equal(queued, 2, "training was queued again to carry on");
   const plans = f.calls.filter((c) => c[0] === "plan");
   assert.equal(plans[1][2].resume, "r1");
