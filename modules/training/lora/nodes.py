@@ -57,6 +57,11 @@ class FunPackTrainLora(io.ComfyNode):
         )
 
     @classmethod
+    def fingerprint_inputs(cls, **_):
+        """Always different: a run is work to do, never a result to reuse. Without this ComfyUI answers a second 'carry on' from a pause (same inputs as the first) with its cached output in 0 seconds."""
+        return float("nan")
+
+    @classmethod
     def execute(cls, clip, vae, set_name, name, use, steps, learning_rate, rank, algorithm, optimizer, loss, batch_size,
                 grad_accumulation, resolution, aspect_buckets, frames, fps, start, trigger, seed, training_dtype, lora_dtype,
                 gradient_checkpointing, offloading, bypass, model=None, audio_vae=None, model_name="", weight_dtype="default", compute_dtype="default", postfix="", swap_blocks=0, preview_every=0, resume="", save_every=0) -> io.NodeOutput:

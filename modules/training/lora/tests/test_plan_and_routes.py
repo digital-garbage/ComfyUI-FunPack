@@ -313,3 +313,9 @@ def test_a_rated_result_is_captioned_from_its_own_file_and_an_older_rating_on_a_
     got["results"] = [r for r in got["results"] if r["media"]["filename"] != "bare.png"]
     assert [(r["media"]["filename"], r["caption"], r["doubtful"]) for r in got["results"]] == [("now.png", "a red fox runs through the snow", False), ("reused.png", "a city street at night", True)]
     assert got["doubtful"] == 1
+
+
+def test_the_training_node_is_never_answered_from_comfys_cache():
+    from modules.training.lora.nodes import FunPackTrainLora
+    a, b = FunPackTrainLora.fingerprint_inputs(resume="r1"), FunPackTrainLora.fingerprint_inputs(resume="r1")
+    assert a != b, "NaN never equals itself: ComfyUI runs the node again even with identical inputs"

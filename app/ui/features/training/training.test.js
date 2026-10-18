@@ -331,6 +331,27 @@ test("a preview step pauses the run, the pipeline makes a preview with the LoRA 
   off();
 });
 
+test("a pause that the window never saw training towards is still shown at the step the server is at", async () => {
+  const f = fake();
+  f.app.runner = { preview: async () => ({ image: { filename: "pv.png", subfolder: "", type: "output" } }) };
+  let queued = 0;
+  f.api.queueGraph = async () => { queued += 1; return "pid"; };
+  const pause = (step, started) => ({ run: "r1", state: "paused", step, total: 6, started, elapsed: 3, message: "", loss: [0.9, 0.8], loss_from: 0, paused: { reason: "user", step, preview: "p.safetensors", checkpoint: true } });
+  f.api.trainRun = async () => (queued === 0 ? { run: "", state: "idle", loss: [], loss_from: 0 } : queued === 1 ? pause(2, 100) : pause(4, 200));
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Skip to training").click();
+  await wait(20);
+  click("Start training").click();
+  await wait(1100);
+  assert.ok(text().includes("paused at step 2"));
+  click("Resume").click();
+  await wait(1400);
+  assert.ok(text().includes("paused at step 4"), "the second pause is not mistaken for the old one");
+  off();
+});
+
 test("Pause asks the server, a paused run offers Resume, Preview now and Stop, and Stop ends it", async () => {
   const f = fake();
   f.app.runner = { preview: async () => ({ error: "x" }) };

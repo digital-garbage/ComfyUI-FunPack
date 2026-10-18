@@ -157,7 +157,7 @@ export default {
         }
         let snap = null;
         try { snap = await api.trainRun(ui.run.loss.length); } catch { /* try again */ }
-        if (snap && snap.run && snap.run !== ui.before && !(ui.awaitStart && (snap.state === "paused" || (ui.staleStarted && snap.started === ui.staleStarted)))) {
+        if (snap && snap.run && snap.run !== ui.before && !(ui.awaitStart && (ui.staleStarted ? snap.started === ui.staleStarted : snap.state === "paused"))) {
           ui.awaitStart = false;
           const times = snap.loss_from === ui.run.loss.length ? ui.run.times.concat(snap.times || []) : ui.run.times;
           const loss = snap.loss_from === ui.run.loss.length ? ui.run.loss.concat(snap.loss) : ui.run.loss;
@@ -181,6 +181,29 @@ export default {
         runPoll = setTimeout(tick, POLL);
       };
       runPoll = setTimeout(tick, POLL);
+    }
+    // The server is the truth. A window that sits idle on a pause (a tab left in the background, a missed poll) asks now and then and takes over what it finds.
+    let syncPoll = 0;
+    async function reconcile() {
+      clearTimeout(syncPoll);
+      if (!win) return;
+      syncPoll = setTimeout(reconcile, POLL * 5);
+      if (ui.run.active || ui.run.state !== "paused") return;
+      let snap = null;
+      try { snap = await api.trainRun(0); } catch { return; }
+      if (!win || ui.run.active || ui.run.state !== "paused" || !snap || !snap.run) return;
+      const moved = snap.state === "training" || (snap.state === "paused" && (snap.run !== ui.run.runId || snap.step !== ui.run.step));
+      if (!moved) return;
+      ui.before = "";
+      if (snap.state === "training") {
+        setRun({ shown: true, active: true, state: "training", runId: snap.run, loss: snap.loss, times: snap.times || [], stepSeconds: snap.step_seconds, lastStep: snap.last_step_seconds, smooth: smooth(snap.loss), step: snap.step, total: snap.total, elapsed: snap.elapsed, message: snap.message, error: "", paused: null });
+        draw();
+        watch();
+      } else {
+        setRun({ shown: true, active: false, state: "paused", runId: snap.run, loss: snap.loss, times: snap.times || [], stepSeconds: snap.step_seconds, lastStep: snap.last_step_seconds, smooth: smooth(snap.loss), step: snap.step, total: snap.total, elapsed: snap.elapsed, message: "", paused: snap.paused });
+        draw();
+        if (snap.paused && snap.paused.reason === "preview" && !ui.holdPause) previewNow(true);
+      }
     }
     async function stop() {
       const waiting = ui.run.state === "paused" || ui.run.state === "previewing";
@@ -237,7 +260,8 @@ export default {
       if (win) return;
       body = c.region.stack({ gap: "md", fill: true });
       win = c.floating.window({ id: "training", title: "Training", subtitle: "make a LoRA", body, width: 780, height: 720, x: 240, y: 40,
-        onClose: () => { win = null; session.flush(); clearTimeout(tagPoll); } });
+        onClose: () => { win = null; session.flush(); clearTimeout(tagPoll); clearTimeout(syncPoll); } });
+      syncPoll = setTimeout(reconcile, POLL * 5);
       offSession = session.on(draw);
       session.refresh().then(async () => {
         if (!session.name) {
@@ -254,6 +278,6 @@ export default {
     }
     const offOpen = session.on(() => { try { if (session.name) localStorage.setItem("fp.training.set", session.name); } catch { /* private mode */ } });
 
-    return () => { clearTimeout(tagPoll); clearTimeout(runPoll); timers.forEach(clearTimeout); if (offSession) offSession(); offOpen(); if (win) win.close(); };
+    return () => { clearTimeout(tagPoll); clearTimeout(runPoll); clearTimeout(syncPoll); timers.forEach(clearTimeout); if (offSession) offSession(); offOpen(); if (win) win.close(); };
   },
 };
