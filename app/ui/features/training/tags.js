@@ -78,7 +78,7 @@ export function tagsStep({ app, session, go, ui, peek }) {
 
   // --- text put before and after every caption when training (the set's own; the project's prefix and postfix are not used)
   const phrase = (key, label, hint) => c.field.default({ label, hint, control: c.input.md({ label, placeholder: "none", value: doc[key] || "",
-    onCommit: (v) => session.edit((d) => { d[key] = v.split(/\s+/).filter(Boolean).join(" ").slice(0, 80); }) }) });
+    onCommit: (v) => session.edit((d) => { d[key] = v.split(/\s+/).filter(Boolean).join(" ").slice(0, 4000); }) }) });
 
   return c.region.stack({ gap: "md", children: [
     c.field.row({ fields: [

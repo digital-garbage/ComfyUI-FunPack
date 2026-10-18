@@ -98,7 +98,9 @@ export function dataStep({ app, session, go, ui }) {
     ui.needClips(all.filter((r) => /\.(mp4|webm|mov|mkv|avi)$/i.test(r.media.filename)).map((r) => ({ kind: "output", ...r.media })), () => showRated());
     ratedGallery.setValue([...ratedPicked]);
     const n = all.length, p = ratedPicked.size;
-    ratedNote.setText(n ? `${n} rated result${n > 1 ? "s" : ""} found in your projects. ${p ? `${p} picked: only those are added.` : "None picked: all are added."}` : "None found yet. Rate results in your projects and they appear here.");
+    const other = ui.rated.different || 0;
+    const left = other ? ` ${other} left out: the file with that name is another video than the one rated (names repeat between ComfyUI instances).` : "";
+    ratedNote.setText((n ? `${n} rated result${n > 1 ? "s" : ""} found in your projects. ${p ? `${p} picked: only those are added.` : "None picked: all are added."}` : "None found yet. Rate results in your projects and they appear here.") + left);
     addRated.node.disabled = !n || !open;
   }
   const include = c.field.default({ label: "Captions include", hint: "What goes into the caption from each result's prompt. Shortcuts are expanded. Variables are filled in only when ticked, otherwise $name stays as written. Nothing ticked adds them with no caption.",

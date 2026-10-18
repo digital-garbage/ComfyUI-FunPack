@@ -105,7 +105,14 @@ def routes(table, base, web):
             return _bad(web, "That is not a set name.")
         try:
             body = await req.json()
-            doc, added = store.add(name, body.get("entries"))
+            entries = body.get("entries")
+            roots = train.roots()
+            for entry in entries if isinstance(entries, list) else []:           # a file added without words is captioned with the prompt it was made from, read from the file itself
+                src = store.clean_src(entry.get("src")) if isinstance(entry, dict) else None
+                if src and not str(entry.get("caption") or "").strip():
+                    path = store.resolve(src, roots, train.bin_path)
+                    entry["caption"] = rated.embedded_prompt(path) if path else ""
+            doc, added = store.add(name, entries)
         except (ValueError, TypeError, AttributeError) as exc:
             return _bad(web, str(exc))
         return web.json_response({"set": doc, "added": added})
@@ -136,12 +143,15 @@ def routes(table, base, web):
         parts = [p for p in (req.rel_url.query.get("include") or "main").split(",") if p in rated.INCLUDE]
         found = rated.scan(docs, lambda t: shortcuts.expand(t, seed=1), shortcuts.resolve_variables, parts)
         roots = train.roots()
-        found = [r for r in found if store.resolve({"kind": "output", **r["media"]}, roots, train.bin_path)]      # a rating is not a video: only results still on this machine
+        here = [(r, store.resolve({"kind": "output", **r["media"]}, roots, train.bin_path)) for r in found]
+        here = [(r, path) for r, path in here if path]      # a rating is not a video: only results still on this machine
+        found = [r for r, path in here if rated.same_video(r["prompt_text"], path)]       # ...and the same video: a project carried to another instance meets other files under the same names
+        different = len(here) - len(found)
         want = req.rel_url.query.get("label")
         if want:
             found = [r for r in found if r["label"] == want]
         counts = {label: sum(1 for r in found if r["label"] == label) for label in rated.LABEL_TITLES}
-        return web.json_response({"results": found, "counts": counts})
+        return web.json_response({"results": found, "counts": counts, "different": different})
 
     @table.post(base + "/clips")
     async def _clips(req):

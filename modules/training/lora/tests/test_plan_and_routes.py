@@ -186,3 +186,89 @@ def test_a_run_lists_its_saved_copies_and_preview_and_serves_each(tmp_path, monk
     files, body, other = asyncio.run(go())
     assert files == ["cats.safetensors", "cats_step50.safetensors", "cats_step50_2.safetensors", "cats_step200.safetensors", "cats_preview.safetensors"]
     assert body == b"cats_step200.safetensors" and other == 404
+
+
+def _png_with_prompt(path, texts):
+    import json
+    from PIL import Image, PngImagePlugin
+    info = PngImagePlugin.PngInfo()
+    info.add_text("prompt", json.dumps({str(i): {"class_type": "X", "inputs": {"text": t, "n": 3, "link": ["1", 0]}} for i, t in enumerate(texts)}))
+    Image.new("RGB", (4, 4)).save(path, pnginfo=info)
+
+
+def test_a_file_made_from_another_prompt_is_not_the_one_that_was_rated(tmp_path):
+    from modules.training.lora import rated
+    mine, other, bare = tmp_path / "mine.png", tmp_path / "other.png", tmp_path / "bare.png"
+    _png_with_prompt(mine, ["a red fox runs through the snow, 35mm", "ugly, blurry"])
+    _png_with_prompt(other, ["a city street at night with neon signs"])
+    from PIL import Image
+    Image.new("RGB", (4, 4)).save(bare)
+    caption = "a red fox runs through snow"
+    assert rated.same_video(caption, mine)
+    assert not rated.same_video(caption, other), "same name, another video"
+    assert rated.same_video(caption, bare), "a file that carries no prompt gets the benefit of the doubt"
+    assert rated.same_video("", other), "a rating with no words has nothing to check"
+    assert rated.same_video(caption, tmp_path / "gone.png"), "unreadable: not judged"
+
+
+def test_the_rated_list_leaves_out_files_that_are_other_videos_and_says_how_many(tmp_path, monkeypatch):
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from core import config, projects
+    from modules.training import lora
+    from modules.training.lora import train
+    _png_with_prompt(tmp_path / "same.png", ["a red fox runs through the snow"])
+    _png_with_prompt(tmp_path / "clash.png", ["a city street at night"])
+    doc = {"scenes": [{"id": "a", "rating": "10", "text": "a red fox runs through the snow"}, {"id": "b", "rating": "10", "text": "a red fox runs through the snow"}],
+           "scene_renders": {"a": {"media": {"type": "output", "subfolder": "", "filename": "same.png"}, "text": "a red fox runs through the snow"},
+                             "b": {"media": {"type": "output", "subfolder": "", "filename": "clash.png"}, "text": "a red fox runs through the snow"}}}
+
+    class Project:
+        def to_dict(self):
+            return doc
+    monkeypatch.setattr(config, "TRAINING_DIR", tmp_path)
+    monkeypatch.setattr(projects, "listing", lambda: [{"id": "p"}])
+    monkeypatch.setattr(projects, "get", lambda _id: Project())
+    monkeypatch.setattr(train, "roots", lambda: {"output": str(tmp_path)})
+
+    async def go():
+        app, table = web.Application(), web.RouteTableDef()
+        lora.routes(table, "/m", web)
+        app.add_routes(table)
+        async with TestClient(TestServer(app)) as c:
+            return await (await c.get("/m/rated")).json()
+    got = asyncio.run(go())
+    assert [r["media"]["filename"] for r in got["results"]] == ["same.png"] and got["different"] == 1 and got["counts"]["liked"] == 1
+
+
+def test_a_file_added_without_words_gets_the_prompt_it_was_made_from(tmp_path, monkeypatch):
+    import json
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from PIL import Image, PngImagePlugin
+    from core import config
+    from modules.training import lora
+    from modules.training.lora import train
+    info = PngImagePlugin.PngInfo()
+    info.add_text("prompt", json.dumps({"enhance": {"class_type": "FunPackEnhancePrompt", "inputs": {"text": "a  red fox,\nrunning", "enabled": True}},
+                                         "negative": {"class_type": "CLIPTextEncode", "inputs": {"text": "ugly"}}}))
+    Image.new("RGB", (4, 4)).save(tmp_path / "made_here.png", pnginfo=info)
+    Image.new("RGB", (4, 4)).save(tmp_path / "plain.png")
+    Image.new("RGB", (4, 4)).save(tmp_path / "typed.png")
+    monkeypatch.setattr(config, "TRAINING_DIR", tmp_path)
+    monkeypatch.setattr(train, "roots", lambda: {"output": str(tmp_path)})
+    out = lambda name: {"src": {"kind": "output", "type": "output", "subfolder": "", "filename": name}, "label": "own"}
+
+    async def go():
+        app, table = web.Application(), web.RouteTableDef()
+        lora.routes(table, "/m", web)
+        app.add_routes(table)
+        async with TestClient(TestServer(app)) as c:
+            await c.post("/m/sets", json={"name": "cats"})
+            kept = {**out("typed.png"), "caption": "typed by hand"}
+            r = await c.post("/m/sets/cats/add", json={"entries": [out("made_here.png"), out("plain.png"), kept]})
+            return (await r.json())["set"]["items"]
+    items = asyncio.run(go())
+    by_name = {i["src"]["filename"]: i["caption"] for i in items}
+    assert by_name["made_here.png"] == "a red fox, running"
+    assert "typed by hand" in [i["caption"] for i in items] and "" in [i["caption"] for i in items], "no prompt in the file: left empty; a caption already there: kept"

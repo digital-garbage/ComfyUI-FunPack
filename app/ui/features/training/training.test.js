@@ -150,21 +150,22 @@ test("Tags step: the prefix and postfix are the set's own, saved with it and sen
   click("Next: tags").click();
   await wait(20);
   const field = (label) => [...document.querySelectorAll(".cx-field")].find((x) => x.textContent.startsWith(label)).querySelector("input");
-  for (const [label, text] of [["Prefix", "zq"], ["Postfix", "end"]]) {
+  for (const [label, text] of [["Prefix", "zq " + "a long prefix of many words, ".repeat(12) + "[Shot 1]"], ["Postfix", "end"]]) {
     const input = field(label);
     input.value = text;
     input.dispatchEvent(new window.Event("change", { bubbles: true }));
   }
   await wait(700);
   const saved = f.calls.filter((c) => c[0] === "save").pop();
-  assert.equal(saved[2].trigger, "zq");
+  assert.equal(saved[2].trigger, "zq " + "a long prefix of many words, ".repeat(12) + "[Shot 1]", "a long prefix is kept whole");
   assert.equal(saved[2].postfix, "end");
   click("Next: train").click();
   await wait(20);
   click("Start training").click();
   await wait(40);
   const plan = f.calls.find((c) => c[0] === "plan");
-  assert.equal(plan[2].trigger, "zq");
+  assert.equal(plan[2].trigger.slice(0, 2), "zq");
+  assert.ok(plan[2].trigger.endsWith("[Shot 1]"));
   assert.equal(plan[2].postfix, "end");
   off();
 });
@@ -487,5 +488,18 @@ test("Results: a run shows the time per step and the time spent in all, restarts
   assert.ok(t.includes("2 min 5 s spent in all, the restarts included"), "the total");
   assert.ok(t.includes("about 5 min 26 s left"), "the estimate comes from the step time");
   assert.equal(document.querySelectorAll(".cx-chart").length, 2, "a graph of the step times beside the loss");
+  off();
+});
+
+test("Data step: results left out because the file is another video are counted, not silent", async () => {
+  const f = fake();
+  f.api.trainRated = async () => ({ results: [{ label: "liked", media: { type: "output", subfolder: "", filename: "x.mp4" }, caption: "a red fox" }], counts: { liked: 1 }, different: 3 });
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  const rated = [...document.querySelectorAll("button")].find((b) => /rated|results/i.test(b.textContent) && /Add|Use|Open/i.test(b.textContent));
+  if (rated) rated.click();
+  await wait(60);
+  assert.ok(text().includes("3 left out: the file with that name is another video"), "the count is shown");
   off();
 });

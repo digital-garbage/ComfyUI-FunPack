@@ -142,3 +142,12 @@ def test_clip_info_is_none_for_a_file_that_is_not_a_video(tmp_path):
     bad.write_bytes(b"not a video")
     assert media_io.clip_info(bad) is None
     assert media_io.clip_info(tmp_path / "missing.mp4") is None
+
+
+def test_a_long_prefix_and_postfix_are_kept_whole():
+    from modules.training.lora import store
+    prefix = "integrated_multimodal_description: Low quality video example: bad quality, bad anatomy, wrong action, bad audio, bad composition. [Shot 1]"
+    postfix = "and then " * 40
+    doc = store.clean({"trigger": prefix, "postfix": postfix, "items": []}, "cats")
+    assert doc["trigger"] == prefix and len(prefix) > 80
+    assert doc["postfix"] == postfix.strip() and len(postfix) > 80

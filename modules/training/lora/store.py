@@ -102,8 +102,8 @@ def clean(doc, name: str) -> dict:
         seen.add(src_key(item["src"]))
         items.append(item)
     settings = doc.get("settings")
-    return {"name": name, "trigger": " ".join(str(doc.get("trigger") or "").split())[:80],
-            "postfix": " ".join(str(doc.get("postfix") or "").split())[:80], "items": items,
+    return {"name": name, "trigger": " ".join(str(doc.get("trigger") or "").split())[:MAX_CAPTION],
+            "postfix": " ".join(str(doc.get("postfix") or "").split())[:MAX_CAPTION], "items": items,
             "settings": settings if isinstance(settings, dict) else {}, "updated": time.time()}
 
 

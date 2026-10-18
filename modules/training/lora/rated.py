@@ -8,6 +8,9 @@ one disliked, and "Disliked: bad image" / "Disliked: bad composition" say which 
 
 from __future__ import annotations
 
+import json
+import re
+
 from .store import kind_of
 
 FORGET = "-Just forget it-"
@@ -64,6 +67,68 @@ def prompt_caption(text, doc=None, include=("main",), expand=None, resolve=None)
     return " ".join(joined.split())
 
 
+def _graph_of(path):
+    raw = None
+    try:
+        if str(path).lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
+            from PIL import Image
+            with Image.open(path) as img:
+                raw = (img.info or {}).get("prompt")
+        else:
+            import av
+            with av.open(str(path)) as container:
+                raw = (container.metadata or {}).get("prompt")
+        graph = json.loads(raw) if raw else None
+    except Exception:                                      # noqa: BLE001 -- a file that cannot be read says nothing
+        return None
+    return graph if isinstance(graph, dict) else None
+
+
+def embedded_prompt(path) -> str:
+    """The prompt the file was made from, read from its own queued graph: the text typed into the prompt node (before any rewrite), else a text encoder's. "" when it says nothing."""
+    graph = _graph_of(path)
+    if graph is None:
+        return ""
+    nodes = [(i, n) for i, n in graph.items() if isinstance(n, dict) and isinstance((n.get("inputs") or {}).get("text"), str)]
+    for wanted in ("FunPackEnhancePrompt",):
+        for _, n in nodes:
+            if n.get("class_type") == wanted and n["inputs"]["text"].strip():
+                return " ".join(n["inputs"]["text"].split())
+    encoders = [n["inputs"]["text"] for i, n in nodes if n.get("class_type") == "CLIPTextEncode" and i != "negative" and n["inputs"]["text"].strip()]
+    return " ".join(max(encoders, key=len).split()) if encoders else ""
+
+
+def embedded_text(path) -> str | None:
+    """Every piece of text the file's own queued graph carried (ComfyUI keeps it in the video or picture), or None when the file says nothing."""
+    graph = _graph_of(path)
+    if graph is None:
+        return None
+    texts = []
+    for node in graph.values():
+        for value in ((node or {}).get("inputs") or {}).values() if isinstance(node, dict) else ():
+            if isinstance(value, str):
+                texts.append(value)
+    return " ".join(texts)
+
+
+def _words(text) -> set[str]:
+    return set(re.findall(r"[a-z0-9']{3,}", str(text or "").lower()))
+
+
+def same_video(prompt_text, path, minimum: float = 0.5) -> bool:
+    """False only when the file proves it was made from another prompt: file names repeat between ComfyUI instances, so a name alone does not say which video was rated.
+
+    Judged on the words of the prompt the project kept for it; a file that carries no prompt of its own, or a rating with no words, is given the benefit of the doubt.
+    """
+    wanted = _words(prompt_text)
+    if not wanted:
+        return True
+    found = embedded_text(path)
+    if found is None:
+        return True
+    return len(wanted & _words(found)) / len(wanted) >= minimum
+
+
 def scan(projects, expand=None, resolve=None, include=("main",)) -> list[dict]:
     """[{project, project_name, label, rating, media, caption}] for every rated result in these project documents.
 
@@ -80,7 +145,7 @@ def scan(projects, expand=None, resolve=None, include=("main",)) -> list[dict]:
             return
         seen.add(key)
         out.append({"project": doc.get("id", ""), "project_name": doc.get("name", ""), "label": label, "rating": str(rating),
-                    "media": media, "caption": prompt_caption(caption, doc, include, expand, resolve)})
+                    "media": media, "caption": prompt_caption(caption, doc, include, expand, resolve), "prompt_text": " ".join(str(caption or "").split())})
 
     for doc in projects:
         if not isinstance(doc, dict):
