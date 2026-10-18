@@ -167,9 +167,7 @@ def run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str = 
     import traceback
     import torch
     import comfy.model_management as mm
-    gc.collect()                                          # what an earlier failed run left behind in reference cycles
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    _free_the_card(mm, torch)                             # whatever a generation or an earlier run left on the card goes first, cached training data or not
     _card("at the start of the run", mm, torch)
     try:
         result = _run(model, clip, vae, audio_vae, set_name, cfg, prompt_id)
