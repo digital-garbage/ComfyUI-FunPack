@@ -129,6 +129,18 @@ def same_video(prompt_text, path, minimum: float = 0.5) -> bool:
     return len(wanted & _words(found)) / len(wanted) >= minimum
 
 
+def is_this_video(result, path, slack_ms: int = 120_000) -> bool:
+    """Whether the file under this name is the video the rating was given to. A rating is stamped with the time it was given, and a file is
+    never made after the rating of it; one that is newer is another video that took the name (names repeat between ComfyUI instances),
+    unless its own embedded prompt still says it is the same."""
+    at = result.get("rated_at")
+    try:
+        newer = at is None or path.stat().st_mtime * 1000 > at + slack_ms      # a rating with no time on it cannot say: the prompt has to
+    except OSError:
+        return False
+    return not newer or same_video(result.get("prompt_text"), path)
+
+
 def scan(projects, expand=None, resolve=None, include=("main",)) -> list[dict]:
     """[{project, project_name, label, rating, media, caption}] for every rated result in these project documents.
 
@@ -136,7 +148,7 @@ def scan(projects, expand=None, resolve=None, include=("main",)) -> list[dict]:
     """
     out, seen = [], set()
 
-    def take(doc, rating, media, caption):
+    def take(doc, rating, media, caption, at=None):
         label, media = label_of(rating), _media(media)
         if label is None or media is None:
             return
@@ -145,7 +157,8 @@ def scan(projects, expand=None, resolve=None, include=("main",)) -> list[dict]:
             return
         seen.add(key)
         out.append({"project": doc.get("id", ""), "project_name": doc.get("name", ""), "label": label, "rating": str(rating),
-                    "media": media, "caption": prompt_caption(caption, doc, include, expand, resolve), "prompt_text": " ".join(str(caption or "").split())})
+                    "media": media, "caption": prompt_caption(caption, doc, include, expand, resolve), "prompt_text": " ".join(str(caption or "").split()),
+                    "rated_at": at if isinstance(at, (int, float)) else None})
 
     for doc in projects:
         if not isinstance(doc, dict):
@@ -154,10 +167,10 @@ def scan(projects, expand=None, resolve=None, include=("main",)) -> list[dict]:
         for sid, render in (doc.get("scene_renders") or {}).items():
             scene, render = scenes.get(sid) or {}, render if isinstance(render, dict) else {}
             rated = scene.get("rated") if isinstance(scene.get("rated"), dict) else {}
-            take(doc, scene.get("rating"), render.get("media"), rated.get("text") or render.get("text") or scene.get("text"))
+            take(doc, scene.get("rating"), render.get("media"), rated.get("text") or render.get("text") or scene.get("text"), rated.get("at"))
         for sid, takes in (doc.get("scene_variants") or {}).items():
             for t in takes if isinstance(takes, list) else []:
                 if isinstance(t, dict):
                     rated = t.get("rated") if isinstance(t.get("rated"), dict) else {}
-                    take(doc, t.get("rating"), t.get("media"), rated.get("text") or t.get("text"))
+                    take(doc, t.get("rating"), t.get("media"), rated.get("text") or t.get("text"), rated.get("at"))
     return out

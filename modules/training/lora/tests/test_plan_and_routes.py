@@ -188,11 +188,11 @@ def test_a_run_lists_its_saved_copies_and_preview_and_serves_each(tmp_path, monk
     assert body == b"cats_step200.safetensors" and other == 404
 
 
-def _png_with_prompt(path, texts):
+def _png_with_prompt(path, texts, kind="X"):
     import json
     from PIL import Image, PngImagePlugin
     info = PngImagePlugin.PngInfo()
-    info.add_text("prompt", json.dumps({str(i): {"class_type": "X", "inputs": {"text": t, "n": 3, "link": ["1", 0]}} for i, t in enumerate(texts)}))
+    info.add_text("prompt", json.dumps({str(i): {"class_type": kind, "inputs": {"text": t, "n": 3, "link": ["1", 0]}} for i, t in enumerate(texts)}))
     Image.new("RGB", (4, 4)).save(path, pnginfo=info)
 
 
@@ -272,3 +272,39 @@ def test_a_file_added_without_words_gets_the_prompt_it_was_made_from(tmp_path, m
     by_name = {i["src"]["filename"]: i["caption"] for i in items}
     assert by_name["made_here.png"] == "a red fox, running"
     assert "typed by hand" in [i["caption"] for i in items] and "" in [i["caption"] for i in items], "no prompt in the file: left empty; a caption already there: kept"
+
+
+def test_a_rated_result_made_in_this_session_is_captioned_from_its_own_file_and_an_older_rating_on_a_reused_name_is_left_out(tmp_path, monkeypatch):
+    import os
+    import time
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from core import config, projects
+    from modules.training import lora
+    from modules.training.lora import train
+    now = time.time() * 1000
+    _png_with_prompt(tmp_path / "now.png", ["a red fox runs through the snow"], "FunPackEnhancePrompt")
+    _png_with_prompt(tmp_path / "reused.png", ["a city street at night"], "FunPackEnhancePrompt")
+    os.utime(tmp_path / "now.png", ((now - 60_000) / 1000,) * 2)
+    doc = {"scenes": [{"id": "a", "rating": "10", "rated": {"text": "something the project kept that is wrong", "at": now}},
+                      {"id": "b", "rating": "10", "rated": {"text": "a red fox runs through the snow", "at": now - 86_400_000}}],
+           "scene_renders": {"a": {"media": {"type": "output", "subfolder": "", "filename": "now.png"}},
+                             "b": {"media": {"type": "output", "subfolder": "", "filename": "reused.png"}}}}
+
+    class Project:
+        def to_dict(self):
+            return doc
+    monkeypatch.setattr(config, "TRAINING_DIR", tmp_path)
+    monkeypatch.setattr(projects, "listing", lambda: [{"id": "p"}])
+    monkeypatch.setattr(projects, "get", lambda _id: Project())
+    monkeypatch.setattr(train, "roots", lambda: {"output": str(tmp_path)})
+
+    async def go():
+        app, table = web.Application(), web.RouteTableDef()
+        lora.routes(table, "/m", web)
+        app.add_routes(table)
+        async with TestClient(TestServer(app)) as c:
+            return await (await c.get("/m/rated")).json()
+    got = asyncio.run(go())
+    assert [(r["media"]["filename"], r["caption"]) for r in got["results"]] == [("now.png", "a red fox runs through the snow")]
+    assert got["different"] == 1

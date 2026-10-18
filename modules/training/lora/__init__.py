@@ -140,13 +140,20 @@ def routes(table, base, web):
             project = projects.get(entry["id"])
             if project is not None:
                 docs.append({**project.to_dict(), "id": entry["id"]})
+        doc_of = {d["id"]: d for d in docs}
         parts = [p for p in (req.rel_url.query.get("include") or "main").split(",") if p in rated.INCLUDE]
         found = rated.scan(docs, lambda t: shortcuts.expand(t, seed=1), shortcuts.resolve_variables, parts)
         roots = train.roots()
         here = [(r, store.resolve({"kind": "output", **r["media"]}, roots, train.bin_path)) for r in found]
         here = [(r, path) for r, path in here if path]      # a rating is not a video: only results still on this machine
-        found = [r for r, path in here if rated.same_video(r["prompt_text"], path)]       # ...and the same video: a project carried to another instance meets other files under the same names
-        different = len(here) - len(found)
+        mine = [(r, path) for r, path in here if rated.is_this_video(r, path)]       # ...and the same video: a project carried to another instance meets other files under the same names
+        different = len(here) - len(mine)
+        found = []
+        for r, path in mine:
+            made_from = rated.embedded_prompt(path)                       # the file's own prompt beats what the project kept for it
+            if made_from:
+                r = {**r, "prompt_text": made_from, "caption": rated.prompt_caption(made_from, doc_of.get(r["project"]), parts, lambda t: shortcuts.expand(t, seed=1), shortcuts.resolve_variables)}
+            found.append(r)
         want = req.rel_url.query.get("label")
         if want:
             found = [r for r in found if r["label"] == want]
