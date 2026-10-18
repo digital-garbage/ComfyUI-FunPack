@@ -31,9 +31,9 @@ export default {
       tab: "data", openBin: false, openRated: false, clips: {}, picked: new Set(), ratedPicked: new Set(), bin: [], rated: { results: [], counts: {} }, ratedKind: "liked", include: ["main"], selected: new Set(), filter: "all", tag: "", limit: 48,
       tagger: { id: "wd_vit_v3", list: [], job: null, general: 0.35, limit: 0, characters: false, mode: "add", scope: "untagged" },
       advanced: false, runs: [], chosenRun: "", record: null,
-      run: { shown: false, active: false, state: "idle", loss: [], smooth: [], step: 0, total: 0, elapsed: 0, message: "", error: "", lora: "", before: "", runId: "", paused: null },
+      run: { shown: false, active: false, state: "idle", loss: [], times: [], stepSeconds: null, lastStep: null, smooth: [], step: 0, total: 0, elapsed: 0, message: "", error: "", lora: "", before: "", runId: "", paused: null },
       previews: [], holdPause: false, awaitStart: false, peek: (item) => peek(item),
-      pause: () => pause(), resume: () => launch(ui.run.runId), restore: (id) => { ui.run.loss = []; ui.run.runId = id; ui.record = null; return launch(id); }, previewNow: () => previewNow(),
+      pause: () => pause(), resume: () => launch(ui.run.runId), restore: (id) => { ui.run.loss = []; ui.run.times = []; ui.run.runId = id; ui.record = null; return launch(id); }, previewNow: () => previewNow(),
       monitorBox: null, redraw: () => draw(), pollTaggers: () => pollTaggers(true), loadRecord: (id) => loadRecord(id), loadRuns: () => loadRuns(),
       start: () => start(), stop: () => stop(),
       /** Ask for the frame counts of clips not known yet; `then` runs when new numbers arrived. */
@@ -120,7 +120,7 @@ export default {
       else { ui.previews = []; settings.resume = ""; }
       ui.holdPause = false;
       setRun(resumeId ? { shown: true, active: true, state: "queued", message: "Carrying on. The models load again first.", error: "", paused: null }
-        : { shown: true, active: true, state: "queued", loss: [], smooth: [], step: 0, total: settings.steps, elapsed: 0, message: "Checking the pipeline", error: "", lora: "", runId: "", paused: null });
+        : { shown: true, active: true, state: "queued", loss: [], times: [], stepSeconds: null, lastStep: null, smooth: [], step: 0, total: settings.steps, elapsed: 0, message: "Checking the pipeline", error: "", lora: "", runId: "", paused: null });
       draw();
       let before = "";
       ui.staleStarted = 0;
@@ -158,8 +158,9 @@ export default {
         try { snap = await api.trainRun(ui.run.loss.length); } catch { /* try again */ }
         if (snap && snap.run && snap.run !== ui.before && !(ui.awaitStart && (snap.state === "paused" || (ui.staleStarted && snap.started === ui.staleStarted)))) {
           ui.awaitStart = false;
+          const times = snap.loss_from === ui.run.loss.length ? ui.run.times.concat(snap.times || []) : ui.run.times;
           const loss = snap.loss_from === ui.run.loss.length ? ui.run.loss.concat(snap.loss) : ui.run.loss;
-          setRun({ state: snap.state, step: snap.step, total: snap.total || ui.run.total, elapsed: snap.elapsed, message: snap.message, loss, smooth: smooth(loss), error: snap.error || "", lora: snap.lora || "", runId: snap.run, paused: snap.paused || null });
+          setRun({ times, stepSeconds: snap.step_seconds, lastStep: snap.last_step_seconds, state: snap.state, step: snap.step, total: snap.total || ui.run.total, elapsed: snap.elapsed, message: snap.message, loss, smooth: smooth(loss), error: snap.error || "", lora: snap.lora || "", runId: snap.run, paused: snap.paused || null });
           if (snap.state === "paused") {
             setRun({ active: false });
             draw();
@@ -218,12 +219,12 @@ export default {
         const snap = await api.trainRun(0);
         if (snap.state === "paused") {
           ui.before = "";
-          setRun({ shown: true, active: false, state: "paused", loss: snap.loss, smooth: smooth(snap.loss), step: snap.step, total: snap.total, message: "", runId: snap.run, paused: snap.paused });
+          setRun({ shown: true, active: false, state: "paused", loss: snap.loss, times: snap.times || [], stepSeconds: snap.step_seconds, lastStep: snap.last_step_seconds, elapsed: snap.elapsed, smooth: smooth(snap.loss), step: snap.step, total: snap.total, message: "", runId: snap.run, paused: snap.paused });
           ui.holdPause = true;                        // found after a reload: the person decides
           ui.tab = "train";
         } else if (snap.state === "training") {
           ui.before = "";
-          setRun({ shown: true, active: true, state: "training", runId: snap.run, loss: snap.loss, smooth: smooth(snap.loss), step: snap.step, total: snap.total, elapsed: snap.elapsed, message: snap.message });
+          setRun({ shown: true, active: true, state: "training", runId: snap.run, loss: snap.loss, times: snap.times || [], stepSeconds: snap.step_seconds, lastStep: snap.last_step_seconds, smooth: smooth(snap.loss), step: snap.step, total: snap.total, elapsed: snap.elapsed, message: snap.message });
           ui.tab = "train";
           watch();
         }

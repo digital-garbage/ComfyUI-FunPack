@@ -19,9 +19,12 @@ MAX_KEPT_LOSSES = 4000          # a saved run keeps a thinned curve: a 100000 st
 _LOCK = threading.Lock()
 _ID = re.compile(r"\A[0-9a-f]{12}\Z")
 IDLE = {"state": "idle", "run": "", "set": "", "name": "", "step": 0, "total": 0, "started": 0.0, "message": "", "error": "",
-        "lora": "", "samples": [], "settings": {}, "paused": None}
+        "lora": "", "samples": [], "settings": {}, "paused": None, "banked": None}
 _now: dict = dict(IDLE)
 _loss: list[float] = []
+_secs: list[float | None] = []           # seconds each step took; None for the first step after a (re)start, which also loads the model
+_before = 0.0                            # seconds spent by the earlier parts of this run (before it was paused for a preview and carried on)
+_cold = True
 _stop = False
 _pause = False
 
@@ -46,24 +49,32 @@ def trail(message: str) -> None:
 def begin(set_name: str, name: str, total: int, settings: dict, prompt_id: str = "", resume: dict | None = None) -> str:
     """Start a record. A run that was still marked running (ComfyUI restarted under it) is simply replaced.
 
-    `resume` ({"run", "loss"}) carries on a paused run: same record, same loss curve, the steps counting on.
+    `resume` ({"run", "loss", "times", "seconds"}) carries on a paused run: same record, same loss curve, the steps and the time counting on.
     """
-    global _stop, _pause
+    global _stop, _pause, _before, _cold
     with _LOCK:
         _stop = _pause = False
+        _cold = True
         _loss.clear()
+        _secs.clear()
         _now.clear()
+        _before = float((resume or {}).get("seconds") or 0)
         if resume:
             _loss.extend(float(v) for v in resume.get("loss") or [])
+            times = list(resume.get("times") or [])[:len(_loss)]
+            _secs.extend(None if t is None else float(t) for t in times + [None] * (len(_loss) - len(times)))
         _now.update(IDLE, state="training", run=(resume or {}).get("run") or uuid.uuid4().hex[:12], step=len(_loss), set=set_name, name=name, total=int(total), started=time.time(),
                     settings=dict(settings), prompt_id=prompt_id, message="Loading the model and the training data")
         return _now["run"]
 
 
-def step(loss: float) -> None:
+def step(loss: float, seconds: float | None = None) -> None:
+    global _cold
     with _LOCK:
         if _now["state"] == "training":
             _loss.append(float(loss))
+            _secs.append(None if _cold or seconds is None else round(float(seconds), 3))
+            _cold = False
             _now["step"] = len(_loss)
             _now["message"] = ""
 
@@ -95,12 +106,34 @@ def losses() -> list[float]:
         return list(_loss)
 
 
+def times() -> list[float | None]:
+    with _LOCK:
+        return list(_secs)
+
+
+def _spent() -> float:
+    """Seconds this run has taken in all, the earlier parts included; stops counting while the run waits or is over. Call with the lock held."""
+    if _now.get("banked") is not None:
+        return _now["banked"]
+    return _before + (time.time() - _now["started"] if _now.get("started") else 0.0)
+
+
+def spent() -> float:
+    with _LOCK:
+        return _spent()
+
+
+def _average(values) -> float | None:
+    real = [v for v in values if v is not None]
+    return round(sum(real) / len(real), 2) if real else None
+
+
 def pause(reason: str, step: int, preview: str, checkpoint: bool = True) -> None:
     """The run waits: its state is on disk, and the models are let go so the pipeline can use the card. `reason`: user or preview."""
     with _LOCK:
         if _now["state"] != "training":
             return
-        _now.update(state="paused", message="", paused={"reason": reason, "step": int(step), "preview": preview, "checkpoint": bool(checkpoint)})
+        _now.update(banked=_spent(), state="paused", message="", paused={"reason": reason, "step": int(step), "preview": preview, "checkpoint": bool(checkpoint)})
 
 
 def request_pause() -> bool:
@@ -123,10 +156,11 @@ def finish(state: str, lora: str = "", error: str = "") -> None:
     with _LOCK:
         if _now["run"] == "" or _now["state"] in ("done", "error", "stopped"):
             return
-        _now.update(state=state, lora=lora, error=error, message="", paused=None)
+        spent = _spent()
+        _now.update(state=state, lora=lora, error=error, message="", paused=None, banked=spent)
         record = {k: _now.get(k) for k in ("run", "set", "name", "total", "started", "settings", "lora", "samples", "error")}
-        record.update(state=state, steps=len(_loss), seconds=round(time.time() - _now["started"], 1),
-                      final_loss=_loss[-1] if _loss else None, loss=thin(_loss))
+        record.update(state=state, steps=len(_loss), seconds=round(spent, 1), step_seconds=_average(_secs),
+                      final_loss=_loss[-1] if _loss else None, loss=thin(_loss), times=thin(_secs))
     try:
         (_dir() / f"{record['run']}.json").write_text(json.dumps(record), encoding="utf-8")
     except OSError:
@@ -136,8 +170,9 @@ def finish(state: str, lora: str = "", error: str = "") -> None:
 def snapshot(since: int = 0) -> dict:
     with _LOCK:
         since = max(0, min(int(since), len(_loss)))
-        return {**{k: v for k, v in _now.items() if k != "settings"}, "loss": _loss[since:], "loss_from": since,
-                "elapsed": round(time.time() - _now["started"], 1) if _now["started"] and _now["state"] == "training" else 0}
+        return {**{k: v for k, v in _now.items() if k not in ("settings", "banked")}, "loss": _loss[since:], "loss_from": since,
+                "times": _secs[since:], "step_seconds": _average(_secs), "last_step_seconds": next((t for t in reversed(_secs) if t is not None), None),
+                "elapsed": round(_spent(), 1) if _now["started"] else 0}
 
 
 def history() -> list[dict]:

@@ -20,7 +20,17 @@ export const settingsOf = (doc) => ({ ...DEFAULTS, ...((doc && doc.settings) || 
 
 const fmt = (n) => (Number.isFinite(n) ? (Math.abs(n) >= 0.01 ? n.toFixed(4) : n.toPrecision(3)) : "");
 const clock = (s) => { s = Math.round(s || 0); return s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min` : s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`; };
-export { fmt, clock };
+const seconds = (s) => (s >= 10 ? `${Math.round(s)} s` : `${s.toFixed(1)} s`);
+export { fmt, clock, seconds };
+
+/** Seconds each step took, as a line. A step that also loaded the model (the first after a start or a restart) has no number and is bridged. */
+export function stepTimes(times) {
+  const real = (times || []).filter((t) => t !== null && t !== undefined);
+  if (real.length < 2) return null;
+  let last = real[0];
+  const values = times.map((t) => { if (t !== null && t !== undefined) last = t; return last; });
+  return c.chart.line({ series: [{ name: "seconds per step", values, tone: "good" }], xLabel: "step", yLabel: "seconds", height: "sm", empty: "" });
+}
 
 export function trainStep({ app, session, go, ui }) {
   const doc = session.doc;
@@ -117,10 +127,15 @@ export function monitor(ui) {
   const chart = c.chart.line({ series: [{ name: "loss", values: run.loss, tone: "accent" }, ...(run.smooth.length > 1 ? [{ name: "smoothed", values: run.smooth, tone: "good" }] : [])],
     xLabel: "step", yLabel: "loss", height: "md", empty: "The first steps are on their way" });
   const done = run.step || 0, total = run.total || 1;
+  const left = run.stepSeconds && run.state === "training" ? run.stepSeconds * (total - done) : 0;
   const lines = [
-    run.state === "training" || run.state === "queued" ? `Step ${done} of ${total}${run.elapsed ? ` · ${clock(run.elapsed)}` : ""}${done && run.elapsed ? ` · about ${clock((run.elapsed / done) * (total - done))} left` : ""}` : null,
+    run.state === "training" || run.state === "queued" ? `Step ${done} of ${total}` : null,
+    run.stepSeconds ? `${seconds(run.stepSeconds)} per step on average${run.lastStep ? `, ${seconds(run.lastStep)} for the last` : ""}` : null,
+    run.elapsed ? `${clock(run.elapsed)} spent in all, the restarts included` : null,
+    left ? `about ${clock(left)} left` : null,
     run.message && !aboutControls(run.message) ? run.message : null,
   ].filter(Boolean);
+  const stepChart = stepTimes(run.times);
   const previews = ui.previews && ui.previews.length ? c.gallery.adaptive({ id: "training-previews", cols: 3, selection: [],
     items: ui.previews.map((p) => ({ id: p.id, label: `Step ${p.step}`, thumb: stillOf(p), badge: p.media_kind })),
     onActivate: (item) => ui.peek(ui.previews.find((p) => p.id === item.id)) }) : null;
@@ -133,6 +148,7 @@ export function monitor(ui) {
     run.lora ? c.banner.info({ text: `Saved as ${run.lora}. Pick it in a LoRA loader to try it.` }) : null,
     previews,
     chart,
+    stepChart,
     run.loss.length ? c.hint.default({ text: `Latest loss ${fmt(run.loss[run.loss.length - 1])}. It should fall at first, then wobble; a LoRA is rarely better after the wobble stops shrinking.` }) : null,
   ].filter(Boolean) })] });
 }

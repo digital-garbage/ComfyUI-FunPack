@@ -130,8 +130,8 @@ def test_stop_ends_the_run_and_records_it(run_env):
     _, jobs = run_env
     real = jobs.step
 
-    def stop_after_two(loss):
-        real(loss)
+    def stop_after_two(loss, seconds=None):
+        real(loss, seconds)
         if jobs.snapshot()["step"] >= 2:
             jobs.request_stop()
     jobs.step = stop_after_two
@@ -372,6 +372,13 @@ def test_a_run_pauses_for_a_preview_and_carries_on_to_the_same_end(run_env):
     done = train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=6, preview_every=2, resume=run))
     snap = jobs.snapshot()
     assert done == "tiny_lora.safetensors" and snap["state"] == "done" and len(snap["loss"]) == 6
+    times = snap["times"]
+    assert len(times) == 6 and [t is None for t in times] == [True, False, True, False, True, False], "each restart's first step also loads the model, so it is not timed"
+    assert snap["step_seconds"] and snap["elapsed"] >= sum(t for t in times if t), "the time of every part of the run is counted"
+    import json
+    from modules.training.lora import jobs as j
+    saved = json.loads((j._dir() / f"{run}.json").read_text())
+    assert saved["seconds"] >= snap["elapsed"] - 1 and saved["step_seconds"] == snap["step_seconds"] and len(saved["times"]) == 6
     assert not preview.exists(), "the preview file stays after the run is over"
     assert not (tmp_path / "training" / "checkpoints" / f"{run}.pt").exists()
 
@@ -387,8 +394,8 @@ def test_a_failed_run_is_restored_from_its_saved_state_in_comfyuis_inference_mod
     assert loop.has_checkpoint(run)
     real = j.step
 
-    def fail(loss):
-        real(loss)
+    def fail(loss, seconds=None):
+        real(loss, seconds)
         raise RuntimeError("the card fell over")
     monkeypatch.setattr(j, "step", fail)
     with torch.inference_mode(), pytest.raises(RuntimeError, match="fell over"):
@@ -430,8 +437,8 @@ def test_pause_button_waits_at_the_next_step_and_stop_ends_a_paused_run(run_env,
     tmp_path, jobs = run_env
     real = j.step
 
-    def press(loss):
-        real(loss)
+    def press(loss, seconds=None):
+        real(loss, seconds)
         j.request_pause()
     monkeypatch.setattr(j, "step", press)
     train.run(tiny_h3_patcher(), FakeClip(), FakeVae(), FakeAudioVae(), "tiny", settings(steps=6))

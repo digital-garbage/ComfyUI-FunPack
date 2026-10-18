@@ -1,6 +1,6 @@
 // Step 4, Results: the runs that finished, with their loss graphs.
 import { composer as c } from "../../composer/composer.js";
-import { clock, fmt, monitor } from "./train.js";
+import { clock, fmt, monitor, seconds, stepTimes } from "./train.js";
 
 const STATES = { done: "Finished", error: "Failed", stopped: "Stopped", training: "Running" };
 
@@ -15,7 +15,7 @@ export function resultsStep({ app, ui }) {
   const rec = ui.record && ui.record.run === chosen.run ? ui.record : null;
   const chart = c.chart.line({ series: rec && rec.loss ? [{ name: "loss", values: rec.loss, tone: "accent" }] : [], xLabel: "step", yLabel: "loss", height: "md", empty: rec ? "No loss was recorded" : "Loading" });
   const facts = rec ? [
-    `${STATES[rec.state] || rec.state}`, `${rec.steps || 0} of ${rec.total || 0} steps`, rec.seconds ? clock(rec.seconds) : null,
+    `${STATES[rec.state] || rec.state}`, `${rec.steps || 0} of ${rec.total || 0} steps`, rec.seconds ? `${clock(rec.seconds)} in all` : null, rec.step_seconds ? `${seconds(rec.step_seconds)} per step` : null,
     rec.final_loss != null ? `final loss ${fmt(rec.final_loss)}` : null, rec.set ? `from "${rec.set}"` : null,
   ].filter(Boolean).join(" · ") : "";
   const s = (rec && rec.settings) || {};
@@ -28,7 +28,7 @@ export function resultsStep({ app, ui }) {
       rec && rec.lora ? c.banner.info({ text: `File: ${rec.lora}. Pick it in a LoRA loader to use it.` }) : null,
       rec && rec.error ? c.inlineError.default({ text: rec.error }) : null,
       rec && rec.resumable && ["error", "stopped"].includes(rec.state) ? c.banner.info({ text: `The state at step ${rec.steps || 0} or earlier is kept. Restore and continue picks the training up from it with the Train step's current settings.` }) : null,
-      chart, c.hint.default({ text: settings }),
+      chart, stepTimes(rec && rec.times), c.hint.default({ text: settings }),
       c.toolbar.default({ items: [...(rec ? downloads(app, ui, rec) : []), ...(rec && rec.resumable && !ui.run.active && !["training", "queued", "previewing", "paused"].includes(ui.run.state) ? [c.button.sm({ label: "Restore and continue", tone: "primary", title: "Carry on from the saved state", onClick: async () => { await ui.restore(chosen.run); } })] : [])], trailing: [c.button.sm({ label: "Delete this record", tone: "ghost", title: "Removes the record only, not the LoRA file", onClick: async () => { await app.api.trainForgetRun(chosen.run); ui.chosenRun = ""; await ui.loadRuns(); ui.redraw(); } })] }),
     ].filter(Boolean) })] }),
   ] });

@@ -197,7 +197,7 @@ def _run(model, clip, vae, audio_vae, set_name: str, cfg: dict, prompt_id: str =
             resume = loop.load_checkpoint(cfg["resume"], torch)
         except ValueError as exc:
             failed = exc
-    run_id = jobs.begin(set_name, cfg["name"], cfg["steps"], cfg, prompt_id, {"run": cfg["resume"], "loss": resume["loss"]} if resume else None)        # first, so a refusal below is shown in the window and not only in ComfyUI's log
+    run_id = jobs.begin(set_name, cfg["name"], cfg["steps"], cfg, prompt_id, {"run": cfg["resume"], "loss": resume["loss"], "times": resume.get("times"), "seconds": resume.get("seconds")} if resume else None)        # first, so a refusal below is shown in the window and not only in ComfyUI's log
     try:
         if failed:
             raise failed

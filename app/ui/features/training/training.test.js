@@ -461,3 +461,28 @@ test("Results: steps and the preview can be picked and downloaded, not only the 
     off();
   } finally { globalThis.fetch = realFetch; }
 });
+
+test("Results: a run shows the time per step and the time spent in all, restarts included", async () => {
+  const f = fake();
+  let n = 0;
+  f.api.trainRun = async (since) => {
+    n += 1;
+    if (n < 3) return { run: "", state: "idle", loss: [], loss_from: 0 };
+    return { run: "r7", state: "training", step: 4, total: 100, elapsed: 125, message: "", loss: [0.9, 0.8, 0.7, 0.6].slice(since), loss_from: since, times: [null, 3.5, 3.3, 3.4].slice(since), step_seconds: 3.4, last_step_seconds: 3.4 };
+  };
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  click("Skip to training").click();
+  await wait(20);
+  click("Start training").click();
+  await wait(1800);
+  tab("Results").click();
+  await wait(40);
+  const t = text();
+  assert.ok(t.includes("3.4 s per step on average"), "the per-step time");
+  assert.ok(t.includes("2 min 5 s spent in all, the restarts included"), "the total");
+  assert.ok(t.includes("about 5 min 26 s left"), "the estimate comes from the step time");
+  assert.equal(document.querySelectorAll(".cx-chart").length, 2, "a graph of the step times beside the loss");
+  off();
+});

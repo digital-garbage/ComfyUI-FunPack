@@ -11,6 +11,8 @@ rank = alpha, the learning rate and optimizer it recommends. The code is written
 
 from __future__ import annotations
 
+import time
+
 from ..._core import log
 from . import jobs
 
@@ -33,7 +35,7 @@ def _checkpoint_file(run):
 def save_checkpoint(run, lora, optimizer, step, torch):
     """Everything a resumed run needs besides the data: the LoRA, the optimizer's memory, the loss so far and where it stopped."""
     torch.save({"lora": {n: tuple(p.detach().cpu() for p in pair) for n, pair in lora.pairs.items()}, "optimizer": optimizer.state_dict(),
-                "step": int(step), "loss": jobs.losses()}, _checkpoint_file(run))
+                "step": int(step), "loss": jobs.losses(), "times": jobs.times(), "seconds": jobs.spent()}, _checkpoint_file(run))
 
 
 def load_checkpoint(run, torch):
@@ -166,6 +168,7 @@ class Sampler:
                 every = -(-int(cfg.get("preview_every") or 0) // accumulate) * accumulate        # a preview waits for a whole optimizer step
                 keep = -(-int(cfg.get("save_every") or 0) // accumulate) * accumulate
                 for i in range(first, total):
+                    began = time.perf_counter()
                     gen = torch.Generator().manual_seed(seed + i)
                     pick = torch.randperm(size, generator=gen)[:1].tolist()
                     latent = torch.stack([latent_image[j] for j in pick])
@@ -186,7 +189,7 @@ class Sampler:
                     value = float(loss.item())
                     del pred, xt, loss
                     jobs.trail(f"step {i + 1}: loss {value:.4f}")
-                    stopped(value)
+                    stopped(value, time.perf_counter() - began)
                     if (i + 1) % accumulate == 0:
                         optimizer.step()
                         optimizer.zero_grad()
@@ -224,8 +227,8 @@ def train(model, payload, conds, cfg, adapt, nt, mm, torch, watch, shim, resume=
         criterion = nt._create_loss_function(cfg["loss"])
         restore = checkpoint_modules(adapt["checkpoint"](diffusion), torch) if cfg["gradient_checkpointing"] else (lambda: None)
 
-        def stopped(loss):
-            jobs.step(loss)
+        def stopped(loss, seconds=None):
+            jobs.step(loss, seconds)
             mm.throw_exception_if_processing_interrupted()
             if jobs.stop_requested():
                 from .train import Stopped
