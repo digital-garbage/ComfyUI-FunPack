@@ -211,7 +211,7 @@ def test_a_file_made_from_another_prompt_is_not_the_one_that_was_rated(tmp_path)
     assert rated.same_video(caption, tmp_path / "gone.png"), "unreadable: not judged"
 
 
-def test_the_rated_list_leaves_out_files_that_are_other_videos_and_says_how_many(tmp_path, monkeypatch):
+def test_the_rated_list_keeps_every_file_but_marks_those_that_may_be_other_videos(tmp_path, monkeypatch):
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
     from core import config, projects
@@ -238,7 +238,7 @@ def test_the_rated_list_leaves_out_files_that_are_other_videos_and_says_how_many
         async with TestClient(TestServer(app)) as c:
             return await (await c.get("/m/rated")).json()
     got = asyncio.run(go())
-    assert [r["media"]["filename"] for r in got["results"]] == ["same.png"] and got["different"] == 1 and got["counts"]["liked"] == 1
+    assert [(r["media"]["filename"], r["doubtful"]) for r in got["results"]] == [("same.png", False), ("clash.png", True)] and got["doubtful"] == 1 and got["counts"]["liked"] == 2
 
 
 def test_a_file_added_without_words_gets_the_prompt_it_was_made_from(tmp_path, monkeypatch):
@@ -274,7 +274,7 @@ def test_a_file_added_without_words_gets_the_prompt_it_was_made_from(tmp_path, m
     assert "typed by hand" in [i["caption"] for i in items] and "" in [i["caption"] for i in items], "no prompt in the file: left empty; a caption already there: kept"
 
 
-def test_a_rated_result_made_in_this_session_is_captioned_from_its_own_file_and_an_older_rating_on_a_reused_name_is_left_out(tmp_path, monkeypatch):
+def test_a_rated_result_is_captioned_from_its_own_file_and_an_older_rating_on_a_reused_name_is_marked(tmp_path, monkeypatch):
     import os
     import time
     from aiohttp import web
@@ -286,9 +286,12 @@ def test_a_rated_result_made_in_this_session_is_captioned_from_its_own_file_and_
     _png_with_prompt(tmp_path / "now.png", ["a red fox runs through the snow"], "FunPackEnhancePrompt")
     _png_with_prompt(tmp_path / "reused.png", ["a city street at night"], "FunPackEnhancePrompt")
     os.utime(tmp_path / "now.png", ((now - 60_000) / 1000,) * 2)
-    doc = {"scenes": [{"id": "a", "rating": "10", "rated": {"text": "something the project kept that is wrong", "at": now}},
+    _png_with_prompt(tmp_path / "bare.png", [], "FunPackEnhancePrompt")
+    os.utime(tmp_path / "bare.png", ((now - 60_000) / 1000,) * 2)
+    doc = {"scenes": [{"id": "c", "rating": "10", "rated": {"text": "the project's words", "at": now}}, {"id": "a", "rating": "10", "rated": {"text": "something the project kept that is wrong", "at": now}},
                       {"id": "b", "rating": "10", "rated": {"text": "a red fox runs through the snow", "at": now - 86_400_000}}],
-           "scene_renders": {"a": {"media": {"type": "output", "subfolder": "", "filename": "now.png"}},
+           "scene_renders": {"c": {"media": {"type": "output", "subfolder": "", "filename": "bare.png"}},
+                             "a": {"media": {"type": "output", "subfolder": "", "filename": "now.png"}},
                              "b": {"media": {"type": "output", "subfolder": "", "filename": "reused.png"}}}}
 
     class Project:
@@ -306,5 +309,7 @@ def test_a_rated_result_made_in_this_session_is_captioned_from_its_own_file_and_
         async with TestClient(TestServer(app)) as c:
             return await (await c.get("/m/rated")).json()
     got = asyncio.run(go())
-    assert [(r["media"]["filename"], r["caption"]) for r in got["results"]] == [("now.png", "a red fox runs through the snow")]
-    assert got["different"] == 1
+    assert {r["media"]["filename"]: r["caption"] for r in got["results"]}["bare.png"] == "", "a file with no prompt of its own gets none: the project's words are never used"
+    got["results"] = [r for r in got["results"] if r["media"]["filename"] != "bare.png"]
+    assert [(r["media"]["filename"], r["caption"], r["doubtful"]) for r in got["results"]] == [("now.png", "a red fox runs through the snow", False), ("reused.png", "a city street at night", True)]
+    assert got["doubtful"] == 1

@@ -491,15 +491,15 @@ test("Results: a run shows the time per step and the time spent in all, restarts
   off();
 });
 
-test("Data step: results left out because the file is another video are counted, not silent", async () => {
+test("Data step: results whose rating may be from another video are marked, not hidden", async () => {
   const f = fake();
-  f.api.trainRated = async () => ({ results: [{ label: "liked", media: { type: "output", subfolder: "", filename: "x.mp4" }, caption: "a red fox" }], counts: { liked: 1 }, different: 3 });
+  f.api.trainRated = async () => ({ results: [{ label: "liked", media: { type: "output", subfolder: "", filename: "x.mp4" }, caption: "a red fox", doubtful: true }, { label: "liked", media: { type: "output", subfolder: "", filename: "y.mp4" }, caption: "a cat" }], counts: { liked: 2 }, doubtful: 1 });
   const { button, off } = await open(f);
   button.click();
   await wait(60);
   const rated = [...document.querySelectorAll("button")].find((b) => /rated|results/i.test(b.textContent) && /Add|Use|Open/i.test(b.textContent));
   if (rated) rated.click();
   await wait(60);
-  assert.ok(text().includes("3 left out: the file with that name is another video"), "the count is shown");
+  assert.ok(text().includes('1 marked "old rating?"'), "the count is shown, and nothing is hidden");
   off();
 });

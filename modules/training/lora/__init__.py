@@ -146,19 +146,17 @@ def routes(table, base, web):
         roots = train.roots()
         here = [(r, store.resolve({"kind": "output", **r["media"]}, roots, train.bin_path)) for r in found]
         here = [(r, path) for r, path in here if path]      # a rating is not a video: only results still on this machine
-        mine = [(r, path) for r, path in here if rated.is_this_video(r, path)]       # ...and the same video: a project carried to another instance meets other files under the same names
-        different = len(here) - len(mine)
         found = []
-        for r, path in mine:
-            made_from = rated.embedded_prompt(path)                       # the file's own prompt beats what the project kept for it
-            if made_from:
-                r = {**r, "prompt_text": made_from, "caption": rated.prompt_caption(made_from, doc_of.get(r["project"]), parts, lambda t: shortcuts.expand(t, seed=1), shortcuts.resolve_variables)}
-            found.append(r)
+        for r, path in here:
+            doubtful = not rated.is_this_video(r, path)                   # the file may be another video that took the name of one rated on another instance: shown, but marked
+            made_from = rated.embedded_prompt(path)                       # only the file's own prompt: what the project kept under this name may belong to another video
+            r = {**r, "prompt_text": made_from, "caption": rated.prompt_caption(made_from, doc_of.get(r["project"]), parts, lambda t: shortcuts.expand(t, seed=1), shortcuts.resolve_variables)}
+            found.append({**r, "doubtful": doubtful})
         want = req.rel_url.query.get("label")
         if want:
             found = [r for r in found if r["label"] == want]
         counts = {label: sum(1 for r in found if r["label"] == label) for label in rated.LABEL_TITLES}
-        return web.json_response({"results": found, "counts": counts, "different": different})
+        return web.json_response({"results": found, "counts": counts, "doubtful": sum(1 for r in found if r["doubtful"])})
 
     @table.post(base + "/clips")
     async def _clips(req):

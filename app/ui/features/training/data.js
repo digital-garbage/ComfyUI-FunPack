@@ -94,12 +94,12 @@ export function dataStep({ app, session, go, ui }) {
   function showRated() {
     const all = shownRated();
     for (const k of [...ratedPicked]) if (!all.some((r) => keyOf(r) === k)) ratedPicked.delete(k);
-    ratedGallery.setItems(all.map((r) => ({ id: keyOf(r), label: r.media.filename, thumb: stillOf({ src: { kind: "output", ...r.media }, media_kind: r.media.filename.match(/\.(mp4|webm|mov|mkv|avi)$/i) ? "video" : "image" }), badge: [r.label, clipWords(ui.clips[keyOf(r)])].filter(Boolean).join(" · ") })));
+    ratedGallery.setItems(all.map((r) => ({ id: keyOf(r), label: r.media.filename, thumb: stillOf({ src: { kind: "output", ...r.media }, media_kind: r.media.filename.match(/\.(mp4|webm|mov|mkv|avi)$/i) ? "video" : "image" }), badge: [r.label, r.doubtful ? "old rating?" : "", clipWords(ui.clips[keyOf(r)])].filter(Boolean).join(" · ") })));
     ui.needClips(all.filter((r) => /\.(mp4|webm|mov|mkv|avi)$/i.test(r.media.filename)).map((r) => ({ kind: "output", ...r.media })), () => showRated());
     ratedGallery.setValue([...ratedPicked]);
     const n = all.length, p = ratedPicked.size;
-    const other = ui.rated.different || 0;
-    const left = other ? ` ${other} left out: the file with that name is another video than the one rated (names repeat between ComfyUI instances).` : "";
+    const other = (ui.rated.results || []).filter((r) => r.doubtful).length;
+    const left = other ? ` ${other} marked "old rating?": the rating may belong to another video that had this name on another ComfyUI instance. Its caption is still the prompt of the file you see.` : "";
     ratedNote.setText((n ? `${n} rated result${n > 1 ? "s" : ""} found in your projects. ${p ? `${p} picked: only those are added.` : "None picked: all are added."}` : "None found yet. Rate results in your projects and they appear here.") + left);
     addRated.node.disabled = !n || !open;
   }
