@@ -148,15 +148,17 @@ export default {
     }
     function watch() {
       clearTimeout(runPoll);
-      const queuedAt = Date.now();
+      const queuedAt = Date.now(), mine = (ui.watching = (ui.watching || 0) + 1);      // one loop at a time: an older one still waiting on the server stops when it hears back
       const tick = async () => {
-        if (!ui.run.active) return;
+        if (!ui.run.active || mine !== ui.watching) return;
         if (ui.run.state === "queued" && Date.now() - queuedAt > QUEUE_WAIT && !ui.run.message.includes("log")) {
           setRun({ message: "ComfyUI has not started the run yet. It may be busy with another job or loading models; if this stays, look at ComfyUI's log." });
           refreshLive();
         }
         let snap = null;
         try { snap = await api.trainRun(ui.run.loss.length); } catch { /* try again */ }
+        if (mine !== ui.watching) return;
+        if (snap && ui.run.state === "previewing") { runPoll = setTimeout(tick, POLL); return; }      // the pause is being dealt with: its snapshot must not set the state back to paused
         if (snap && snap.run && snap.run !== ui.before && !(ui.awaitStart && (ui.staleStarted ? snap.started === ui.staleStarted : snap.state === "paused"))) {
           ui.awaitStart = false;
           const times = snap.loss_from === ui.run.loss.length ? ui.run.times.concat(snap.times || []) : ui.run.times;
@@ -224,7 +226,7 @@ export default {
     const previewStrength = () => { const v = Number(settingsOf(session.doc).preview_strength); return Number.isFinite(v) ? v : 1; };
     async function previewNow(auto) {
       const paused = ui.run.paused;
-      if (!paused || !paused.preview) return;
+      if (!paused || !paused.preview || ui.run.state === "previewing") return;      // one preview at a time
       ui.stopAfterPreview = false;
       setRun({ state: "previewing", message: `Making a preview with the LoRA at step ${paused.step}` });
       draw();
@@ -245,8 +247,9 @@ export default {
         if (snap.state === "paused") {
           ui.before = "";
           setRun({ shown: true, active: false, state: "paused", loss: snap.loss, times: snap.times || [], stepSeconds: snap.step_seconds, lastStep: snap.last_step_seconds, elapsed: snap.elapsed, smooth: smooth(snap.loss), step: snap.step, total: snap.total, message: "", runId: snap.run, paused: snap.paused });
-          ui.holdPause = true;                        // found after a reload: the person decides
+          ui.holdPause = !(snap.paused && snap.paused.reason === "preview");      // a pause the person asked for waits for them; one for a preview step was never theirs, so the preview and the carrying on go ahead
           ui.tab = "train";
+          if (!ui.holdPause) previewNow(true);
         } else if (snap.state === "training") {
           ui.before = "";
           setRun({ shown: true, active: true, state: "training", runId: snap.run, loss: snap.loss, times: snap.times || [], stepSeconds: snap.step_seconds, lastStep: snap.last_step_seconds, smooth: smooth(snap.loss), step: snap.step, total: snap.total, elapsed: snap.elapsed, message: snap.message });
