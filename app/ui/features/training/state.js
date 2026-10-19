@@ -33,10 +33,11 @@ export function makeSession(api) {
     if (!queued) return;
     const { name, doc } = queued;
     queued = null;
+    const was = s.error;
     s.saving = true;
     try { await api.trainSaveSet(name, doc); s.error = ""; } catch (err) { s.error = `Could not save the set: ${err.message}`; }
     s.saving = false;
-    emit();
+    if (s.error !== was) emit();                    // a saved edit changes nothing on screen; redrawing would take the cursor out of the box being typed in
   }
   s.flush = async () => { clearTimeout(timer); timer = null; await push(); };
   /** Change the open set in place and save it soon. Does not redraw: the controls on screen already show the edit. */

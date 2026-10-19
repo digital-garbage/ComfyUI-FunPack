@@ -104,6 +104,7 @@ test("Tags step: a text box per item under its picture; typing saves the set and
   await wait(700);
   const saved = f.calls.filter((c) => c[0] === "save").pop();
   assert.equal(saved[2].items[0].caption, "A cat\nsits, calmly");
+  assert.ok(box.isConnected && document.querySelector(".cx-captioned textarea") === box, "saving does not redraw the step: the box being typed in stays");
   off();
 });
 
