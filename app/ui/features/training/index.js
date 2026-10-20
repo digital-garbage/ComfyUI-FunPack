@@ -3,13 +3,19 @@
 import { composer as c } from "../../composer/composer.js";
 import { dataStep } from "./data.js";
 import { applyTagging, tagsStep } from "./tags.js";
-import { monitor, notice, settingsOf, trainStep } from "./train.js";
+import { footNote, monitor, notice, settingsOf, trainStep } from "./train.js";
 import { resultsStep } from "./results.js";
 import { makeSession, srcKey } from "./state.js";
 
 const VIDEO = /\.(mp4|webm|mov|mkv)$/i;
 
-const TABS = [{ value: "data", label: "1  Data" }, { value: "tags", label: "2  Tags" }, { value: "train", label: "3  Train" }, { value: "results", label: "Results" }];
+const TABS = [{ value: "data", label: "1  Your media" }, { value: "tags", label: "2  Describe" }, { value: "train", label: "3  Train" }, { value: "results", label: "4  Results" }];
+const STEPS = {
+  data: { title: "Pick what to learn from", sub: "Drop pictures and clips, choose from your Bin, or take results you rated. This step is optional: a set you made earlier is ready as it is." },
+  tags: { title: "Describe each one", sub: "The words under each picture are what the LoRA learns to connect with it. Fix them by hand, or let the tagger suggest." },
+  train: { title: "Train the LoRA", sub: "Choose how thorough it should be and press Start. Progress and previews appear in Results." },
+  results: { title: "Results", sub: "Watch the training, look at the previews and download a LoRA, the final one or any step." },
+};
 const POLL = 1000;
 const QUEUE_WAIT = 60000;
 
@@ -45,6 +51,7 @@ export default {
         if (then) then();
       },
     };
+    let foot = () => {};
     let win = null, body = null, timers = [], offSession = null, tagPoll = null, runPoll = null;
 
     const button = c.button.sm({ label: "🎓 Training", tone: "neutral", title: "Make a LoRA from your media and rated results", onClick: () => (win ? win.close() : open()) });
@@ -70,9 +77,17 @@ export default {
     function go(tab) { ui.tab = tab; if (tab === "results") loadRuns(); draw(); }
     function draw() {
       if (!win) return;
-      const tabs = c.tabs.underline({ label: "Training steps", tabs: TABS, value: ui.tab, onChange: go });
+      const tabs = c.segmented.md({ label: "Steps", options: TABS, value: ui.tab, onChange: go });
       const note = session.error ? c.inlineError.default({ text: session.error }) : null;
-      body.set([tabs, note, steps[ui.tab]()].filter(Boolean));
+      const info = STEPS[ui.tab];
+      body.set([tabs, c.label.section({ text: info.title }), c.hint.default({ text: info.sub }), note, steps[ui.tab]()].filter(Boolean));
+      const order = TABS.map((t) => t.value), at = order.indexOf(ui.tab);
+      const back = at ? c.button.sm({ label: ui.tab === "results" ? "Back to training" : "Back", tone: "ghost", onClick: () => go(order[at - 1]) }) : null;
+      const skip = ui.tab === "data" ? c.button.sm({ label: "Skip to training", tone: "ghost", onClick: () => go("train") }) : null;
+      const next = ui.tab === "data" ? c.button.sm({ label: "Next: tags", tone: "primary", disabled: !session.name, onClick: () => go("tags") })
+        : ui.tab === "tags" ? c.button.sm({ label: "Next: train", tone: "primary", onClick: () => go("train") }) : null;
+      foot = () => win && win.setFooter({ actions: [back, skip, next, ...(ui.tab === "train" ? ui.controls || [] : [])].filter(Boolean), note: ui.tab === "train" ? footNote(ui) : "" });
+      foot();
     }
 
     // --- the Bin and rated results, read when the window opens
@@ -144,7 +159,7 @@ export default {
     function refreshLive() {                          // the graph lives in Results, a short notice in Train
       if (!ui.monitorBox) return;
       if (ui.tab === "results") ui.monitorBox.set([monitor(ui)].filter(Boolean));
-      else if (ui.tab === "train") ui.monitorBox.set([notice(ui, go)].filter(Boolean));
+      else if (ui.tab === "train") { ui.monitorBox.set([notice(ui, go)].filter(Boolean)); foot(); }
     }
     function watch() {
       clearTimeout(runPoll);
@@ -261,8 +276,8 @@ export default {
 
     function open() {
       if (win) return;
-      body = c.region.stack({ gap: "md", fill: true });
-      win = c.floating.window({ id: "training", title: "Training", subtitle: "make a LoRA", body, width: 780, height: 720, x: 240, y: 40,
+      body = c.region.stack({ gap: "lg" });
+      win = c.modal.generic({ title: "Make a LoRA", subtitle: "teach the model your style, in four steps", size: "xl", closeOnOutside: false, body,
         onClose: () => { win = null; session.flush(); clearTimeout(tagPoll); clearTimeout(syncPoll); } });
       syncPoll = setTimeout(reconcile, POLL * 5);
       offSession = session.on(draw);

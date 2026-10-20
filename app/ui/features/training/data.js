@@ -112,10 +112,6 @@ export function dataStep({ app, session, go, ui }) {
   const ratedSel = c.segmented.sm({ label: "Which results", options: RATED, value: ui.ratedKind, onChange: (v) => { ui.ratedKind = v; showRated(); } });
   showRated();
 
-  const next = c.toolbar.default({ items: [c.hint.default({ text: "This step is optional: a set you made earlier is ready as it is." })], trailing: [
-    c.button.md({ label: "Skip to training", tone: "ghost", onClick: () => go("train") }),
-    c.button.md({ label: "Next: tags", tone: "primary", disabled: !open, onClick: () => go("tags") })] });
-
   return c.region.stack({ gap: "md", children: [
     c.field.default({ label: "Training set", hint: "A saved list of what to learn from.", control: c.region.stack({ gap: "sm", children: [setSelect, c.toolbar.default({ items: [make, drop] })] }) }),
     status,
@@ -123,6 +119,5 @@ export function dataStep({ app, session, go, ui }) {
     c.collapsible.default({ label: "Choose in your Bin", open: ui.openBin, onToggle: (o) => { ui.openBin = o; }, body: c.region.stack({ gap: "sm", children: [gallery, c.toolbar.default({ items: [pickedNote], trailing: [addBin] })] }) }),
     c.collapsible.default({ label: "Choose your own results", hint: "Results you rated in your projects. Liked ones teach what you want; disliked ones can teach what to avoid.", open: ui.openRated, onToggle: (o) => { ui.openRated = o; },
       body: c.region.stack({ gap: "sm", children: [ratedSel, ratedGallery, include, c.toolbar.default({ items: [ratedNote], trailing: [addRated] })] }) }),
-    next,
   ] });
 }

@@ -90,7 +90,6 @@ export function tagsStep({ app, session, go, ui, peek }) {
     c.toolbar.default({ items: [filter, count], trailing: [everyone, none, drop] }),
     bar,
     grid, more,
-    c.toolbar.default({ items: [], trailing: [c.button.md({ label: "Back", tone: "ghost", onClick: () => go("data") }), c.button.md({ label: "Next: train", tone: "primary", onClick: () => go("train") })] }),
   ] });
 }
 

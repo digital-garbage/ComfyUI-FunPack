@@ -85,7 +85,9 @@ export function trainStep({ app, session, go, ui }) {
   const previewNow = c.button.lg({ label: "Preview now", tone: "neutral", title: "Make a picture or clip with the LoRA so far", onClick: () => ui.previewNow() });
   previewNow.node.hidden = !(run.state === "paused" && run.paused && run.paused.preview);
 
+  ui.controls = [stop, pause, previewNow, resume, start];          // shown in the window's footer, with the run's state beside them
   return c.region.stack({ gap: "lg", children: [
+    live,
     c.hint.default({ text: used.length ? `${used.length} item${used.length > 1 ? "s" : ""} will be learned from (${caption} with tags). ${used.length - caption ? "Items without a caption are learned from with only the prefix and postfix." : ""}`.trim()
       : `"${session.name}" is empty. Add media in the Data step.` }),
     hasAudioVae ? c.banner.info({ text: "This pipeline has an audio VAE, so it trains picture and sound together (H3). One clip at a time, so training is slow and needs a lot of memory. musubi-tuner's H3 recipe: learning rate 0.0001, rank 16, batch 1, bf16, gradient checkpointing, plus block swap. Its plain flow-matching loss undoes the few-step quality of a distilled (turbo) model; musubi adds a training adapter, guidance loss or teacher matching for that, which this trainer does not have." }) : null,
@@ -103,13 +105,19 @@ export function trainStep({ app, session, go, ui }) {
       num("fps", "Frames per second", "0 uses each clip's own rate (H3: 24).", { min: 0, max: 120, step: 0.5 }),
       pickOf("start", "Take frames from", "", [{ value: "start", label: "The start of the clip" }, { value: "middle", label: "The middle" }])] }),
     advanced,
-    c.toolbar.default({ items: [c.button.md({ label: "Back", tone: "ghost", onClick: () => go("tags") })], trailing: [stop, pause, previewNow, resume, start] }),
-    live,
   ].filter(Boolean) });
 }
 
 /** What the controls said last (Pausing, Stopping): shown beside the controls in Train, not with the graph in Results. */
 const aboutControls = (message) => /^(Pausing|Stopping|It will wait)/.test(message || "");
+
+/** The run's state in a few words, beside the controls in the footer. */
+export function footNote(ui) {
+  const run = ui.run;
+  if (aboutControls(run.message)) return run.message;
+  if (!run.shown) return "";
+  return { training: `Training, step ${run.step || 0} of ${run.total || 0}`, queued: "Starting", paused: `Paused at step ${run.step || 0}`, previewing: "Making a preview", done: "Finished", stopped: "Stopped", error: "Stopped with an error" }[run.state] || "";
+}
 
 /** What the Train step says about a run: where to look, and the error if it failed. */
 export function notice(ui, go) {
