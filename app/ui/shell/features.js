@@ -24,10 +24,11 @@ function mountOne(hub, has, app) {
 }
 
 // `app` is what the core offers features (project, ...). A feature names what it needs; a missing one hides it.
-export async function loadFeatures(paths, { load = (path) => import(path), app = {}, has = (name) => name in app } = {}) {
+export async function loadFeatures(paths, { load = (path) => import(path), app = {}, has = (name) => name in app, onProgress = () => {} } = {}) {
   const mounted = [], hidden = [];
   const hide = (id, err) => { hidden.push({ id, why: err.message }); console.warn(`[FunPack] ${id} hidden: ${err.message}`); };
-  for (const path of paths) {
+  for (const [i, path] of paths.entries()) {
+    try { onProgress({ n: i + 1, of: paths.length, path }); } catch (err) { console.warn(err); }      // a broken progress display must not stop loading
     let hubs;
     try { hubs = [].concat((await load(path)).default); } catch (err) { hide(path, err); continue; }
     for (const hub of hubs) {

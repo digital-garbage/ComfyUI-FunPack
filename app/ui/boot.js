@@ -18,6 +18,10 @@ import { createDock } from "./shell/dock.js";
 import { hostFor } from "./shell/mounts.js";
 import paths from "./modules.js";
 import { composer as c } from "./composer/composer.js";
+import { startLoading } from "./shell/loading.js";
+
+// First thing on screen, before the frame exists: the buttons arrive one by one and this says why.
+const loading = startLoading(c);
 
 // What the core offers a feature, by name. `on(fn)` hears every change; fn gets "open" when a
 // different project was opened, "change" for an edit.
@@ -38,7 +42,7 @@ const installed = await Promise.race([api.modules(), new Promise((_, no) => setT
 app.hasModule = (id) => !installed || installed.has(id);
 const settings = createSettings({ menubar: hostFor("menubar.menus") });
 app.openSettings = (id) => settings.open(id);
-const result = await loadFeatures(paths, { app });
+const result = await loadFeatures(paths, { app, onProgress: loading.progress }).finally(loading.done);
 settings.addButton();
 app.project.start().catch((err) => console.warn("could not open a project:", err.message));
 window.FunPackUI = { frame, settings, app, ...result };
