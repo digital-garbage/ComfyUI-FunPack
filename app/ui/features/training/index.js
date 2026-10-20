@@ -9,9 +9,9 @@ import { makeSession, srcKey } from "./state.js";
 
 const VIDEO = /\.(mp4|webm|mov|mkv)$/i;
 
-const TABS = [{ value: "data", label: "1  Your media" }, { value: "tags", label: "2  Describe" }, { value: "train", label: "3  Train" }, { value: "results", label: "4  Results" }];
+const TABS = [{ value: "data" }, { value: "tags" }, { value: "train" }, { value: "results" }];      // the steps, in order: Back and Next walk them
 const STEPS = {
-  data: { title: "Pick what to learn from", sub: "Drop pictures and clips, choose from your Bin, or take results you rated. This step is optional: a set you made earlier is ready as it is." },
+  data: { title: "Pick what to learn from", sub: "Drop pictures and clips, choose from your Bin, or take results you rated. A set you filled earlier can go straight on; an empty one cannot be trained." },
   tags: { title: "Describe each one", sub: "The words under each picture are what the LoRA learns to connect with it. Fix them by hand, or let the tagger suggest." },
   train: { title: "Train the LoRA", sub: "Choose how thorough it should be and press Start. Progress and previews appear in Results." },
   results: { title: "Results", sub: "Watch the training, look at the previews and download a LoRA, the final one or any step." },
@@ -74,19 +74,23 @@ export default {
       train: () => trainStep({ app, session, go, ui }),
       results: () => resultsStep({ app, ui }),
     };
-    function go(tab) { ui.tab = tab; if (tab === "results") loadRuns(); draw(); }
+    function go(tab) { if (tab !== "data" && tab !== "results" && !((session.doc || {}).items || []).length) tab = "data"; ui.tab = tab; if (tab === "results") loadRuns(); draw(); }
     function draw() {
       if (!win) return;
-      const tabs = c.segmented.md({ label: "Steps", options: TABS, value: ui.tab, onChange: go });
       const note = session.error ? c.inlineError.default({ text: session.error }) : null;
-      const info = STEPS[ui.tab];
-      body.set([tabs, c.label.section({ text: info.title }), c.hint.default({ text: info.sub }), note, steps[ui.tab]()].filter(Boolean));
-      const order = TABS.map((t) => t.value), at = order.indexOf(ui.tab);
-      const back = at ? c.button.sm({ label: ui.tab === "results" ? "Back to training" : "Back", tone: "ghost", onClick: () => go(order[at - 1]) }) : null;
-      const skip = ui.tab === "data" ? c.button.sm({ label: "Skip to training", tone: "ghost", onClick: () => go("train") }) : null;
-      const next = ui.tab === "data" ? c.button.sm({ label: "Next: tags", tone: "primary", disabled: !session.name, onClick: () => go("tags") })
-        : ui.tab === "tags" ? c.button.sm({ label: "Next: train", tone: "primary", onClick: () => go("train") }) : null;
-      foot = () => win && win.setFooter({ actions: [back, skip, next, ...(ui.tab === "train" ? ui.controls || [] : [])].filter(Boolean), note: ui.tab === "train" ? footNote(ui) : "" });
+      const info = STEPS[ui.tab], order = TABS.map((t) => t.value), at = order.indexOf(ui.tab);
+      const ready = ((session.doc || {}).items || []).length > 0;         // nothing to learn from: no way on to training
+      body.set([c.label.section({ text: `${at + 1} / ${order.length} · ${info.title}` }), c.hint.default({ text: info.sub }), note, steps[ui.tab]()].filter(Boolean));
+      const results = (ui.tab === "data" || ui.tab === "train") ? c.button.sm({ label: "See results", tone: "ghost", title: "Earlier runs, the live graph and downloads", onClick: () => go("results") }) : null;
+      const back = ui.tab === "results" ? c.button.sm({ label: "Back to training", tone: "ghost", onClick: () => go("train") })      // a run carries on while another set is made or tags are fixed
+        : at ? c.button.sm({ label: "Back", tone: "ghost", onClick: () => go(order[at - 1]) }) : null;
+      const skip = ui.tab === "data" ? c.button.sm({ label: "Skip to training", tone: "ghost", disabled: !ready, title: ready ? "" : "Add pictures or clips to the set first", onClick: () => go("train") }) : null;
+      const next = ui.tab === "data" ? c.button.sm({ label: "Next: tags", tone: "primary", disabled: !ready, title: ready ? "" : "Add pictures or clips to the set first", onClick: () => go("tags") })
+        : ui.tab === "tags" ? c.button.sm({ label: "Next: train", tone: "primary", disabled: !ready, onClick: () => go("train") }) : null;
+      const elsewhere = ui.tab === "results" ? [c.button.sm({ label: "Prepare a set", tone: "ghost", title: "Make or fill a set; a training going on carries on", onClick: () => go("data") }),
+        c.button.sm({ label: "Fix tags", tone: "ghost", title: "Correct the captions; a training going on carries on", onClick: () => go("tags") })] : [];
+      const actions = [results, ...elsewhere, back, skip, next];
+      foot = () => win && win.setFooter({ actions: [...actions, ...(ui.tab === "train" ? ui.controls || [] : [])].filter(Boolean), note: ui.tab === "train" ? footNote(ui) : "" });
       foot();
     }
 

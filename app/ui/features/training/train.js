@@ -126,7 +126,7 @@ export function notice(ui, go) {
   const where = c.button.sm({ label: "Open Results", tone: "ghost", onClick: () => go("results") });
   if (run.error) return c.region.stack({ gap: "md", children: [c.inlineError.default({ text: run.error }), where] });
   const text = { done: "Training finished.", stopped: "Training stopped.", paused: `Training paused at step ${run.step || 0}.`, previewing: "Making a preview." }[run.state] || "Training started.";
-  return c.region.stack({ gap: "md", children: [c.banner.info({ text: `${aboutControls(run.message) ? `${run.message}. ` : ""}${text} Check graphs and previews in the Results tab.` }), where] });
+  return c.region.stack({ gap: "md", children: [c.banner.info({ text: `${aboutControls(run.message) ? `${run.message}. ` : ""}${text} Graphs and previews are on the Results step.` }), where] });
 }
 
 /** Progress, the message, and the loss graph. */

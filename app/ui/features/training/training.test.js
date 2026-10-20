@@ -47,7 +47,7 @@ const open = async (f) => {
   return { host, button, off };
 };
 const text = () => document.body.textContent;
-const tab = (label) => [...document.querySelectorAll("button, [role=tab]")].find((b) => b.textContent.trim().endsWith(label));
+const tab = (label) => click(label === "Results" ? "See results" : label === "Train" ? "Back to training" : label);
 const click = (label, root = document) => [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
 
 test("captions: tags are trimmed and unique, counts are per caption, bulk edits only the chosen", () => {
@@ -202,7 +202,7 @@ test("a run in progress draws its loss, then reports the saved file; Stop asks t
   await wait(20);
   click("Start training").click();
   await wait(1200);
-  assert.ok(text().includes("Check graphs and previews in the Results tab"), "Train only says where to look");
+  assert.ok(text().includes("Graphs and previews are on the Results step"), "Train only says where to look");
   assert.ok(!document.querySelector(".cx-chart"), "the graph is not on the Train tab");
   tab("Results").click();
   await wait(20);
@@ -523,5 +523,23 @@ test("Data step: results whose rating may be from another video are marked, not 
   if (rated) rated.click();
   await wait(60);
   assert.ok(text().includes('1 marked "old rating?"'), "the count is shown, and nothing is hidden");
+  off();
+});
+
+test("Steps: no tabs; with no media the way on to training is closed, and Results leads back to the set and its tags", async () => {
+  const f = fake();
+  f.doc.items = [];
+  const { button, off } = await open(f);
+  button.click();
+  await wait(60);
+  assert.ok(!document.querySelector("[role=tab], [role=tablist]"), "no tab strip");
+  assert.ok(text().includes("1 / 4"), "the step says where it is");
+  assert.ok(click("Next: tags").disabled && click("Skip to training").disabled, "no media, no training");
+  click("See results").click();
+  await wait(40);
+  assert.ok(click("Prepare a set") && click("Fix tags"), "back to the set or its tags while a run goes on");
+  click("Fix tags").click();
+  await wait(40);
+  assert.ok(text().includes("1 / 4"), "an empty set sends you to add media first");
   off();
 });
