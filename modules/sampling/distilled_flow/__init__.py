@@ -1,9 +1,10 @@
 """Distilled Flow: samplers for few-step distilled flow models, listed in ComfyUI like any other.
 
-Names read as parts: `dflow_ord1` / `dflow_ord2` (first order, or Adams-Bashforth 2 which reuses the
-last prediction: no extra model calls), `_ramp` (the second order fades in across the run instead of
-acting from step 2), `_heun1` / `_heun2` (the last one or two steps are corrected with a second model
-call, so they cost one more call each). Plain `dflow_ord1` is Euler: same speed as `euler`.
+`dflow_ord1` is Euler (same speed as `euler`). `dflow_ord2` is Adams-Bashforth 2: it reuses the last
+prediction for a second-order step, with no extra model calls. `dflow_ord2_ab2` fades that second order
+in across the run (early noisy steps stay first order, late detail steps get the full second order),
+which is gentler on short schedules. A first-order version of the fade would be plain `dflow_ord1`, so it
+has no name of its own.
 
 Deterministic, no noise injection. Flow models only (the model predicts a straight path to the picture).
 A sound stream riding in the latent is stepped first order, because second order corrupts it.
@@ -28,13 +29,11 @@ def _picture_only(new, old):
     return new
 
 
-def make(order, ramp, heun):
+def make(order, ramp):
     @torch.no_grad()
     def sample(model, x, sigmas, extra_args=None, callback=None, disable=None):
         extra_args = {} if extra_args is None else extra_args
         steps = len(sigmas) - 1
-        # The final step (sigma 0) cannot be corrected, so `heun` counts the steps that can.
-        first_heun = sum(1 for s in sigmas[1:] if float(s) > 0) - heun
         ones = x.new_ones([x.shape[0]])
         before = before_h = None
         for i in range(steps):
@@ -53,10 +52,6 @@ def make(order, ramp, heun):
             if float(to) == 0:
                 return used
             d = ksampling.to_d(x, sigma, used)
-            if i >= first_heun:
-                guess = x + d * (to - sigma)
-                d = _picture_only((d + ksampling.to_d(guess, to, model(guess, to * ones, **extra_args))) / 2, d)
-                before = before_h = None             # x moved by a corrected direction: no history to extrapolate from
             x = x + d * (to - sigma)
         return x
     return sample
@@ -64,12 +59,10 @@ def make(order, ramp, heun):
 
 def register():
     """Add every preset to ComfyUI's own sampler list (in place: its Sampler nodes share the list)."""
-    for order, ramp, tag in ((1, False, "ord1"), (2, False, "ord2"), (2, True, "ord2_ramp")):
-        for heun, suffix in ((0, ""), (1, "_heun1"), (2, "_heun2")):
-            name = f"dflow_{tag}{suffix}"
-            if name not in comfy.samplers.SAMPLER_NAMES:
-                setattr(ksampling, f"sample_{name}", make(order, ramp, heun))
-                comfy.samplers.SAMPLER_NAMES.append(name)
+    for name, order, ramp in (("dflow_ord1", 1, False), ("dflow_ord2", 2, False), ("dflow_ord2_ab2", 2, True)):
+        if name not in comfy.samplers.SAMPLER_NAMES:
+            setattr(ksampling, f"sample_{name}", make(order, ramp))
+            comfy.samplers.SAMPLER_NAMES.append(name)
 
 
 register()

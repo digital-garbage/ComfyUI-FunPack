@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Distilled Flow samplers** (experimental, untested on a real model): plain names in every ComfyUI sampler list, no settings. `dflow_ord1` is Euler; `dflow_ord2` reuses the last prediction for second order (no extra model calls); `_ramp` fades that in across the run; `_heun1` / `_heun2` correct the last one or two steps with one extra model call each. Sound riding in the latent stays first order. Back from 4.x; its extras (velocity bias, ALG, momentum, sharpness) are separate modules now.
+- **Distilled Flow samplers** (experimental, untested on a real model): plain names in every ComfyUI sampler list, no settings. `dflow_ord1` is Euler; `dflow_ord2` reuses the last prediction for second order (no extra model calls); `dflow_ord2_ab2` fades the second order in across the run. Sound riding in the latent stays first order. Back from 4.x; its extras (velocity bias, ALG, momentum, sharpness) are separate modules now.
 - **Sharpness** (experimental): wins back fine detail in the last part of the run with any sampler that calls the model once per step; no extra model calls. Settings > Engine > Sampling. Not the spatial latent sharpening that was tried and removed in 4.x.
 
 ## [5.0.0] "Cunning Cranberry" - 2026-10-16
