@@ -20,8 +20,8 @@ for (const size of Object.keys(TAGS)) {
 }
 
 for (const size of ["lg", "md", "sm", "xs"]) {
-  define("text", size, ({ text } = {}) =>
-    handle(el("p", { cls: `cx-t cx-t-${size}`, text })));
+  define("text", size, ({ text, center = false } = {}) =>
+    handle(el("p", { cls: [`cx-t cx-t-${size}`, center ? "cx-center" : null], text })));
 }
 
 // One hint, one look. v4 had ten class names for this exact thing.

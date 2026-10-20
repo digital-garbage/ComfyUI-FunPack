@@ -42,3 +42,6 @@
   font-family: var(--font-display); font-weight: 800;
   font-size: var(--fs-3); letter-spacing: .2px; color: var(--text);
 }
+
+.cx-center { text-align: center; }
+.cx-modal-centered .cx-modal-head { justify-content: center; text-align: center; }

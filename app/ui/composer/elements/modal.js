@@ -31,12 +31,12 @@ function nodeOf(control, where) {
  */
 function open({
   title, subtitle, size = "md", body, actions = [], onClose,
-  closeOnOutside = true, closeOnEsc = true, stacked = false, describedBy,
+  closeOnOutside = true, closeOnEsc = true, stacked = false, describedBy, centered = false,
 } = {}) {
   const titleId = uid("modal-title");
 
   const card = el("div", {
-    cls: ["cx-modal", `cx-modal-${size}`, stacked ? "cx-modal-stacked" : null],
+    cls: ["cx-modal", `cx-modal-${size}`, stacked ? "cx-modal-stacked" : null, centered ? "cx-modal-centered" : null],
     attrs: { role: "dialog", "aria-modal": "true", tabindex: "-1", "aria-labelledby": titleId,
              "aria-describedby": describedBy },
   });
