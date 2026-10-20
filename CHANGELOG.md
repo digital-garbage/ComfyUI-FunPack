@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Distilled Flow samplers** (experimental, untested on a real model): plain names in every ComfyUI sampler list, no settings. `dflow_ord1` is Euler; `dflow_ord2` reuses the last prediction for second order (no extra model calls); `_ramp` fades that in across the run; `_heun1` / `_heun2` correct the last one or two steps with one extra model call each. Sound riding in the latent stays first order. Back from 4.x; its extras (velocity bias, ALG, momentum, sharpness) are separate modules now.
+- **Sharpness** (experimental): wins back fine detail in the last part of the run with any sampler that calls the model once per step; no extra model calls. Settings > Engine > Sampling. Not the spatial latent sharpening that was tried and removed in 4.x.
+
 ## [5.0.0] "Cunning Cranberry" - 2026-10-16
 
 A rewrite from scratch, not an update of 4.x. Same idea (a studio for video inside ComfyUI that learns from your ratings), new architecture: every feature is a module that announces itself, so a feature cannot be forgotten in the UI, a wire cannot be missed, and a failing optional feature module is left out while the run carries on. 4.x projects are not imported; see "Not carried over".
