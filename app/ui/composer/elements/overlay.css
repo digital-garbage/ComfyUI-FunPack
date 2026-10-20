@@ -4,6 +4,7 @@
   position: fixed; inset: 0; display: flex; pointer-events: auto;
 }
 .cx-modal-layer { align-items: flex-start; justify-content: center; padding: 7vh var(--sp-6); }
+.cx-modal-layer:has(.cx-modal-centered) { align-items: center; }      /* a window that is not a form sits in the middle of the screen, not at the top */
 .cx-backdrop { position: absolute; inset: 0; background: var(--backdrop); }
 
 .cx-modal {
