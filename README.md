@@ -12,6 +12,8 @@
 > FunPack is a hobby project maintained by a single person. It's crafted for my personal needs mostly, and I can't test every single possible variant of usage to confirm it's bug-free and working as intended.
 > If you had found a bug or you want to request a new feature, feel free to add an entry to Issues - that would be the most appreciated.
 
+<p align="center"><img src="docs/images/studio.jpg" alt="FunPack studio: preview, scene settings and a six-clip timeline" width="900"></p>
+
 ## What v5 is
 
 A rewrite from scratch, not an update of 4.x. Every feature is a module that announces itself, so nothing can be forgotten in the UI, no wire can be missed, and a module that fails to load is simply left out while the run carries on. Open it at `/funpack/` in your browser.
@@ -24,6 +26,66 @@ A rewrite from scratch, not an update of 4.x. Every feature is a module that ann
 - **Auto Montage**: builds a new cut from your rendered clips; the originals stay untouched.
 
 The full list of features, and what is proven and what is experimental, is in [CHANGELOG.md](CHANGELOG.md).
+
+## A look around
+
+Every picture below is the real app, shown with an abstract demo project (clips made with ffmpeg, no model output).
+
+### Write the story once
+
+Composer holds the whole story in one box. A cut word splits it into scenes, `$variables` fill in what repeats, and templates and shortcuts keep your own wording close. The optional Enhance tab has a language model polish each prompt.
+
+<p align="center"><img src="docs/images/composer-story.jpg" alt="Composer, Story tab" width="900"></p>
+<p align="center"><img src="docs/images/composer-enhance.jpg" alt="Composer, Enhance tab" width="900"></p>
+
+### Start a project in three steps
+
+The Project Setup Wizard picks your look, names the project and loads the pipeline of the model you will use. No tabs, one step at a time.
+
+<p align="center"><img src="docs/images/wizard.jpg" alt="Project Setup Wizard" width="900"></p>
+
+### Pipeline as cards, not a graph
+
+Pick a file in each card, swap or add nodes, import a ComfyUI workflow. FunPack says when every slot is filled and names the first thing missing when it is not.
+
+<p align="center"><img src="docs/images/pipeline.jpg" alt="Models and Pipeline" width="900"></p>
+
+### Every module, one place
+
+Modules announce their own settings, so Engine settings is always complete. Turn any module on or off in Settings > Modules.
+
+<p align="center"><img src="docs/images/engine.jpg" alt="Engine settings" width="900"></p>
+<p align="center"><img src="docs/images/modules.jpg" alt="Modules" width="900"></p>
+
+### Quick sampler settings
+
+Steps, sampler, scheduler, seed and the common switches are one click away from the timeline, without leaving the clip you are working on.
+
+<p align="center"><img src="docs/images/sampler.jpg" alt="Quick sampler settings" width="900"></p>
+
+### Picker wheel
+
+Press the middle mouse button anywhere and your most used actions fan out under the pointer. Release on one to run it. Which actions appear is up to you.
+
+<p align="center"><img src="docs/images/wheel.jpg" alt="Picker wheel" width="900"></p>
+
+### Auto Montage
+
+Builds a new cut at the end of the timeline from your rendered clips. The originals stay as they are.
+
+<p align="center"><img src="docs/images/montage.jpg" alt="Auto Montage" width="900"></p>
+
+### Train your own LoRA (add-on)
+
+Teach the model your style from your own media and results you rated. Pick the data, describe each item, press Start. It is an add-on you switch on in Settings > Modules, and it has been run on MiniMax H3 only.
+
+<p align="center"><img src="docs/images/training-data.jpg" alt="LoRA training, data step" width="900"></p>
+<p align="center"><img src="docs/images/training-tags.jpg" alt="LoRA training, tags step" width="900"></p>
+<p align="center"><img src="docs/images/training-train.jpg" alt="LoRA training, train step" width="900"></p>
+
+### Dark or light
+
+<p align="center"><img src="docs/images/studio-light.jpg" alt="Light theme" width="900"></p>
 
 ## Installation
 
