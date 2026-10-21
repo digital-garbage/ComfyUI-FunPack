@@ -31,7 +31,7 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
     if (off) put(off, like.unsend.input, false);
   }
   const plan = sceneReferences(scene, project.fixed_references);
-  const { overrides, unwired } = wireReferences(plan.ids, slots, source ? [source.slot.id] : [], plan.pins, (id) => kinds.get(id));
+  const { overrides, unwired, left } = wireReferences(plan.ids, slots, source ? [source.slot.id] : [], plan.pins, (id) => kinds.get(id));
   for (const [id, fields] of Object.entries(overrides)) raw[id] = { ...raw[id], ...fields };
 
   const prompt = rolesAt(slots, "generation.prompt")[0];
@@ -55,5 +55,5 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
   // Judged on what is SENT (a carried frame counts; a picture t2v blanks, or one this pipeline has no input for, does not).
   const picture = (source && (raw[source.slot.id] || {}).media_id) || Object.keys(overrides).length;
   if (prompt && !String((raw[prompt.slot.id] || {})[prompt.role.input] ?? "").trim() && !picture) notes.push("This shot has no text and no start picture, so the model makes whatever it likes.");
-  return { inputs: raw, unwired, noPrompt: !prompt, notes };
+  return { inputs: raw, unwired, left, noPrompt: !prompt, notes };
 }

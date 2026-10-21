@@ -5,6 +5,7 @@ import { QUEUED, RUNNING } from "../../shell/run.js";
 import { inPlace } from "../../shell/place.js";
 import { buildInputs, rolesAt } from "./inputs.js";
 import { offer } from "../../shell/actions.js";
+import { names } from "../../shell/bin.js";
 
 const MAX_TAKES = 24;
 const expand = (body) => fetch("/funpack/api/prompt/expand", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -96,14 +97,14 @@ export default {
           if (group.every((s) => s.excluded) || !isGenerative(root)) continue;                  // all left out, or not made by the model
           // The unit is made once at the length of its clips together (each cut adds one shared frame).
           const frames = group.reduce((t, s) => t + effFrames(s, snap), 0) - (group.length - 1);
-          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap, scene: root, slots: frozen, expand: same, frames, hooks: app.inputHooks, ...(fixedSeed ? { seed: null } : {}), prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root, snap); } catch { return []; } }) });
+          const { inputs, unwired, left, noPrompt, notes } = await buildInputs({ project: snap, scene: root, slots: frozen, expand: same, frames, hooks: app.inputHooks, ...(fixedSeed ? { seed: null } : {}), prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root, snap); } catch { return []; } }) });
           app.lastRun.typed = (root.text || "").trim();        // what a Chat comment made now would be about
           const seeded = rolesAt(frozen, "generation.seed")[0];
           if (seeded) app.lastRun.seed = (inputs[seeded.slot.id] || {})[seeded.role.input] ?? (seeded.slot.inputs || {})[seeded.role.input];      // shown in ⏱ Sampler, to keep a liked one
           if (stopped) break;
           if (noPrompt && !made) tell("This pipeline has no prompt input, so the scene text is not sent.");
           notes.forEach(tell);
-          if (unwired) tell(`${unwired} reference(s) did not fit this pipeline and are not used.`);
+          if (unwired) tell(`${unwired} reference(s) did not fit this pipeline and are not used: ${(left || []).map((l) => `${names.get(l.id) || l.id} (looked for ${l.at.replace("assets.", "")}: ${l.why})`).join("; ")}.`);
           // The page's own guard does not see another tab: ComfyUI's queue does. Asked per shot: between this run's shots it is empty.
           if (app.api.projectQueued && (await app.api.projectQueued(pid))) { tell("This project already has a run in ComfyUI's queue (another tab or window?). Wait for it, or Stop it there."); break; }
           if (stopped) break;
