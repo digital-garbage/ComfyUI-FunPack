@@ -76,9 +76,8 @@ class FunPackLoadMedia(io.ComfyNode):
         return io.NodeOutput(images[:1])
 
 
-#: Frame rate and longest stretch the H3 reference-video input takes (its tooltip: 24 fps, 2-15 s).
+#: Frame rate the H3 reference-video input takes.
 REF_VIDEO_FPS = 24
-REF_VIDEO_MAX_SECONDS = 15
 
 
 def _entry(mid: str, kinds: tuple[str, ...], wanted: str):
@@ -100,7 +99,7 @@ class FunPackLoadMediaVideo(io.ComfyNode):
             node_id="FunPackLoadMediaVideo",
             display_name="FunPack Load Media (video)",
             category="FunPack/Media",
-            description="Load a video from FunPack's media library by id as frames at 24 fps, at most 15 seconds.",
+            description="Load a video from FunPack's media library by id as frames at 24 fps.",
             inputs=[io.String.Input("media_id", default="", tooltip="A media library id, picked in the Media bin.")],
             outputs=[io.Image.Output(display_name="frames")],
         )
@@ -114,7 +113,7 @@ class FunPackLoadMediaVideo(io.ComfyNode):
             raise RuntimeError(f"FunPack Load Media: could not read {entry.get('name', media_id)!r}.")
         seconds = frames.shape[0] / fps
         # Whatever the source rate, the model wants 24 fps: pick the frame showing at each 1/24 s.
-        count = int(min(seconds, REF_VIDEO_MAX_SECONDS) * REF_VIDEO_FPS)
+        count = int(seconds * REF_VIDEO_FPS)
         index = torch.clamp((torch.arange(count) * fps / REF_VIDEO_FPS).long(), max=frames.shape[0] - 1)
         log.info("FunPack Load Media", f"loaded {entry.get('name', media_id)}: {count} frames at {REF_VIDEO_FPS} fps")
         return io.NodeOutput(frames[index])
