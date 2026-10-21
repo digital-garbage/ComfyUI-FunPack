@@ -46,11 +46,12 @@ def test_an_unknown_id_is_refused_loudly(store):
         FunPackLoadMedia.execute("deadbeef0000").result
 
 
-def test_a_non_image_media_kind_is_refused(store):
+def test_a_file_that_cannot_be_read_is_refused_in_plain_words(store):
     from modules.media.load.nodes import FunPackLoadMedia
-    entry = media.save_upload("clip.mp4", b"not a real video but has an ext")
-    with pytest.raises(RuntimeError, match="not an image"):
-        FunPackLoadMedia.execute(entry["id"]).result
+    for name in ("clip.mp4", "voice.wav"):
+        entry = media.save_upload(name, b"not real media but has an ext")
+        with pytest.raises(RuntimeError, match="could not read"):
+            FunPackLoadMedia.execute(entry["id"]).result
 
 
 def test_deleted_media_is_refused_even_with_a_well_formed_id(store):
@@ -63,10 +64,10 @@ def test_deleted_media_is_refused_even_with_a_well_formed_id(store):
 
 def test_a_blank_size_stands_in_for_nothing_picked_and_a_picked_image_still_wins(store):
     from modules.media.load.nodes import FunPackLoadMedia
-    images, = FunPackLoadMedia.execute("", blank_width=64, blank_height=32).result
+    images, *_ = FunPackLoadMedia.execute("", blank_width=64, blank_height=32).result
     assert tuple(images.shape) == (1, 32, 64, 3)
     entry = media.save_upload("ref.png", _png_bytes())
-    images, = FunPackLoadMedia.execute(entry["id"], blank_width=64, blank_height=32).result
+    images, *_ = FunPackLoadMedia.execute(entry["id"], blank_width=64, blank_height=32).result
     assert images.shape[1:3] == (6, 4)
     with pytest.raises(RuntimeError, match="nothing is picked"):
         FunPackLoadMedia.execute("", blank_width=64, blank_height=0).result

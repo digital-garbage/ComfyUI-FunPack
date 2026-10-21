@@ -25,3 +25,4 @@ def test_delete_removes_a_media_file_and_nothing_else(monkeypatch, tmp_path):
     assert not temp_files.delete("../secret.png", "", "output")["deleted"] and outside.exists()
     assert not temp_files.delete("a.png", "sub", "output")["deleted"], "a second delete should say it is gone"
     assert not temp_files.delete("a.png", "", "input")["deleted"]
+    assert not temp_files.delete("a.png", "su\0b", "output")["deleted"], "a NUL byte must be refused, not raise"

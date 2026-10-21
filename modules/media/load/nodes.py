@@ -96,14 +96,20 @@ class FunPackLoadMedia(io.ComfyNode):
             raise RuntimeError(f"FunPack Load Media: {name!r} is {kind or 'a file'}, which is not a picture, a video or sound.")
 
         if kind == "audio":
-            sound = _read_audio(path)
+            try:
+                sound = _read_audio(path)
+            except Exception:                                # noqa: BLE001 -- a damaged file raises whatever PyAV raises
+                sound = None
             if sound is None:
                 raise RuntimeError(f"FunPack Load Media: could not read {name!r}.")
             log.info("FunPack Load Media", f"loaded {name} (audio)")
             grey = torch.full((1, 64, 64, 3), 0.5)       # no picture in it: the outputs for pictures are never wired
             return io.NodeOutput(grey, grey, sound)
 
-        components = InputImpl.VideoFromFile(str(path)).get_components()
+        try:
+            components = InputImpl.VideoFromFile(str(path)).get_components()
+        except Exception as exc:                             # noqa: BLE001 -- a damaged file raises whatever PyAV raises
+            raise RuntimeError(f"FunPack Load Media: could not read {name!r} ({exc}).") from exc
         images = components.images
         if images is None or images.shape[0] == 0:
             raise RuntimeError(f"FunPack Load Media: could not read {name!r}.")

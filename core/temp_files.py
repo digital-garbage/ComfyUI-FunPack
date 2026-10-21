@@ -113,9 +113,13 @@ def delete(filename, subfolder="", where: str = "output") -> dict:
     if not base or not isinstance(filename, str) or not filename or not kind_of(filename):
         return {"deleted": False, "detail": "Name a saved picture, video or sound."}
     base = os.path.realpath(base)
-    full = os.path.realpath(os.path.join(base, subfolder if isinstance(subfolder, str) else "",
-                                         os.path.basename(filename)))
-    if os.path.commonpath((full, base)) != base or full == base:
+    try:
+        full = os.path.realpath(os.path.join(base, subfolder if isinstance(subfolder, str) else "",
+                                             os.path.basename(filename)))
+        inside = os.path.commonpath((full, base)) == base and full != base
+    except ValueError:                                    # a NUL byte in a name, or another drive
+        inside = False
+    if not inside:
         return {"deleted": False, "detail": "That file is not in this folder."}
     try:
         os.remove(full)

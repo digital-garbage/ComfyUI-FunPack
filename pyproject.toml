@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-FunPack" # Unique identifier for your node. Immutable after creation.
 description = "An AI movie studio inside ComfyUI: a browser-based studio with timeline, per-scene prompts and one-click montage generation, plus a self-improving engine that learns from your ratings. Every feature is a module, so a broken one is simply absent."
-version = "5.0.0" # Custom Node version. Must be semantically versioned.
+version = "5.0.1" # Custom Node version. Must be semantically versioned.
 # Release codename ("Cunning Cranberry" for 5.x) lives in core/update.py:CODENAMES, keyed by major, shown in Settings > About.
 license = { text = "GNU GPL v3" }
 dependencies  = [] # Filled in from requirements.txt

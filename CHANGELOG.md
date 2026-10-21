@@ -1,6 +1,31 @@
 # Changelog
 
-## Unreleased
+## [5.0.1] - 2026-10-21
+
+Fixes from real H3 runs on rentals, plus the first usable LoRA training.
+
+### Fixed
+
+- **Save Video** no longer loses a video when the GPU encoder will not open: it saves on the CPU and the Log says why. NaN/Inf sound is dropped with a warning and the video is kept.
+- **Reference videos and sound** (H3 Reference to Video) go to R2V's own video and audio inputs, are no longer cut to 15 seconds, and a video's soundtrack comes along. Verified on H3. Old projects get the new slots on open.
+- **Render** button was dark with near-black text.
+- **RTX VSR** says why a load failed (missing `libnvidia-ngx` on rentals).
+- **Taste direction** works on the CPU (no more cuda/cpu mismatch in the prompt nudge and score slider).
+- **Text-only H3 runs** no longer need the preset's `blank_like`.
+- The Log now survives a crash, and notes a project whose length changed on save.
+- Media upload shows percent and no longer stalls the server on big clips.
+- Shot Camera no longer re-encodes the H3 prompt on every run.
+
+### Added
+
+- **LoRA training** now runs on H3 with FunPack's own loop (ComfyUI stays the backend): block swap, previews at chosen steps, Pause and Resume, Restore and continue, copies saved every N steps, live loss and time graphs, downloads, encoded data reused between runs. Training window is a step-by-step wizard (Data, Tags, Train, Results). Verified on H3; other models still use ComfyUI's trainer and are untested.
+- **Gallery**: saved videos and pictures next to Temp files, with preview, Select mode and a confirmed delete.
+- **15 reference slots for H3** (9 pictures, 3 videos, 3 sounds); FunPack Load Media takes a picture, video or sound.
+- **Models & Pipeline**: a bypass toggle per node. Quick wheel: Disable all enhancements, Fix the seed.
+- **FunPack Timing** splits the time before step 1 into model preparation, setup and the first forward pass.
+- Loading window names the module being loaded.
+
+### Added (experimental)
 
 - **Distilled Flow samplers** (experimental, untested on a real model): plain names in every ComfyUI sampler list, no settings. `dflow_ord1` is Euler; `dflow_ord2` reuses the last prediction for second order (no extra model calls); `dflow_ord2_ab2` fades the second order in across the run. Sound riding in the latent stays first order. Back from 4.x; its extras (velocity bias, ALG, momentum, sharpness) are separate modules now.
 - **Sharpness** (experimental): wins back fine detail in the last part of the run with any sampler that calls the model once per step; no extra model calls. Settings > Engine > Sampling. Not the spatial latent sharpening that was tried and removed in 4.x.
