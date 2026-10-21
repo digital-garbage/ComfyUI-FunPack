@@ -125,13 +125,23 @@ test("a fixed reference rides in every scene at its own number, ahead of the sce
   assert.deepEqual(sceneReferences({ references: ["a"] }, undefined), { ids: ["a"], pins: {} });
 });
 
-test("a video and an audio reference go to their own inputs, numbered per kind", () => {
-  const slot = (kind, n, input) => ({ id: `${kind}_${n}`, roles: [{ at: `assets.reference_${kind}_${n}`, input: "media_id", wireTo: { slot: "r2v", input } }] });
-  const slots = [refSlot(1), slot("video", 1, "ref_videos.ref_video_0"), slot("audio", 1, "ref_audios.ref_audio_0")];
-  const kinds = { pic: "image", vid: "video", snd: "audio" };
-  const { overrides, unwired } = wireReferences(["vid", "pic", "snd"], slots, [], {}, (id) => kinds[id]);
+test("a video and an audio reference take the same kind of slot and feed R2V's own inputs, numbered per kind", () => {
+  const slot = (n) => ({ id: `ref_source_${n}`, roles: [{ at: `assets.reference_${n}`, input: "media_id",
+    wireTo: { slot: "r2v", input: `ref_images.ref_image_${n - 1}` },
+    wireKinds: { video: { slot: "r2v", input: "ref_videos.ref_video_", output: 1 }, audio: { slot: "r2v", input: "ref_audios.ref_audio_", output: 2 } } }] });
+  const kinds = { pic: "image", vid: "video", vid2: "video", snd: "audio" };
+  const { overrides, unwired } = wireReferences(["vid", "pic", "snd", "vid2"], [slot(1), slot(2), slot(3), slot(4)], [], {}, (id) => kinds[id]);
   assert.equal(unwired, 0);
-  assert.equal(overrides.ref_source_1.media_id, "pic");
-  assert.deepEqual(overrides.r2v["ref_videos.ref_video_0"], ["video_1", 0]);
-  assert.deepEqual(overrides.r2v["ref_audios.ref_audio_0"], ["audio_1", 0]);
+  assert.deepEqual(overrides.r2v["ref_videos.ref_video_0"], ["ref_source_1", 1]);
+  assert.deepEqual(overrides.r2v["ref_images.ref_image_1"], ["ref_source_2", 0]);
+  assert.deepEqual(overrides.r2v["ref_audios.ref_audio_0"], ["ref_source_3", 2]);
+  assert.deepEqual(overrides.r2v["ref_videos.ref_video_1"], ["ref_source_4", 1]);
+  assert.equal(overrides.ref_source_1.full, true);
+  assert.equal(overrides.ref_source_2.full, undefined);
+});
+
+test("a slot that only knows pictures says so for a video", () => {
+  const { unwired, left } = wireReferences(["vid"], [refSlot(1)], [], {}, () => "video");
+  assert.equal(unwired, 1);
+  assert.match(left[0].why, /only takes a picture/);
 });

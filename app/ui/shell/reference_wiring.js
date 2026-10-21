@@ -24,39 +24,31 @@ export function wireReferences(mediaIds, slots, reservedSlotIds, pins, kindOf) {
   const left = [];       // what was not wired, and the role it looked for: said by name, not just counted
   // Each reference gets its slot number (1-based), so a pinned one keeps its number when a reference
   // before it is switched off; the rest take the free numbers in the order they were added.
-  // Pictures, videos and audio each have inputs of their own on the model, numbered per kind; only pictures are pinnable.
   const kind = (id) => (kindOf && kindOf(id)) || "image";
-  const pictures = mediaIds.filter((id) => kind(id) === "image");
-  const pictureNumbers = referenceNumbers(pictures, pins);
-  const seen = { video: 0, audio: 0 };
-  const placed = mediaIds.map((id) => {
-    const k = kind(id);
-    if (k === "image") return { id, at: `assets.reference_${pictureNumbers[pictures.indexOf(id)]}` };
-    seen[k] = (seen[k] || 0) + 1;
-    return { id, at: `assets.reference_${k}_${seen[k]}` };
-  });
-  placed.forEach(({ id: mediaId, at }) => {
+  const numbers = referenceNumbers(mediaIds, pins);
+  const seen = {};         // how many of each kind went in: a video or audio input is numbered per kind
+  mediaIds.forEach((mediaId, i) => {
+    const at = `assets.reference_${numbers[i]}`;
     const slot = pool.find((s) => (s.roles || []).some((r) => r.at === at));
     if (!slot) { unwired += 1; left.push({ id: mediaId, at, why: "no slot with that role" }); return; }
-    // The wire's target is the role's own data (`wireTo`), never a slot id
-    // this file would otherwise have to know: the preset declares where its
-    // own reference lands, the same way it declares everything else.
+    // The wire's target is the role's own data, never a slot id this file would otherwise have to know: the
+    // preset declares where its own reference lands. `wireTo` is a picture's place; `wireKinds` names the
+    // place of a video or of sound (`input` is the prefix, numbered per kind; `output` is which output of the
+    // loader feeds it; `also` is a second wire from the same file, a video's own soundtrack).
     const role = slot.roles.find((r) => r.at === at);
-    // A destination -- the slot's own media_id input, or wherever `wireTo`
-    // points -- can hold one value. Two references claiming the SAME slot
-    // (a preset with two reference roles on one slot) or the SAME wireTo
-    // target (two different slots both wired into one downstream input) are
-    // the same failure either way: the second silently overwrites the first
-    // unless it is counted unwired instead.
-    const dest = role && role.wireTo ? `${role.wireTo.slot}.${role.wireTo.input}` : slot.id;
+    const k = kind(mediaId);
+    const kindWire = k === "image" ? null : (role.wireKinds || {})[k];
+    if (k !== "image" && !kindWire) { unwired += 1; left.push({ id: mediaId, at, why: `this slot only takes a picture, not a ${k}` }); return; }
+    const n = seen[k] = (seen[k] || 0) + 1;
+    const wire = kindWire ? { slot: kindWire.slot, input: `${kindWire.input}${n - 1}`, output: kindWire.output || 0 } : role.wireTo && { ...role.wireTo, output: 0 };
+    // A destination can hold one value. Two references claiming the SAME slot or the SAME wire target are
+    // the same failure: the second silently overwrites the first unless it is counted unwired instead.
+    const dest = wire ? `${wire.slot}.${wire.input}` : slot.id;
     if (claimed.has(slot.id) || claimed.has(dest)) { unwired += 1; left.push({ id: mediaId, at, why: "its slot is already taken" }); return; }
     claimed.add(slot.id);
     claimed.add(dest);
-    overrides[slot.id] = { ...overrides[slot.id], media_id: mediaId };
-    if (role && role.wireTo) {
-      overrides[role.wireTo.slot] = { ...overrides[role.wireTo.slot],
-        [role.wireTo.input]: [slot.id, 0] };
-    }
+    overrides[slot.id] = { ...overrides[slot.id], media_id: mediaId, ...(k === "image" ? {} : { full: true }) };
+    if (wire) overrides[wire.slot] = { ...overrides[wire.slot], [wire.input]: [slot.id, wire.output] };
   });
   return { overrides, unwired, left };
 }

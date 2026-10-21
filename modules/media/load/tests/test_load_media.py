@@ -29,8 +29,8 @@ def test_a_picked_image_loads_as_an_image_tensor(store):
     from modules.media.load.nodes import FunPackLoadMedia
     entry = media.save_upload("ref.png", _png_bytes())
 
-    images, = FunPackLoadMedia.execute(entry["id"]).result
-    assert images.shape[0] == 1
+    images, frames, _audio = FunPackLoadMedia.execute(entry["id"]).result
+    assert images.shape[0] == 1 and frames.shape[0] == 1
     assert images.shape[1:3] == (6, 4)   # H, W
 
 
@@ -72,23 +72,40 @@ def test_a_blank_size_stands_in_for_nothing_picked_and_a_picked_image_still_wins
         FunPackLoadMedia.execute("", blank_width=64, blank_height=0).result
 
 
-def test_a_video_reference_loads_as_its_first_frame(store):
+def _clip(store, seconds=1):
     import shutil, subprocess
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg needed to make a clip")
-    from modules.media.load.nodes import FunPackLoadMedia
     clip = store.parent / "clip.mp4"
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=8:duration=1",
-                    "-pix_fmt", "yuv420p", str(clip)], check=True)
-    entry = media.save_upload("clip.mp4", clip.read_bytes())
-
-    images, = FunPackLoadMedia.execute(entry["id"]).result
-    assert images.shape[0] == 1
-    assert images.shape[1:3] == (48, 64)
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc=size=64x48:rate=8:duration={seconds}",
+                    "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}", "-shortest", "-pix_fmt", "yuv420p", str(clip)], check=True)
+    return media.save_upload("clip.mp4", clip.read_bytes())
 
 
-def test_audio_is_refused_with_a_plain_message(store):
+def test_a_video_gives_its_first_frame_by_default(store):
     from modules.media.load.nodes import FunPackLoadMedia
-    entry = media.save_upload("a.wav", b"RIFF" + b"\0" * 40)
-    with pytest.raises(RuntimeError, match="no picture"):
-        FunPackLoadMedia.execute(entry["id"]).result
+    entry = _clip(store)
+    image, frames, _ = FunPackLoadMedia.execute(entry["id"]).result
+    assert image.shape[0] == 1 and frames.shape[0] == 1
+    assert image.shape[1:3] == (48, 64)
+
+
+def test_a_full_video_gives_every_frame_at_24_fps_and_its_sound(store):
+    from modules.media.load.nodes import FunPackLoadMedia
+    entry = _clip(store, seconds=2)
+    image, frames, audio = FunPackLoadMedia.execute(entry["id"], full=True).result
+    assert image.shape[0] == 1
+    assert frames.shape[0] == 48            # 2 s at 24 fps
+    assert audio["waveform"].shape[-1] > 1000
+
+
+def test_audio_loads_as_audio(store):
+    from modules.media.load.nodes import FunPackLoadMedia
+    import struct, wave
+    path = store.parent / "a.wav"
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000)
+        w.writeframes(struct.pack("<800h", *([1000] * 800)))
+    entry = media.save_upload("a.wav", path.read_bytes())
+    _, _, audio = FunPackLoadMedia.execute(entry["id"], full=True).result
+    assert audio["sample_rate"] == 8000 and audio["waveform"].shape == (1, 1, 800)

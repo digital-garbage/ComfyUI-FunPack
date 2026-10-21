@@ -87,7 +87,7 @@ FROZEN = {
         "model", "lora_name", "strength_model", "clip", "strength_clip",
     ],
     "FunPackVAELoader": ["vae_name", "dtype"],
-    "FunPackLoadMedia": ["media_id", "blank_width", "blank_height"],
+    "FunPackLoadMedia": ["media_id", "blank_width", "blank_height", "full"],
 }
 
 

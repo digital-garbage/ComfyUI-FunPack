@@ -648,17 +648,21 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     // too, and simply goes without that slot.
     const isWhole = typeof wholeSaved === "boolean" ? wholeSaved
       : [...byId.keys()].some((id) => !have.has(id)) && offered.some((d) => !gone.has(d.id) && !byId.has(d.id));
-    // A pipeline started from a preset lacks the media inputs an update gave that preset since (a video or audio
-    // reference slot): those take no setting and nothing else depends on them, so they are laid in beside the saved ones.
+    // A pipeline started from a preset carries the media slots as they were then. What a preset says about where
+    // a picked file goes (a slot's roles) is plumbing, not something a person set, so the current preset's roles
+    // replace the saved ones, and media slots the preset gained since are laid in beside the saved ones.
     let grown = [];
     growth = "";
     try {
       const isAsset = (s) => (s.roles || []).length && s.roles.every((r) => String(r.at || "").startsWith("assets."));
       const found = (await API.pipelinePresets()).presets || [];
       const from = found.find((pr) => (pr.slots || []).some((s) => isAsset(s) && byId.has(s.id)));
-      if (from) grown = from.slots.filter((s) => isAsset(s) && sound(s) && !byId.has(s.id) && !gone.has(s.id));
-      if (from && !grown.length) growth = `the server's preset "${from.id}" has no media slot this project lacks (video slots it offers: ${from.slots.filter((s) => /^ref_video_source/.test(s.id)).length}), so ComfyUI may not have been restarted after the update`;
-      else if (!from) growth = `no preset matches this pipeline's media slots (${found.length} presets offered)`;
+      if (from) {
+        for (const ps of from.slots.filter((x) => isAsset(x) && sound(x))) {
+          const mine = byId.get(ps.id);
+          if (!mine) { if (!gone.has(ps.id)) grown.push(ps); } else if (mine.node === ps.node) mine.roles = JSON.parse(JSON.stringify(ps.roles));
+        }
+      } else growth = `no preset matches this pipeline's media slots (${found.length} presets offered)`;
     } catch (e) { growth = `the preset list could not be read (${(e && e.message) || e})`; }
     const lay = (extras) => isWhole ? JSON.parse(JSON.stringify([...saved.filter(sound), ...(extras ? grown : [])])) : offered.filter((def) => !gone.has(def.id)).map((def) => {
       const mine = byId.get(def.id);
