@@ -69,6 +69,31 @@ class Schemas:
             name for name, (parent, keys) in (found.get("required_when") or {}).items()
             if picked.get(parent) in keys]
 
+    def wire_type(self, class_type: str, name: str) -> str:
+        """What a wire into `name` may carry: the whole union of a widget that also takes a wire, else its type."""
+        found = self.of(class_type)
+        return ((found.get("wires") or {}).get(name) or found["inputs"].get(name)) if found else None
+
+    def default(self, class_type: str, name: str):
+        """(has one, value): what a widget holds when nothing was typed into it."""
+        found = self.of(class_type)
+        table = (found or {}).get("defaults") or {}
+        return (name in table, table.get(name))
+
+    def frontend_only(self, class_type: str, name: str) -> bool:
+        found = self.of(class_type)
+        return name in ((found or {}).get("frontend") or ())
+
+    def is_output(self, class_type: str) -> bool:
+        """Whether a run of this node is wanted for itself (a save, a preview): ComfyUI executes what these need."""
+        found = self.of(class_type)
+        return bool(found and found.get("output"))
+
+    def shown_by(self, class_type: str) -> Dict[str, Tuple[str, list]]:
+        """{field: (combo, choices)} for every field a dynamic combo's choice brings, in declaration order."""
+        found = self.of(class_type)
+        return dict(found.get("shown_by") or {}) if found else {}
+
     def limits(self, class_type: str) -> Dict[str, dict]:
         """What each input will ACCEPT: a combo's choices, a number's bounds.
 
@@ -88,7 +113,8 @@ def from_comfyui() -> Schemas:
         if node is None:
             return None
         spec = node.INPUT_TYPES()
-        inputs, required, limits, when = {}, [], {}, {}
+        inputs, required, limits, when, shown, wires, defaults = {}, [], {}, {}, {}, {}, {}
+        frontend = set()
         for section in ("required", "optional"):
             for name, declared in (spec.get(section) or {}).items():
                 kind, options = comfy_types.declared(declared)
@@ -101,8 +127,10 @@ def from_comfyui() -> Schemas:
                 if kind == comfy_types.AUTOGROW:
                     for instance_name, instance_kind, instance_options in (
                             comfy_types.autogrow_instances(options)):
-                        edited = comfy_types.widget_type(instance_kind, instance_options)
-                        inputs[f"{name}.{instance_name}"] = edited if edited else instance_kind
+                        # Every instance is a socket (the frontend draws one plug per name), so a union of
+                        # plain types such as ComfyMathExpression's "FLOAT,INT,BOOLEAN" stays a union: reading
+                        # it as a FLOAT widget refused the INT that feeds it.
+                        inputs[f"{name}.{instance_name}"] = instance_kind
                     continue
                 # A MatchType input's own type name says nothing about what it
                 # actually accepts -- resolve it to the real union (see
@@ -118,11 +146,14 @@ def from_comfyui() -> Schemas:
                 # and none of them can be fed by a wire.
                 edited = comfy_types.widget_type(kind, options)
                 inputs[name] = edited if edited else kind
+                if edited and isinstance(kind, str) and "," in kind and edited != comfy_types.COMBO:
+                    wires[name] = kind          # "FLOAT,INT" typed in as a FLOAT, but a wire of either type may feed it
                 if comfy_types.is_combo(kind) and comfy_types.reveals(options):
                     for dotted, decl, req, parent, keys in comfy_types.revealed(name, options):
                         sub_kind, sub_options = comfy_types.declared(decl)
                         sub_edited = comfy_types.widget_type(sub_kind, sub_options)
                         inputs[dotted] = sub_edited if sub_edited else sub_kind
+                        shown[dotted] = (parent, keys)
                         if req:
                             when[dotted] = (parent, keys)
                         sub_bounds = {}
@@ -144,6 +175,14 @@ def from_comfyui() -> Schemas:
                 if inputs[name] == comfy_types.COMBO:
                     bounds["choices"] = (list(kind) if isinstance(kind, (list, tuple))
                                          else comfy_types.choices(options))
+                if options.get("socketless"):
+                    frontend.add(name)              # a widget only the ComfyUI page draws (a colour, a viewer): nothing to wire
+                if inputs[name] in comfy_types.PRIMITIVE or options.get("socketless"):
+                    # What ComfyUI's own frontend puts in a widget a saved workflow has no value for.
+                    if "default" in options:
+                        defaults[name] = comfy_types._plain(options["default"])
+                    elif bounds.get("choices"):
+                        defaults[name] = bounds["choices"][0]
                 for edge in ("min", "max"):
                     if edge in options:
                         bounds[edge] = options[edge]
@@ -168,7 +207,8 @@ def from_comfyui() -> Schemas:
                     outputs[i] = resolved
 
         return {"inputs": inputs, "outputs": outputs,
-                "required": required, "limits": limits, "required_when": when}
+                "required": required, "limits": limits, "required_when": when, "shown_by": shown, "wires": wires, "defaults": defaults, "frontend": frontend,
+                "output": bool(getattr(node, "OUTPUT_NODE", False))}
     return Schemas(lookup)
 
 
@@ -403,8 +443,9 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None,
                 # takes either, and comparing the whole string refused a MASK
                 # feeding it -- a legal wire refused, which is as bad a failure
                 # as an illegal one accepted, and harder to argue with.
-                if not comfy_types.accepts(declared[name], produced[index]):
-                    problems.append(f"{slot_id}.{name} wants {declared[name]} but {source!r} "
+                wanted = schemas.wire_type(class_type, name)
+                if not comfy_types.accepts(wanted, produced[index]):
+                    problems.append(f"{slot_id}.{name} wants {wanted} but {source!r} "
                                     f"gives {produced[index]}")
                     continue
                 inputs[name] = [source, index]
