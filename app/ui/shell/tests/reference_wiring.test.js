@@ -14,7 +14,7 @@ test("each picked reference is wired to its slot and to r2v", () => {
   assert.equal(unwired, 0);
   assert.equal(overrides.ref_source_1.media_id, "aaa111111111");
   assert.deepEqual(overrides.r2v["ref_images.ref_image_0"], ["ref_source_1", 0]);
-  assert.deepEqual(overrides.r2v["ref_images.ref_image_0"], ["ref_source_2", 0]);      // pictures are numbered among pictures
+  assert.deepEqual(overrides.r2v["ref_images.ref_image_1"], ["ref_source_2", 0]);
 });
 
 test("a reference beyond the pipeline's slots is counted, not silently dropped", () => {
@@ -115,7 +115,7 @@ test("pinned references are wired to their own slot number, not their list posit
   assert.equal(unwired, 0);
   assert.equal(overrides.ref_source_2.media_id, "bbb222222222");
   assert.equal(overrides.ref_source_1, undefined);
-  assert.deepEqual(overrides.r2v["ref_images.ref_image_0"], ["ref_source_2", 0]);      // pictures are numbered among pictures
+  assert.deepEqual(overrides.r2v["ref_images.ref_image_1"], ["ref_source_2", 0]);
 });
 
 test("a fixed reference rides in every scene at its own number, ahead of the scene's own, and wins a clash", () => {
