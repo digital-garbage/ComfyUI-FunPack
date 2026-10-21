@@ -647,7 +647,17 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     // too, and simply goes without that slot.
     const isWhole = typeof wholeSaved === "boolean" ? wholeSaved
       : [...byId.keys()].some((id) => !have.has(id)) && offered.some((d) => !gone.has(d.id) && !byId.has(d.id));
-    const lay = (extras) => isWhole ? JSON.parse(JSON.stringify(saved.filter(sound))) : offered.filter((def) => !gone.has(def.id)).map((def) => {
+    // A whole pipeline started from a preset lacks the media inputs an update gave that preset since (a video or audio
+    // reference slot): those take no setting and nothing else depends on them, so they are laid in beside the saved ones.
+    let grown = [];
+    if (isWhole) {
+      try {
+        const isAsset = (s) => (s.roles || []).length && s.roles.every((r) => String(r.at || "").startsWith("assets."));
+        const from = ((await API.pipelinePresets()).presets || []).find((pr) => (pr.slots || []).some((s) => isAsset(s) && byId.has(s.id)));
+        if (from) grown = from.slots.filter((s) => isAsset(s) && sound(s) && !byId.has(s.id) && !gone.has(s.id));
+      } catch (_) { /* the saved pipeline goes in as it is */ }
+    }
+    const lay = (extras) => isWhole ? JSON.parse(JSON.stringify([...saved.filter(sound), ...(extras ? grown : [])])) : offered.filter((def) => !gone.has(def.id)).map((def) => {
       const mine = byId.get(def.id);
       if (!mine) return JSON.parse(JSON.stringify(def));
       if (mine.node !== def.node) return JSON.parse(JSON.stringify(mine));
