@@ -350,3 +350,18 @@ def test_the_files_tab_lists_and_deletes_library_files_and_nothing_else(server, 
     status, body = _request(server, "DELETE", "/funpack/api/files/markers.json")
     assert status == 200 and not config.MARKERS_FILE.exists()
     assert all(f["name"] != "markers.json" for f in body["files"])
+
+
+def test_a_video_says_whether_it_has_sound(tmp_path, monkeypatch):
+    import shutil, subprocess
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg needed to make clips")
+    pytest.importorskip("av")
+    monkeypatch.setattr(config, "MEDIA_DIR", tmp_path / "media")
+    silent, loud = tmp_path / "s.mp4", tmp_path / "l.mp4"
+    base = ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=8:duration=1"]
+    subprocess.run(base + ["-pix_fmt", "yuv420p", str(silent)], check=True)
+    subprocess.run(base + ["-f", "lavfi", "-i", "sine=duration=1", "-shortest", "-pix_fmt", "yuv420p", str(loud)], check=True)
+    a = media.save_upload("s.mp4", silent.read_bytes())
+    b = media.save_upload("l.mp4", loud.read_bytes())
+    assert (a["sound"], b["sound"]) == (False, True)

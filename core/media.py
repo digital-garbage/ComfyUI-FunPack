@@ -93,10 +93,31 @@ def _save_index(items: list[dict]) -> None:
     tmp.replace(path)  # a concurrent read never sees a half-written index
 
 
+def _has_sound(path: Path) -> bool:
+    """Whether a video carries an audio track. Anything unreadable counts as silent."""
+    try:
+        import av
+        with av.open(str(path)) as container:
+            return bool(container.streams.audio)
+    except Exception:  # noqa: BLE001 -- av missing or an unreadable file: no sound is the safe answer
+        return False
+
+
 def listing() -> list[dict]:
     """Every upload, newest first. An entry whose file vanished is dropped
-    rather than shown -- there is nothing behind it to open."""
-    out = [it for it in _load_index() if (config.MEDIA_DIR / it.get("filename", "")).is_file()]
+    rather than shown -- there is nothing behind it to open. A video says whether it has sound
+    (`sound`), looked up once and kept: a reference with a soundtrack feeds the model two inputs."""
+    items = _load_index()
+    fresh = False
+    for it in items:
+        path = config.MEDIA_DIR / it.get("filename", "")
+        if it.get("kind") == "video" and "sound" not in it and path.is_file():
+            it["sound"] = _has_sound(path)
+            fresh = True
+    if fresh:
+        with _LOCK:
+            _save_index(items)
+    out = [it for it in items if (config.MEDIA_DIR / it.get("filename", "")).is_file()]
     out.sort(key=lambda i: i.get("added", 0), reverse=True)
     return out
 
@@ -133,6 +154,8 @@ def save_upload(orig_name: str, data: bytes, limit=...) -> dict:
         "size": len(data),
         "added": time.time(),
     }
+    if entry["kind"] == "video":
+        entry["sound"] = _has_sound(config.MEDIA_DIR / filename)
     # The write above needs no lock -- filename is this call's own uuid, so two
     # uploads never touch the same file. The index below is shared, and a
     # read here that raced another upload's write would silently drop it.

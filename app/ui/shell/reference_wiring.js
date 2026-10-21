@@ -16,7 +16,7 @@
  * a reference would look like it was used; the caller is the one place that
  * knows this happened and must say so.
  */
-export function wireReferences(mediaIds, slots, reservedSlotIds, pins, kindOf, routeOf) {
+export function wireReferences(mediaIds, slots, reservedSlotIds, pins, kindOf, routeOf, hasSound) {
   const pool = slots || [];
   const overrides = {};
   const claimed = new Set(reservedSlotIds || []);
@@ -48,6 +48,9 @@ export function wireReferences(mediaIds, slots, reservedSlotIds, pins, kindOf, r
     claimed.add(dest);
     overrides[slot.id] = { ...overrides[slot.id], media_id: mediaId, ...(k === "image" ? {} : { full: true }) };
     if (wire) overrides[wire.slot] = { ...overrides[wire.slot], [wire.input]: [slot.id, wire.output] };
+    // A video with a soundtrack also feeds the input paired with its own number (video 1's sound is audio 1).
+    const track = k === "video" && hasSound && hasSound(mediaId) && routeOf && routeOf("videosound", slot, role);
+    if (track && track.names[n - 1]) overrides[track.slot] = { ...overrides[track.slot], [track.names[n - 1]]: [slot.id, track.output] };
   });
   return { overrides, unwired, left };
 }
@@ -104,7 +107,7 @@ export function routeFor(kind, target, loader, targetSlot) {
     const last = name.split(".").pop().toLowerCase();
     return inputs[name] === type && last.includes(wanted) && !(unwanted && last.includes(unwanted));
   }).sort(natural);
-  const names = kind === "video" ? named("IMAGE", "video") : named("AUDIO", "audio", "video");
+  const names = kind === "video" ? named("IMAGE", "video") : kind === "videosound" ? named("AUDIO", "video") : named("AUDIO", "audio", "video");
   const at = kind === "video" ? outs.map((t, i) => (t === "IMAGE" ? i : -1)).filter((i) => i >= 0)[1] : outs.indexOf("AUDIO");
   return names.length && at >= 0 ? { slot: targetSlot, names, output: at } : null;
 }

@@ -128,7 +128,7 @@ test("a fixed reference rides in every scene at its own number, ahead of the sce
 // R2V as core describes it: Autogrow groups spelled out, types per input; the loader's outputs by type.
 const R2V = { inputs: { prompt: "STRING", "ref_images.ref_image_0": "IMAGE", "ref_images.ref_image_1": "IMAGE",
   "ref_videos.ref_video_0": "IMAGE", "ref_videos.ref_video_1": "IMAGE", "ref_videos.ref_video_10": "IMAGE",
-  "ref_video_audios.ref_video_audio_0": "AUDIO", "ref_audios.ref_audio_0": "AUDIO", "ref_audios.ref_audio_1": "AUDIO" } };
+  "ref_video_audios.ref_video_audio_0": "AUDIO", "ref_video_audios.ref_video_audio_1": "AUDIO", "ref_audios.ref_audio_0": "AUDIO", "ref_audios.ref_audio_1": "AUDIO" } };
 const LOADER = { outputs: ["IMAGE", "IMAGE", "AUDIO"] };
 
 test("routeFor reads a video's and a sound's inputs off the node, not off the preset", () => {
@@ -163,4 +163,15 @@ test("a pipeline with no place for a video says so, and so does one that has run
   r = wireReferences(["a", "b"], slots, [], {}, () => "video", () => ({ slot: "r2v", names: ["only_video_0"], output: 1 }));
   assert.equal(r.unwired, 1);
   assert.match(r.left[0].why, /takes only 1 video/);
+});
+
+test("a video with a soundtrack also feeds the audio input paired with its number; a silent one does not", () => {
+  const slot = (n) => ({ id: `ref_source_${n}`, node: "Loader", roles: [{ at: `assets.reference_${n}`, input: "media_id", wireTo: { slot: "r2v", input: `ref_images.ref_image_${n - 1}` } }] });
+  const kinds = { loud: "video", quiet: "video" };
+  const routeOf = (k, s, role) => routeFor(k, R2V, LOADER, role.wireTo.slot);
+  const { overrides } = wireReferences(["quiet", "loud"], [slot(1), slot(2)], [], {}, (id) => kinds[id], routeOf, (id) => id === "loud");
+  assert.deepEqual(overrides.r2v["ref_videos.ref_video_0"], ["ref_source_1", 1]);
+  assert.deepEqual(overrides.r2v["ref_videos.ref_video_1"], ["ref_source_2", 1]);
+  assert.equal(overrides.r2v["ref_video_audios.ref_video_audio_0"], undefined);
+  assert.deepEqual(overrides.r2v["ref_video_audios.ref_video_audio_1"], ["ref_source_2", 2]);
 });

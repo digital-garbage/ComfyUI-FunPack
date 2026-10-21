@@ -4,6 +4,8 @@ export const names = new Map();
 export const subjects = new Map();
 /** What each file is (image, video, audio), as last seen: the kind decides which input a reference lands on. */
 export const kinds = new Map();
+/** Which videos carry a soundtrack, as last seen. */
+export const sounds = new Set();
 export const bin = { version: 0 };
 
 /** Remember a listing (replacing what was known). */
@@ -11,6 +13,7 @@ export function learn(list) {
   names.clear();
   subjects.clear();
   kinds.clear();
-  list.forEach((m) => { names.set(m.id, m.name); kinds.set(m.id, m.kind); if (m.subject) subjects.set(m.id, m.subject); });
+  sounds.clear();
+  list.forEach((m) => { names.set(m.id, m.name); kinds.set(m.id, m.kind); if (m.sound) sounds.add(m.id); if (m.subject) subjects.set(m.id, m.subject); });
   bin.version += 1;
 }
