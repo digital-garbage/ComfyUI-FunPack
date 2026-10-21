@@ -104,7 +104,7 @@ export default {
           if (stopped) break;
           if (noPrompt && !made) tell("This pipeline has no prompt input, so the scene text is not sent.");
           notes.forEach(tell);
-          if (unwired) tell(`${unwired} reference(s) did not fit this pipeline and are not used: ${(left || []).map((l) => `${names.get(l.id) || l.id} (looked for ${l.at.replace("assets.", "")}: ${l.why})`).join("; ")}.`);
+          if (unwired) tell(`${unwired} reference(s) did not fit this pipeline and are not used: ${(left || []).map((l) => `${names.get(l.id) || l.id} (looked for ${l.at.replace("assets.", "")}: ${l.why})`).join("; ")}.${app.pipeline.growth && app.pipeline.growth() ? ` Pipeline refresh: ${app.pipeline.growth()}.` : ""}`);
           // The page's own guard does not see another tab: ComfyUI's queue does. Asked per shot: between this run's shots it is empty.
           if (app.api.projectQueued && (await app.api.projectQueued(pid))) { tell("This project already has a run in ComfyUI's queue (another tab or window?). Wait for it, or Stop it there."); break; }
           if (stopped) break;

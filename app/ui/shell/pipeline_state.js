@@ -91,6 +91,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   let adoptedOk = true;       // false while the live pipeline is a stand-in for one that could not go in
   let refusalLast = null;     // the server's own reason for refusing the last project's pipeline
   let unreachableLast = false; // the last project's pipeline failed because a request did not get through, not because it was refused
+  let growth = "";            // why an adopt added no preset slots, when it could not say yes: shown beside a reference that found no slot
   let adopting = 0;           // adopts under way (waiting for the load, or putting a pipeline in)
   let deferred = null;        // a project's saved pipeline ([slots, removed, unwired, whole]) waiting for the first successful load
   let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
@@ -650,11 +651,14 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     // A pipeline started from a preset lacks the media inputs an update gave that preset since (a video or audio
     // reference slot): those take no setting and nothing else depends on them, so they are laid in beside the saved ones.
     let grown = [];
+    growth = "";
     try {
       const isAsset = (s) => (s.roles || []).length && s.roles.every((r) => String(r.at || "").startsWith("assets."));
-      const from = ((await API.pipelinePresets()).presets || []).find((pr) => (pr.slots || []).some((s) => isAsset(s) && byId.has(s.id)));
+      const found = (await API.pipelinePresets()).presets || [];
+      const from = found.find((pr) => (pr.slots || []).some((s) => isAsset(s) && byId.has(s.id)));
       if (from) grown = from.slots.filter((s) => isAsset(s) && sound(s) && !byId.has(s.id) && !gone.has(s.id));
-    } catch (_) { /* the saved pipeline goes in as it is */ }
+      else growth = `no preset matches this pipeline's media slots (${found.length} presets offered)`;
+    } catch (e) { growth = `the preset list could not be read (${(e && e.message) || e})`; }
     const lay = (extras) => isWhole ? JSON.parse(JSON.stringify([...saved.filter(sound), ...(extras ? grown : [])])) : offered.filter((def) => !gone.has(def.id)).map((def) => {
       const mine = byId.get(def.id);
       if (!mine) return JSON.parse(JSON.stringify(def));
@@ -716,7 +720,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   }
 
   return {
-    ensureLoaded, save, edit, restore, snapshot, setGroup, setBypass, adopt, settled, readyToRun, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
+    growth: () => growth, ensureLoaded, save, edit, restore, snapshot, setGroup, setBypass, adopt, settled, readyToRun, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
     setEditGuard: (fn) => { editGuard = fn; }, adoptedOk: () => adoptedOk, unreachable: () => slots === null || unreachableLast, refusal: () => refusalLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
