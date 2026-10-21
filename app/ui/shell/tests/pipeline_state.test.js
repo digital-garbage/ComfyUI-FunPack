@@ -751,3 +751,22 @@ test("the Project tab, the frame grid and the scene tab read the pipeline throug
   assert.match(read("inspector/index.js"), /app\.pipeline\.view/);
   assert.match(read("inspector/scene.js"), /app\.pipeline\.view/);
 });
+
+test("a preset-started project gains the media slots its preset got since, and nothing else", async () => {
+  const media = (id, at) => ({ id, node: "LoadIt", roles: [{ at, input: "media_id" }], inputs: { media_id: "" } });
+  const oldPreset = [{ id: "ckpt", node: "Checkpoint", inputs: { file: "h3.safetensors" } }, media("ref_source_1", "assets.reference_1")];
+  const newPreset = [...oldPreset, { id: "ckpt2", node: "Checkpoint", inputs: {} }, media("ref_video_source_1", "assets.reference_video_1")];
+  const PS = load([]);
+  lastApi.pipelinePresets = async () => ({ presets: [{ id: "p", slots: newPreset }] });
+  await PS.adopt(oldPreset, ["model", "gen"], {}, true);
+  assert.deepStrictEqual(PS.slots().map((s) => s.id), ["ckpt", "ref_source_1", "ref_video_source_1"]);
+});
+
+test("the same holds when the saved copy is not marked whole", async () => {
+  const media = (id, at) => ({ id, node: "LoadIt", roles: [{ at, input: "media_id" }], inputs: { media_id: "" } });
+  const old = [{ id: "ckpt", node: "Checkpoint", inputs: {} }, media("ref_source_1", "assets.reference_1")];
+  const PS = load([]);
+  lastApi.pipelinePresets = async () => ({ presets: [{ id: "p", slots: [...old, media("ref_video_source_1", "assets.reference_video_1")] }] });
+  await PS.adopt(old, ["model"], {}, false);
+  assert.ok(PS.slots().some((s) => s.id === "ref_video_source_1"));
+});

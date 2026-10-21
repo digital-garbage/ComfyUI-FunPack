@@ -31,8 +31,8 @@ export async function buildInputs({ project, scene, slots, expand, nodeInfo, fra
     if (off) put(off, like.unsend.input, false);
   }
   const plan = sceneReferences(scene, project.fixed_references);
-  // A video or a sound is placed from what the nodes offer, so a pipeline someone edited needs nothing declared for it.
-  const needed = plan.ids.some((id) => (kinds.get(id) || "image") !== "image");
+  // A reference is placed from what the nodes offer, so a pipeline someone edited needs nothing declared for it.
+  const needed = plan.ids.length > 0;
   const info = new Map();
   if (needed && nodeInfo) {
     const classes = new Set();

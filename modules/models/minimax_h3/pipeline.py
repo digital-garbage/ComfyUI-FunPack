@@ -30,11 +30,10 @@ slots BY ROLE (never by this preset's own slot ids) without the app rendering
 a raw text box asking someone to type a media id by hand.
 """
 
-#: How many reference images this preset wires a slot for. R2V natively takes
-#: up to 9; four is the common case and, like the CLIP loader's four-encoder
-#: ceiling, raising it later only adds optional slots -- backwards compatible
-#: with anything already saved.
-MAX_REFERENCES = 4
+#: How many references (of any kind) this preset has a slot for: R2V takes up to 9 pictures, 3 videos
+#: (each with its soundtrack) and 3 sounds. More slots only add optional ones, and a saved project gets
+#: the new ones when it opens.
+MAX_REFERENCES = 15
 
 
 def h3_reference_to_video():

@@ -31,11 +31,12 @@ export function wireReferences(mediaIds, slots, reservedSlotIds, pins, kindOf, r
     const at = `assets.reference_${numbers[i]}`;
     const slot = pool.find((s) => (s.roles || []).some((r) => r.at === at));
     if (!slot) { unwired += 1; left.push({ id: mediaId, at, why: "no slot with that role" }); return; }
-    // A picture's place is the role's own data (`wireTo`): the preset declares where its reference lands. A video's
-    // or a sound's place is not stored anywhere: `routeOf(kind, slot, role)` reads it off what the target node offers.
+    // Where a reference lands is read off what the target node offers (`routeOf(kind, slot, role)`), numbered per kind:
+    // the model has 9 picture inputs however many slots there are. A picture with no answer from there keeps the
+    // role's own `wireTo`, which the preset declares.
     const role = slot.roles.find((r) => r.at === at);
     const k = kind(mediaId);
-    const route = k === "image" ? null : routeOf && routeOf(k, slot, role);
+    const route = routeOf && routeOf(k, slot, role);
     if (k !== "image" && !route) { unwired += 1; left.push({ id: mediaId, at, why: `this pipeline has no input for a ${k}` }); return; }
     const n = seen[k] = (seen[k] || 0) + 1;
     if (route && n > route.names.length) { unwired += 1; left.push({ id: mediaId, at, why: `the model takes only ${route.names.length} ${k}${route.names.length > 1 ? "s" : ""}` }); return; }
@@ -107,7 +108,7 @@ export function routeFor(kind, target, loader, targetSlot) {
     const last = name.split(".").pop().toLowerCase();
     return inputs[name] === type && last.includes(wanted) && !(unwanted && last.includes(unwanted));
   }).sort(natural);
-  const names = kind === "video" ? named("IMAGE", "video") : kind === "videosound" ? named("AUDIO", "video") : named("AUDIO", "audio", "video");
-  const at = kind === "video" ? outs.map((t, i) => (t === "IMAGE" ? i : -1)).filter((i) => i >= 0)[1] : outs.indexOf("AUDIO");
+  const names = kind === "image" ? named("IMAGE", "image") : kind === "video" ? named("IMAGE", "video") : kind === "videosound" ? named("AUDIO", "video") : named("AUDIO", "audio", "video");
+  const at = kind === "image" ? outs.indexOf("IMAGE") : kind === "video" ? outs.map((t, i) => (t === "IMAGE" ? i : -1)).filter((i) => i >= 0)[1] : outs.indexOf("AUDIO");
   return names.length && at >= 0 ? { slot: targetSlot, names, output: at } : null;
 }

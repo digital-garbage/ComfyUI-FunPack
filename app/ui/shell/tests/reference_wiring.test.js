@@ -14,7 +14,7 @@ test("each picked reference is wired to its slot and to r2v", () => {
   assert.equal(unwired, 0);
   assert.equal(overrides.ref_source_1.media_id, "aaa111111111");
   assert.deepEqual(overrides.r2v["ref_images.ref_image_0"], ["ref_source_1", 0]);
-  assert.deepEqual(overrides.r2v["ref_images.ref_image_1"], ["ref_source_2", 0]);
+  assert.deepEqual(overrides.r2v["ref_images.ref_image_0"], ["ref_source_2", 0]);      // pictures are numbered among pictures
 });
 
 test("a reference beyond the pipeline's slots is counted, not silently dropped", () => {
@@ -115,7 +115,7 @@ test("pinned references are wired to their own slot number, not their list posit
   assert.equal(unwired, 0);
   assert.equal(overrides.ref_source_2.media_id, "bbb222222222");
   assert.equal(overrides.ref_source_1, undefined);
-  assert.deepEqual(overrides.r2v["ref_images.ref_image_1"], ["ref_source_2", 0]);
+  assert.deepEqual(overrides.r2v["ref_images.ref_image_0"], ["ref_source_2", 0]);      // pictures are numbered among pictures
 });
 
 test("a fixed reference rides in every scene at its own number, ahead of the scene's own, and wins a clash", () => {
@@ -148,7 +148,7 @@ test("a preset with no routing data still sends a video and a sound to R2V's own
   const { overrides, unwired } = wireReferences(["vid", "pic", "snd", "vid2"], [slot(1), slot(2), slot(3), slot(4)], [], {}, (id) => kinds[id], routeOf);
   assert.equal(unwired, 0);
   assert.deepEqual(overrides.r2v["ref_videos.ref_video_0"], ["ref_source_1", 1]);
-  assert.deepEqual(overrides.r2v["ref_images.ref_image_1"], ["ref_source_2", 0]);
+  assert.deepEqual(overrides.r2v["ref_images.ref_image_0"], ["ref_source_2", 0]);      // pictures are numbered among pictures
   assert.deepEqual(overrides.r2v["ref_audios.ref_audio_0"], ["ref_source_3", 2]);
   assert.deepEqual(overrides.r2v["ref_videos.ref_video_1"], ["ref_source_4", 1]);
   assert.equal(overrides.ref_source_1.full, true);
@@ -174,4 +174,17 @@ test("a video with a soundtrack also feeds the audio input paired with its numbe
   assert.deepEqual(overrides.r2v["ref_videos.ref_video_1"], ["ref_source_2", 1]);
   assert.equal(overrides.r2v["ref_video_audios.ref_video_audio_0"], undefined);
   assert.deepEqual(overrides.r2v["ref_video_audios.ref_video_audio_1"], ["ref_source_2", 2]);
+});
+
+test("fifteen references of mixed kinds all find an input: 9 pictures, 3 videos with sound, 3 sounds", () => {
+  const many = { inputs: { ...Object.fromEntries([...Array(9).keys()].map((i) => [`ref_images.ref_image_${i}`, "IMAGE"])),
+    ...Object.fromEntries([...Array(3).keys()].flatMap((i) => [[`ref_videos.ref_video_${i}`, "IMAGE"], [`ref_video_audios.ref_video_audio_${i}`, "AUDIO"], [`ref_audios.ref_audio_${i}`, "AUDIO"]])) } };
+  const ids = [...Array(9).keys()].map((i) => `p${i}`).concat(["v0", "v1", "v2", "a0", "a1", "a2"]);
+  const kind = (id) => ({ p: "image", v: "video", a: "audio" })[id[0]];
+  const slots = ids.map((_, i) => ({ id: `s${i + 1}`, node: "Loader", roles: [{ at: `assets.reference_${i + 1}`, input: "media_id", wireTo: { slot: "r2v", input: `ref_images.ref_image_${i}` } }] }));
+  const { unwired, overrides } = wireReferences(ids, slots, [], {}, kind, (k, s, role) => routeFor(k, many, LOADER, role.wireTo.slot), (id) => id[0] === "v");
+  assert.equal(unwired, 0);
+  assert.deepEqual(overrides.r2v["ref_images.ref_image_8"], ["s9", 0]);
+  assert.deepEqual(overrides.r2v["ref_video_audios.ref_video_audio_2"], ["s12", 2]);
+  assert.deepEqual(overrides.r2v["ref_audios.ref_audio_2"], ["s15", 2]);
 });
