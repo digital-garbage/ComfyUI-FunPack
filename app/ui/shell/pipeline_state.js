@@ -662,6 +662,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
           const mine = byId.get(ps.id);
           if (!mine) { if (!gone.has(ps.id)) grown.push(ps); } else if (mine.node === ps.node) mine.roles = JSON.parse(JSON.stringify(ps.roles));
         }
+        if (!from.slots.some((x) => (x.roles || []).some((r) => r.wireKinds))) growth = `the server's preset \"${from.id}\" has no video or audio routing: ComfyUI's Python is older than this page, restart it after updating`;
       } else growth = `no preset matches this pipeline's media slots (${found.length} presets offered)`;
     } catch (e) { growth = `the preset list could not be read (${(e && e.message) || e})`; }
     const lay = (extras) => isWhole ? JSON.parse(JSON.stringify([...saved.filter(sound), ...(extras ? grown : [])])) : offered.filter((def) => !gone.has(def.id)).map((def) => {
