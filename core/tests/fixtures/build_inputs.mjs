@@ -1,0 +1,10 @@
+import fs from "node:fs";
+const root = new URL("../../../app/ui/", import.meta.url).pathname;
+const { buildInputs } = await import(root + "features/generate/inputs.js");
+const bin = await import(root + "shell/bin.js");
+const req = JSON.parse(fs.readFileSync(0, "utf8"));
+bin.kinds.clear(); bin.sounds.clear();
+for (const [id, k] of Object.entries(req.kinds || {})) bin.kinds.set(id, k);
+for (const id of req.sounds || []) bin.sounds.add(id);
+const r = await buildInputs({ project: req.project, scene: req.scene, slots: req.slots, expand: async ({ text }) => ({ text }), nodeInfo: async (c) => req.nodes[c] || { inputs: null, outputs: null }, frames: req.frames, seed: () => 7 });
+process.stdout.write(JSON.stringify(r));
