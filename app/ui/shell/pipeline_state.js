@@ -657,7 +657,8 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
       const found = (await API.pipelinePresets()).presets || [];
       const from = found.find((pr) => (pr.slots || []).some((s) => isAsset(s) && byId.has(s.id)));
       if (from) grown = from.slots.filter((s) => isAsset(s) && sound(s) && !byId.has(s.id) && !gone.has(s.id));
-      else growth = `no preset matches this pipeline's media slots (${found.length} presets offered)`;
+      if (from && !grown.length) growth = `the server's preset "${from.id}" has no media slot this project lacks (video slots it offers: ${from.slots.filter((s) => /^ref_video_source/.test(s.id)).length}), so ComfyUI may not have been restarted after the update`;
+      else if (!from) growth = `no preset matches this pipeline's media slots (${found.length} presets offered)`;
     } catch (e) { growth = `the preset list could not be read (${(e && e.message) || e})`; }
     const lay = (extras) => isWhole ? JSON.parse(JSON.stringify([...saved.filter(sound), ...(extras ? grown : [])])) : offered.filter((def) => !gone.has(def.id)).map((def) => {
       const mine = byId.get(def.id);
