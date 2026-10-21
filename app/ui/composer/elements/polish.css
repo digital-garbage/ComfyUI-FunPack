@@ -32,7 +32,8 @@ body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
 .cx-btn-ghost:hover:not(:disabled) { background: var(--hover); }
 .cx-btn.cx-on { background: var(--accent-soft); border-color: transparent; color: var(--accent-hi); }
 .cx-btn-danger { border-color: transparent; background: color-mix(in srgb, var(--danger) 12%, var(--elev-2)); }
-.cx-btn-render { border-color: transparent; font-weight: var(--fw-semibold); }
+.cx-btn-render { background: linear-gradient(var(--teal), color-mix(in srgb, var(--teal) 78%, black)); color: var(--on-accent); border-color: transparent; font-weight: var(--fw-semibold); }
+.cx-btn-render:hover:not(:disabled) { background: linear-gradient(var(--teal), color-mix(in srgb, var(--teal) 78%, black)); filter: brightness(1.08); }
 .cx-btn-menu { background: transparent; }
 .cx-btn-menu:hover:not(:disabled) { background: var(--hover); }
 
