@@ -109,3 +109,13 @@ def test_audio_loads_as_audio(store):
     entry = media.save_upload("a.wav", path.read_bytes())
     _, _, audio = FunPackLoadMedia.execute(entry["id"], full=True).result
     assert audio["sample_rate"] == 8000 and audio["waveform"].shape == (1, 1, 800)
+
+
+def test_slots_of_the_retired_video_and_audio_nodes_are_dropped_with_their_wires():
+    from modules.media.load import upgrade
+    slots = [{"id": "r2v", "node": "X", "inputs": {"a": ["v1", 1], "keep": 3, "b": ["ref", 0]}},
+             {"id": "v1", "node": "FunPackLoadMediaVideo", "inputs": {}},
+             {"id": "ref", "node": "FunPackLoadMedia", "inputs": {}}]
+    out = upgrade(slots, None)
+    assert [s["id"] for s in out] == ["r2v", "ref"]
+    assert out[0]["inputs"] == {"keep": 3, "b": ["ref", 0]}
