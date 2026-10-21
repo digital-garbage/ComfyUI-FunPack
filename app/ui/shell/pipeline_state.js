@@ -647,16 +647,14 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     // too, and simply goes without that slot.
     const isWhole = typeof wholeSaved === "boolean" ? wholeSaved
       : [...byId.keys()].some((id) => !have.has(id)) && offered.some((d) => !gone.has(d.id) && !byId.has(d.id));
-    // A whole pipeline started from a preset lacks the media inputs an update gave that preset since (a video or audio
+    // A pipeline started from a preset lacks the media inputs an update gave that preset since (a video or audio
     // reference slot): those take no setting and nothing else depends on them, so they are laid in beside the saved ones.
     let grown = [];
-    if (isWhole) {
-      try {
-        const isAsset = (s) => (s.roles || []).length && s.roles.every((r) => String(r.at || "").startsWith("assets."));
-        const from = ((await API.pipelinePresets()).presets || []).find((pr) => (pr.slots || []).some((s) => isAsset(s) && byId.has(s.id)));
-        if (from) grown = from.slots.filter((s) => isAsset(s) && sound(s) && !byId.has(s.id) && !gone.has(s.id));
-      } catch (_) { /* the saved pipeline goes in as it is */ }
-    }
+    try {
+      const isAsset = (s) => (s.roles || []).length && s.roles.every((r) => String(r.at || "").startsWith("assets."));
+      const from = ((await API.pipelinePresets()).presets || []).find((pr) => (pr.slots || []).some((s) => isAsset(s) && byId.has(s.id)));
+      if (from) grown = from.slots.filter((s) => isAsset(s) && sound(s) && !byId.has(s.id) && !gone.has(s.id));
+    } catch (_) { /* the saved pipeline goes in as it is */ }
     const lay = (extras) => isWhole ? JSON.parse(JSON.stringify([...saved.filter(sound), ...(extras ? grown : [])])) : offered.filter((def) => !gone.has(def.id)).map((def) => {
       const mine = byId.get(def.id);
       if (!mine) return JSON.parse(JSON.stringify(def));
@@ -670,7 +668,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
       if (typeof mine.group === "string" && mine.group) out.group = mine.group;
       if (typeof mine.bypassed === "boolean") out.bypassed = mine.bypassed;
       return out;
-    }).concat(extras ? saved.filter((s) => sound(s) && !have.has(s.id)) : []);
+    }).concat(extras ? [...saved.filter((s) => sound(s) && !have.has(s.id)), ...grown.filter((s) => !have.has(s.id))] : []);
     // Replaces whatever pipeline was live: nothing queued for the old one may land on the new.
     const mine = ++epoch;
     pendingValues = {};                                 // the new project's values win, not an edit made to the old one
