@@ -23,7 +23,7 @@ class FunPackLoadMedia(io.ComfyNode):
             node_id="FunPackLoadMedia",
             display_name="FunPack Load Media",
             category="FunPack/Media",
-            description="Load an image from FunPack's media library by id.",
+            description="Load an image (or the first frame of a video) from FunPack's media library by id.",
             inputs=[
                 io.String.Input(
                     "media_id", default="",
@@ -55,10 +55,11 @@ class FunPackLoadMedia(io.ComfyNode):
             raise RuntimeError(
                 f"FunPack Load Media: media {mid!r} is not in the library any "
                 f"more -- it may have been deleted. Pick another.")
-        if entry.get("kind") != "image":
+        kind = entry.get("kind")
+        if kind not in ("image", "video"):
             raise RuntimeError(
-                f"FunPack Load Media: {entry.get('name', mid)!r} is a "
-                f"{entry.get('kind', 'file')}, not an image.")
+                f"FunPack Load Media: {entry.get('name', mid)!r} is {kind or 'a file'}, "
+                f"which has no picture to use. Pick an image or a video.")
 
         components = InputImpl.VideoFromFile(str(path)).get_components()
         images = components.images
@@ -68,7 +69,8 @@ class FunPackLoadMedia(io.ComfyNode):
 
         log.info("FunPack Load Media", f"loaded {entry.get('name', mid)}")
         # First frame only: this node hands off a still image, never a clip --
-        # a multi-frame source (an image sequence, or a video picked by mistake
-        # before the kind check above existed) would otherwise silently become
-        # a batch, and everything downstream expects one image.
+        # a video reference stands in as its first frame, since everything
+        # downstream expects one image.
+        if kind == "video":
+            log.info("FunPack Load Media", f"{entry.get('name', mid)} is a video: its first frame is used")
         return io.NodeOutput(images[:1])

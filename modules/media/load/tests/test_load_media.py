@@ -70,3 +70,25 @@ def test_a_blank_size_stands_in_for_nothing_picked_and_a_picked_image_still_wins
     assert images.shape[1:3] == (6, 4)
     with pytest.raises(RuntimeError, match="nothing is picked"):
         FunPackLoadMedia.execute("", blank_width=64, blank_height=0).result
+
+
+def test_a_video_reference_loads_as_its_first_frame(store):
+    import shutil, subprocess
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg needed to make a clip")
+    from modules.media.load.nodes import FunPackLoadMedia
+    clip = store.parent / "clip.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=8:duration=1",
+                    "-pix_fmt", "yuv420p", str(clip)], check=True)
+    entry = media.save_upload("clip.mp4", clip.read_bytes())
+
+    images, = FunPackLoadMedia.execute(entry["id"]).result
+    assert images.shape[0] == 1
+    assert images.shape[1:3] == (48, 64)
+
+
+def test_audio_is_refused_with_a_plain_message(store):
+    from modules.media.load.nodes import FunPackLoadMedia
+    entry = media.save_upload("a.wav", b"RIFF" + b"\0" * 40)
+    with pytest.raises(RuntimeError, match="no picture"):
+        FunPackLoadMedia.execute(entry["id"]).result
