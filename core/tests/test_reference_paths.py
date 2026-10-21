@@ -127,3 +127,50 @@ def test_more_than_the_models_ceiling_is_reported_not_dropped_silently(schemas):
     built, _, prompt, _ = _run(h3.h3_reference_to_video(), schemas, h3.OPTIONAL_NODES, scene["refs"], scene["kinds"], scene["sounds"])
     assert [item["id"] for item in built["left"]] == ["p9"] and "only 9 images" in built["left"][0]["why"]
     assert sum(k.startswith("ref_images.") for k in prompt["r2v"]["inputs"]) == 9
+
+
+def _presets():
+    from modules.models.ltx import pipeline as ltx
+    from modules.models.minimax_h3 import pipeline as h3
+    from modules.models.sd15 import text_to_image
+    found = [("sd15", text_to_image, {})]
+    found += [(p["id"], (lambda p=p: p["slots"]), ltx.OPTIONAL_NODES) for p in ltx.presets()]
+    found += [(p["id"], (lambda p=p: p["slots"]), h3.OPTIONAL_NODES) for p in h3.presets()]
+    return found
+
+
+SCENES = {
+    "two pictures": dict(refs=["m0", "m1"], kinds={"m0": "image", "m1": "image"}, sounds=[], source=None),
+    "a video with sound": dict(refs=["v"], kinds={"v": "video"}, sounds=["v"], source=None),
+    "an audio": dict(refs=["a"], kinds={"a": "audio"}, sounds=[], source=None),
+    "a start picture": dict(refs=[], kinds={"s": "image"}, sounds=[], source="s"),
+    "start picture and a reference": dict(refs=["p"], kinds={"s": "image", "p": "image"}, sounds=[], source="s"),
+}
+
+
+def _placed(inputs):
+    """Every media id some slot was told to load."""
+    return {v for fields in inputs.values() for k, v in fields.items() if k == "media_id" and v}
+
+
+@pytest.mark.parametrize("scene", SCENES)
+@pytest.mark.parametrize("preset", [p[0] for p in _presets()])
+def test_in_every_preset_a_picked_file_is_used_or_named_as_left_out(preset, scene, schemas):
+    """The silent drop this audit started from: a file picked in the UI that reaches no node and is not mentioned."""
+    _, make, optional = next(p for p in _presets() if p[0] == preset)
+    spec = SCENES[scene]
+    slots = make()
+    req_scene = dict(text="a cat", references=spec["refs"], **({"source_image": spec["source"]} if spec["source"] else {}))
+    req = dict(slots=slots, scene=req_scene, kinds=spec["kinds"], sounds=spec["sounds"],
+               project={"video": {}, "negative": "", "fixed_references": {}}, frames=None,
+               nodes={s["node"]: ({"inputs": f["inputs"], "outputs": f["outputs"]} if (f := schemas.of(s["node"])) else {"inputs": None, "outputs": None})
+                      for s in slots})
+    done = subprocess.run(["node", str(BUILDER)], input=json.dumps(req), capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[-800:]
+    built = json.loads(done.stdout)
+    picked = set(spec["refs"]) | ({spec["source"]} if spec["source"] else set())
+    named = {item["id"] for item in built["left"]}
+    assert picked <= _placed(built["inputs"]) | named, f"silently ignored: {sorted(picked - _placed(built['inputs']) - named)}"
+    new, refused = graph.override(slots, built["inputs"])
+    assert not refused
+    assert not _real_problems(graph.build(new, schemas, optional=optional)[1])
