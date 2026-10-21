@@ -1,6 +1,7 @@
 // What one run sends: the scene's prompt (expanded with anchor/postfix/$variables), the project's video
 // settings, the scene's picked media -- each placed by the ROLE a pipeline slot declares, never by slot id.
 import { sceneReferences, wireReferences } from "../../shell/reference_wiring.js";
+import { kinds } from "../../shell/bin.js";
 import { DRIVEN } from "../../shell/scenes.js";
 
 export const rolesAt = (slots, at) => (slots || []).flatMap((s) => (s.roles || []).filter((r) => r.at === at).map((role) => ({ slot: s, role })));
@@ -30,7 +31,7 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
     if (off) put(off, like.unsend.input, false);
   }
   const plan = sceneReferences(scene, project.fixed_references);
-  const { overrides, unwired } = wireReferences(plan.ids, slots, source ? [source.slot.id] : [], plan.pins);
+  const { overrides, unwired } = wireReferences(plan.ids, slots, source ? [source.slot.id] : [], plan.pins, (id) => kinds.get(id));
   for (const [id, fields] of Object.entries(overrides)) raw[id] = { ...raw[id], ...fields };
 
   const prompt = rolesAt(slots, "generation.prompt")[0];

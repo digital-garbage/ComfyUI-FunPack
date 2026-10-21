@@ -16,16 +16,25 @@
  * a reference would look like it was used; the caller is the one place that
  * knows this happened and must say so.
  */
-export function wireReferences(mediaIds, slots, reservedSlotIds, pins) {
+export function wireReferences(mediaIds, slots, reservedSlotIds, pins, kindOf) {
   const pool = slots || [];
   const overrides = {};
   const claimed = new Set(reservedSlotIds || []);
   let unwired = 0;
   // Each reference gets its slot number (1-based), so a pinned one keeps its number when a reference
   // before it is switched off; the rest take the free numbers in the order they were added.
-  const numbers = referenceNumbers(mediaIds, pins);
-  mediaIds.forEach((mediaId, i) => {
-    const at = `assets.reference_${numbers[i]}`;
+  // Pictures, videos and audio each have inputs of their own on the model, numbered per kind; only pictures are pinnable.
+  const kind = (id) => (kindOf && kindOf(id)) || "image";
+  const pictures = mediaIds.filter((id) => kind(id) === "image");
+  const pictureNumbers = referenceNumbers(pictures, pins);
+  const seen = { video: 0, audio: 0 };
+  const placed = mediaIds.map((id) => {
+    const k = kind(id);
+    if (k === "image") return { id, at: `assets.reference_${pictureNumbers[pictures.indexOf(id)]}` };
+    seen[k] = (seen[k] || 0) + 1;
+    return { id, at: `assets.reference_${k}_${seen[k]}` };
+  });
+  placed.forEach(({ id: mediaId, at }) => {
     const slot = pool.find((s) => (s.roles || []).some((r) => r.at === at));
     if (!slot) { unwired += 1; return; }
     // The wire's target is the role's own data (`wireTo`), never a slot id

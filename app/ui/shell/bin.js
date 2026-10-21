@@ -2,12 +2,15 @@
 export const names = new Map();
 /** What each picture means when used as a reference ("<Subject 1> is the woman in <Picture 1>…"), as last seen. */
 export const subjects = new Map();
+/** What each file is (image, video, audio), as last seen: the kind decides which input a reference lands on. */
+export const kinds = new Map();
 export const bin = { version: 0 };
 
 /** Remember a listing (replacing what was known). */
 export function learn(list) {
   names.clear();
   subjects.clear();
-  list.forEach((m) => { names.set(m.id, m.name); if (m.subject) subjects.set(m.id, m.subject); });
+  kinds.clear();
+  list.forEach((m) => { names.set(m.id, m.name); kinds.set(m.id, m.kind); if (m.subject) subjects.set(m.id, m.subject); });
   bin.version += 1;
 }

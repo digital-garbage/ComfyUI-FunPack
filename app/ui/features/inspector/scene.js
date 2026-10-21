@@ -60,8 +60,8 @@ export function sceneRows(p, app) {
       c.field.default({ label: "Source", control: c.select.md({ label: "Source", options: SOURCES, value: (sc.source || {}).type || "carry",
         onChange: (v) => p.setScene(sc.id, "source", { ...(sc.source || {}), type: v }) }) }))]),
     c.label.section({ text: "Pictures" }),
-    card(mediaField(app, p, sc, { label: "Aspect ratio source", hint: "The scene's picture. Its shape sets this scene's aspect ratio (the project's Width/Height set the scale). A model that starts from a picture, such as LTX image-to-video, also begins the clip from it; the prompt enhancer can read it.",
-      key: "source_image", multiple: false, kinds: ["image"], empty: "— choose aspect ratio source —" }),
+    card(mediaField(app, p, sc, { label: "Aspect ratio source", hint: "The scene's picture (or a video's first frame). Its shape sets this scene's aspect ratio (the project's Width/Height set the scale). A model that starts from a picture, such as LTX image-to-video, also begins the clip from it; the prompt enhancer can read it.",
+      key: "source_image", multiple: false, kinds: ["image", "video"], empty: "— choose aspect ratio source —" }),
     mediaField(app, p, sc, { label: "References", key: "references", multiple: true, kinds: ["image", "video", "audio"], empty: "+ Add reference" })),
     c.label.section({ text: "Length" }),
     card(c.field.row({ fields: [

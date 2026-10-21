@@ -124,3 +124,14 @@ test("a fixed reference rides in every scene at its own number, ahead of the sce
   assert.deepEqual(referenceNumbers(plan.ids, plan.pins), [2, 1]);
   assert.deepEqual(sceneReferences({ references: ["a"] }, undefined), { ids: ["a"], pins: {} });
 });
+
+test("a video and an audio reference go to their own inputs, numbered per kind", () => {
+  const slot = (kind, n, input) => ({ id: `${kind}_${n}`, roles: [{ at: `assets.reference_${kind}_${n}`, input: "media_id", wireTo: { slot: "r2v", input } }] });
+  const slots = [refSlot(1), slot("video", 1, "ref_videos.ref_video_0"), slot("audio", 1, "ref_audios.ref_audio_0")];
+  const kinds = { pic: "image", vid: "video", snd: "audio" };
+  const { overrides, unwired } = wireReferences(["vid", "pic", "snd"], slots, [], {}, (id) => kinds[id]);
+  assert.equal(unwired, 0);
+  assert.equal(overrides.ref_source_1.media_id, "pic");
+  assert.deepEqual(overrides.r2v["ref_videos.ref_video_0"], ["video_1", 0]);
+  assert.deepEqual(overrides.r2v["ref_audios.ref_audio_0"], ["audio_1", 0]);
+});

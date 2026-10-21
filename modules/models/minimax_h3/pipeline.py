@@ -35,6 +35,9 @@ a raw text box asking someone to type a media id by hand.
 #: ceiling, raising it later only adds optional slots -- backwards compatible
 #: with anything already saved.
 MAX_REFERENCES = 4
+#: R2V takes up to 3 reference videos and 3 standalone audio clips, each on an input of its own.
+MAX_REFERENCE_VIDEOS = 3
+MAX_REFERENCE_AUDIOS = 3
 
 
 def h3_reference_to_video():
@@ -165,6 +168,16 @@ def h3_reference_to_video():
             "roles": [{"at": f"assets.reference_{n}", "input": "media_id",
                        "wireTo": {"slot": "r2v", "input": f"ref_images.ref_image_{n - 1}"}}],
             "inputs": {"media_id": ""}})
+
+    # A video or an audio file picked as a reference goes to R2V's own input for it, not through a picture.
+    for kind, node, count, group in (("video", "FunPackLoadMediaVideo", MAX_REFERENCE_VIDEOS, "ref_videos.ref_video_"),
+                                     ("audio", "FunPackLoadMediaAudio", MAX_REFERENCE_AUDIOS, "ref_audios.ref_audio_")):
+        for n in range(1, count + 1):
+            slots.append({
+                "id": f"ref_{kind}_source_{n}", "group": "Reference media", "node": node,
+                "roles": [{"at": f"assets.reference_{kind}_{n}", "input": "media_id",
+                           "wireTo": {"slot": "r2v", "input": f"{group}{n - 1}"}}],
+                "inputs": {"media_id": ""}})
 
     return slots
 
