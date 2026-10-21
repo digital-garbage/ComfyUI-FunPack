@@ -41,6 +41,7 @@ export const api = {
   addons: () => call("GET", "/api/addons").then((d) => d.addons || []),
   setAddon: (id, enabled) => call("POST", "/api/addons", { id, enabled }).then((d) => d.addons || []),
   searchNodes: (q, limit = 40) => call("GET", `/api/nodes/search?q=${encodeURIComponent(q || "")}&limit=${limit}`),
+  wireTargets: (node) => call("GET", `/api/wire-targets?node=${encodeURIComponent(node)}`),
   pipelinePresets: () => call("GET", "/api/pipeline/presets"),
   setMediaSubject: (id, subject) => call("PATCH", `/api/media/${encodeURIComponent(id)}`, { subject }),
   readiness: () => call("GET", "/api/readiness"),

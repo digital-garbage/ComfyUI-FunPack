@@ -163,11 +163,7 @@ def h3_reference_to_video():
             # degrading its output. Only a scene that actually has this many
             # references gets this wire added, per-run.
             "roles": [{"at": f"assets.reference_{n}", "input": "media_id",
-                       "wireTo": {"slot": "r2v", "input": f"ref_images.ref_image_{n - 1}"},
-                       # The same slot takes a video or a sound when that is what was picked: R2V has an input
-                       # of its own for each (up to 3 of a kind), fed from the matching output of the loader.
-                       "wireKinds": {"video": {"slot": "r2v", "input": "ref_videos.ref_video_", "output": 1},
-                                     "audio": {"slot": "r2v", "input": "ref_audios.ref_audio_", "output": 2}}}],
+                       "wireTo": {"slot": "r2v", "input": f"ref_images.ref_image_{n - 1}"}}],
             "inputs": {"media_id": ""}})
 
     return slots

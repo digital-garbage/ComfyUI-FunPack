@@ -1,13 +1,13 @@
 // What one run sends: the scene's prompt (expanded with anchor/postfix/$variables), the project's video
 // settings, the scene's picked media -- each placed by the ROLE a pipeline slot declares, never by slot id.
-import { sceneReferences, wireReferences } from "../../shell/reference_wiring.js";
+import { sceneReferences, wireReferences, routeFor } from "../../shell/reference_wiring.js";
 import { kinds } from "../../shell/bin.js";
 import { DRIVEN } from "../../shell/scenes.js";
 
 export const rolesAt = (slots, at) => (slots || []).flatMap((s) => (s.roles || []).filter((r) => r.at === at).map((role) => ({ slot: s, role })));
 
 /** `frames`: how long this unit is (its clips together); a fresh `seed` per call so a re-roll is a different result (`seed: null` keeps the node's own). */
-export async function buildInputs({ project, scene, slots, expand, frames, hooks = [], prefix = [], seed = () => Math.floor(Math.random() * 2 ** 31) }) {
+export async function buildInputs({ project, scene, slots, expand, nodeInfo, frames, hooks = [], prefix = [], seed = () => Math.floor(Math.random() * 2 ** 31) }) {
   const raw = {};
   const put = (slot, name, value) => { raw[slot.id] = { ...raw[slot.id], [name]: value }; };
 
@@ -31,7 +31,22 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
     if (off) put(off, like.unsend.input, false);
   }
   const plan = sceneReferences(scene, project.fixed_references);
-  const { overrides, unwired, left } = wireReferences(plan.ids, slots, source ? [source.slot.id] : [], plan.pins, (id) => kinds.get(id));
+  // A video or a sound is placed from what the nodes offer, so a pipeline someone edited needs nothing declared for it.
+  const needed = plan.ids.some((id) => (kinds.get(id) || "image") !== "image");
+  const info = new Map();
+  if (needed && nodeInfo) {
+    const classes = new Set();
+    for (const s of slots || []) if ((s.roles || []).some((r) => r.wireTo)) {
+      classes.add(s.node);
+      for (const r of s.roles) if (r.wireTo) { const t = (slots || []).find((x) => x.id === r.wireTo.slot); if (t) classes.add(t.node); }
+    }
+    await Promise.all([...classes].map((c) => Promise.resolve(nodeInfo(c)).then((d) => info.set(c, d), () => {})));
+  }
+  const routeOf = (kind, slot, role) => {
+    const target = role && role.wireTo && (slots || []).find((x) => x.id === role.wireTo.slot);
+    return target ? routeFor(kind, info.get(target.node), info.get(slot.node), target.id) : null;
+  };
+  const { overrides, unwired, left } = wireReferences(plan.ids, slots, source ? [source.slot.id] : [], plan.pins, (id) => kinds.get(id), routeOf);
   for (const [id, fields] of Object.entries(overrides)) raw[id] = { ...raw[id], ...fields };
 
   const prompt = rolesAt(slots, "generation.prompt")[0];

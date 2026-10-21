@@ -16,7 +16,7 @@
  * a reference would look like it was used; the caller is the one place that
  * knows this happened and must say so.
  */
-export function wireReferences(mediaIds, slots, reservedSlotIds, pins, kindOf) {
+export function wireReferences(mediaIds, slots, reservedSlotIds, pins, kindOf, routeOf) {
   const pool = slots || [];
   const overrides = {};
   const claimed = new Set(reservedSlotIds || []);
@@ -31,16 +31,15 @@ export function wireReferences(mediaIds, slots, reservedSlotIds, pins, kindOf) {
     const at = `assets.reference_${numbers[i]}`;
     const slot = pool.find((s) => (s.roles || []).some((r) => r.at === at));
     if (!slot) { unwired += 1; left.push({ id: mediaId, at, why: "no slot with that role" }); return; }
-    // The wire's target is the role's own data, never a slot id this file would otherwise have to know: the
-    // preset declares where its own reference lands. `wireTo` is a picture's place; `wireKinds` names the
-    // place of a video or of sound (`input` is the prefix, numbered per kind; `output` is which output of the
-    // loader feeds it; `also` is a second wire from the same file, a video's own soundtrack).
+    // A picture's place is the role's own data (`wireTo`): the preset declares where its reference lands. A video's
+    // or a sound's place is not stored anywhere: `routeOf(kind, slot, role)` reads it off what the target node offers.
     const role = slot.roles.find((r) => r.at === at);
     const k = kind(mediaId);
-    const kindWire = k === "image" ? null : (role.wireKinds || {})[k];
-    if (k !== "image" && !kindWire) { unwired += 1; left.push({ id: mediaId, at, why: `this slot only takes a picture, not a ${k}` }); return; }
+    const route = k === "image" ? null : routeOf && routeOf(k, slot, role);
+    if (k !== "image" && !route) { unwired += 1; left.push({ id: mediaId, at, why: `this pipeline has no input for a ${k}` }); return; }
     const n = seen[k] = (seen[k] || 0) + 1;
-    const wire = kindWire ? { slot: kindWire.slot, input: `${kindWire.input}${n - 1}`, output: kindWire.output || 0 } : role.wireTo && { ...role.wireTo, output: 0 };
+    if (route && n > route.names.length) { unwired += 1; left.push({ id: mediaId, at, why: `the model takes only ${route.names.length} ${k}${route.names.length > 1 ? "s" : ""}` }); return; }
+    const wire = route ? { slot: route.slot, input: route.names[n - 1], output: route.output } : role.wireTo && { ...role.wireTo, output: 0 };
     // A destination can hold one value. Two references claiming the SAME slot or the SAME wire target are
     // the same failure: the second silently overwrites the first unless it is counted unwired instead.
     const dest = wire ? `${wire.slot}.${wire.input}` : slot.id;
@@ -87,3 +86,25 @@ export function sceneReferences(scene, fixed) {
 }
 
 export const MAX_REFERENCES = 16;
+
+const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true });
+
+/**
+ * routeFor(kind, target, loader, targetSlot) -> { slot, names, output } | null
+ *
+ * Where a picked video or sound goes, decided from the nodes themselves: `target` is what the node the
+ * picture reference feeds offers ({ inputs: {name: type}, outputs }), `loader` what the reference slot's own node
+ * outputs. A video is the picture-typed inputs whose name says video, a sound the audio-typed inputs whose name says
+ * audio (not a video's own soundtrack input); the loader's second picture output carries a video's frames, its
+ * first audio output the sound. Null when either side has no such place.
+ */
+export function routeFor(kind, target, loader, targetSlot) {
+  const inputs = (target && target.inputs) || {}, outs = (loader && loader.outputs) || [];
+  const named = (type, wanted, unwanted) => Object.keys(inputs).filter((name) => {
+    const last = name.split(".").pop().toLowerCase();
+    return inputs[name] === type && last.includes(wanted) && !(unwanted && last.includes(unwanted));
+  }).sort(natural);
+  const names = kind === "video" ? named("IMAGE", "video") : named("AUDIO", "audio", "video");
+  const at = kind === "video" ? outs.map((t, i) => (t === "IMAGE" ? i : -1)).filter((i) => i >= 0)[1] : outs.indexOf("AUDIO");
+  return names.length && at >= 0 ? { slot: targetSlot, names, output: at } : null;
+}

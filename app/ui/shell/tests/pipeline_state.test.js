@@ -751,18 +751,3 @@ test("the Project tab, the frame grid and the scene tab read the pipeline throug
   assert.match(read("inspector/index.js"), /app\.pipeline\.view/);
   assert.match(read("inspector/scene.js"), /app\.pipeline\.view/);
 });
-
-test("a preset-started project takes the preset's current roles for its media slots, and any media slot added since", async () => {
-  const media = (id, at, extra = {}) => ({ id, node: "LoadIt", roles: [{ at, input: "media_id", ...extra }], inputs: { media_id: "" } });
-  const oldSaved = [{ id: "ckpt", node: "Checkpoint", inputs: { file: "mine" } }, media("ref_source_1", "assets.reference_1")];
-  const newPreset = [{ id: "ckpt", node: "Checkpoint", inputs: {} }, media("ref_source_1", "assets.reference_1", { wireKinds: { video: {} } }), media("ref_source_2", "assets.reference_2")];
-  for (const whole of [true, false]) {
-    const PS = load([]);
-    lastApi.pipelinePresets = async () => ({ presets: [{ id: "p", slots: newPreset }] });
-    await PS.adopt(structuredClone(oldSaved), ["model", "gen"], {}, whole);
-    const by = Object.fromEntries(PS.slots().map((x) => [x.id, x]));
-    assert.ok(by.ref_source_1.roles[0].wireKinds, `roles refreshed (whole ${whole})`);
-    assert.ok(by.ref_source_2, `new media slot laid in (whole ${whole})`);
-    assert.strictEqual(by.ckpt.inputs.file, "mine");
-  }
-});

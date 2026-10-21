@@ -110,3 +110,16 @@ test("text-only on a pipeline saved before the preset named a stand-in: the resi
   assert.deepEqual(inputs.src, { media_id: "", blank_width: 640, blank_height: 768 });
   assert.deepEqual(inputs.e, { use_image: false });
 });
+
+test("a video reference reaches the model's video input from a preset that says nothing about videos", async () => {
+  const { learn } = await import("../../shell/bin.js");
+  learn([{ id: "vid", name: "v.mp4", kind: "video" }]);
+  const s = [{ id: "ref1", node: "Loader", roles: [{ at: "assets.reference_1", input: "media_id", wireTo: { slot: "r2v", input: "ref_images.ref_image_0" } }] },
+    { id: "r2v", node: "Model", inputs: {} }];
+  const info = { Model: { inputs: { "ref_images.ref_image_0": "IMAGE", "ref_videos.ref_video_0": "IMAGE" }, outputs: [] }, Loader: { inputs: {}, outputs: ["IMAGE", "IMAGE", "AUDIO"] } };
+  const r = await buildInputs({ project: { video: {} }, scene: { text: "x", references: ["vid"] }, slots: s, expand: async () => null, nodeInfo: async (c) => info[c] });
+  assert.equal(r.unwired, 0);
+  assert.deepEqual(r.inputs.r2v["ref_videos.ref_video_0"], ["ref1", 1]);
+  assert.equal(r.inputs.ref1.full, true);
+  learn([]);
+});

@@ -261,6 +261,15 @@ def register(routes, prefix=None):
         except Exception as exc:  # noqa: BLE001
             _provider_failed(f"{spec.id}.routes", exc)
 
+    @routes.get(P + "/api/wire-targets")
+    async def _wire_targets(req):
+        """A node's input names and output types as core reads them (an Autogrow's numbered inputs spelled out), so
+        the app can pick the input a picked file belongs on from what the node actually offers."""
+        found = graph_mod.from_comfyui().of(req.query.get("node", ""))
+        if not found:
+            return web.json_response({"inputs": None, "outputs": None})
+        return web.json_response({"inputs": found["inputs"], "outputs": found["outputs"]})
+
     @routes.get(P + "/api/pipeline")
     async def _pipeline_get(_req):
         slots = _pipeline()

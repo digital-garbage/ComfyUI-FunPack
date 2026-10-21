@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { referenceNumbers, sceneReferences, wireReferences } from "../reference_wiring.js";
+import { referenceNumbers, routeFor, sceneReferences, wireReferences } from "../reference_wiring.js";
 
 function refSlot(n) {
   return { id: `ref_source_${n}`, roles: [{ at: `assets.reference_${n}`,
@@ -125,12 +125,27 @@ test("a fixed reference rides in every scene at its own number, ahead of the sce
   assert.deepEqual(sceneReferences({ references: ["a"] }, undefined), { ids: ["a"], pins: {} });
 });
 
-test("a video and an audio reference take the same kind of slot and feed R2V's own inputs, numbered per kind", () => {
-  const slot = (n) => ({ id: `ref_source_${n}`, roles: [{ at: `assets.reference_${n}`, input: "media_id",
-    wireTo: { slot: "r2v", input: `ref_images.ref_image_${n - 1}` },
-    wireKinds: { video: { slot: "r2v", input: "ref_videos.ref_video_", output: 1 }, audio: { slot: "r2v", input: "ref_audios.ref_audio_", output: 2 } } }] });
+// R2V as core describes it: Autogrow groups spelled out, types per input; the loader's outputs by type.
+const R2V = { inputs: { prompt: "STRING", "ref_images.ref_image_0": "IMAGE", "ref_images.ref_image_1": "IMAGE",
+  "ref_videos.ref_video_0": "IMAGE", "ref_videos.ref_video_1": "IMAGE", "ref_videos.ref_video_10": "IMAGE",
+  "ref_video_audios.ref_video_audio_0": "AUDIO", "ref_audios.ref_audio_0": "AUDIO", "ref_audios.ref_audio_1": "AUDIO" } };
+const LOADER = { outputs: ["IMAGE", "IMAGE", "AUDIO"] };
+
+test("routeFor reads a video's and a sound's inputs off the node, not off the preset", () => {
+  assert.deepEqual(routeFor("video", R2V, LOADER, "r2v"),
+    { slot: "r2v", names: ["ref_videos.ref_video_0", "ref_videos.ref_video_1", "ref_videos.ref_video_10"], output: 1 });
+  assert.deepEqual(routeFor("audio", R2V, LOADER, "r2v"),
+    { slot: "r2v", names: ["ref_audios.ref_audio_0", "ref_audios.ref_audio_1"], output: 2 });
+  assert.equal(routeFor("video", { inputs: { a: "IMAGE" } }, LOADER, "r2v"), null);
+  assert.equal(routeFor("video", R2V, { outputs: ["IMAGE"] }, "r2v"), null);
+});
+
+test("a preset with no routing data still sends a video and a sound to R2V's own inputs, numbered per kind", () => {
+  const slot = (n) => ({ id: `ref_source_${n}`, node: "Loader", roles: [{ at: `assets.reference_${n}`, input: "media_id",
+    wireTo: { slot: "r2v", input: `ref_images.ref_image_${n - 1}` } }] });
   const kinds = { pic: "image", vid: "video", vid2: "video", snd: "audio" };
-  const { overrides, unwired } = wireReferences(["vid", "pic", "snd", "vid2"], [slot(1), slot(2), slot(3), slot(4)], [], {}, (id) => kinds[id]);
+  const routeOf = (k, s, role) => routeFor(k, R2V, LOADER, role.wireTo.slot);
+  const { overrides, unwired } = wireReferences(["vid", "pic", "snd", "vid2"], [slot(1), slot(2), slot(3), slot(4)], [], {}, (id) => kinds[id], routeOf);
   assert.equal(unwired, 0);
   assert.deepEqual(overrides.r2v["ref_videos.ref_video_0"], ["ref_source_1", 1]);
   assert.deepEqual(overrides.r2v["ref_images.ref_image_1"], ["ref_source_2", 0]);
@@ -140,8 +155,12 @@ test("a video and an audio reference take the same kind of slot and feed R2V's o
   assert.equal(overrides.ref_source_2.full, undefined);
 });
 
-test("a slot that only knows pictures says so for a video", () => {
-  const { unwired, left } = wireReferences(["vid"], [refSlot(1)], [], {}, () => "video");
-  assert.equal(unwired, 1);
-  assert.match(left[0].why, /only takes a picture/);
+test("a pipeline with no place for a video says so, and so does one that has run out of them", () => {
+  const slots = [refSlot(1), refSlot(2)];
+  let r = wireReferences(["vid"], slots, [], {}, () => "video", () => null);
+  assert.equal(r.unwired, 1);
+  assert.match(r.left[0].why, /no input for a video/);
+  r = wireReferences(["a", "b"], slots, [], {}, () => "video", () => ({ slot: "r2v", names: ["only_video_0"], output: 1 }));
+  assert.equal(r.unwired, 1);
+  assert.match(r.left[0].why, /takes only 1 video/);
 });

@@ -91,7 +91,6 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   let adoptedOk = true;       // false while the live pipeline is a stand-in for one that could not go in
   let refusalLast = null;     // the server's own reason for refusing the last project's pipeline
   let unreachableLast = false; // the last project's pipeline failed because a request did not get through, not because it was refused
-  let growth = "";            // why an adopt added no preset slots, when it could not say yes: shown beside a reference that found no slot
   let adopting = 0;           // adopts under way (waiting for the load, or putting a pipeline in)
   let deferred = null;        // a project's saved pipeline ([slots, removed, unwired, whole]) waiting for the first successful load
   let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
@@ -648,24 +647,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     // too, and simply goes without that slot.
     const isWhole = typeof wholeSaved === "boolean" ? wholeSaved
       : [...byId.keys()].some((id) => !have.has(id)) && offered.some((d) => !gone.has(d.id) && !byId.has(d.id));
-    // A pipeline started from a preset carries the media slots as they were then. What a preset says about where
-    // a picked file goes (a slot's roles) is plumbing, not something a person set, so the current preset's roles
-    // replace the saved ones, and media slots the preset gained since are laid in beside the saved ones.
-    let grown = [];
-    growth = "";
-    try {
-      const isAsset = (s) => (s.roles || []).length && s.roles.every((r) => String(r.at || "").startsWith("assets."));
-      const found = (await API.pipelinePresets()).presets || [];
-      const from = found.find((pr) => (pr.slots || []).some((s) => isAsset(s) && byId.has(s.id)));
-      if (from) {
-        for (const ps of from.slots.filter((x) => isAsset(x) && sound(x))) {
-          const mine = byId.get(ps.id);
-          if (!mine) { if (!gone.has(ps.id)) grown.push(ps); } else if (mine.node === ps.node) mine.roles = JSON.parse(JSON.stringify(ps.roles));
-        }
-        if (!from.slots.some((x) => (x.roles || []).some((r) => r.wireKinds))) growth = `the server's preset \"${from.id}\" has no video or audio routing: ComfyUI's Python is older than this page, restart it after updating`;
-      } else growth = `no preset matches this pipeline's media slots (${found.length} presets offered)`;
-    } catch (e) { growth = `the preset list could not be read (${(e && e.message) || e})`; }
-    const lay = (extras) => isWhole ? JSON.parse(JSON.stringify([...saved.filter(sound), ...(extras ? grown : [])])) : offered.filter((def) => !gone.has(def.id)).map((def) => {
+    const lay = (extras) => isWhole ? JSON.parse(JSON.stringify(saved.filter(sound))) : offered.filter((def) => !gone.has(def.id)).map((def) => {
       const mine = byId.get(def.id);
       if (!mine) return JSON.parse(JSON.stringify(def));
       if (mine.node !== def.node) return JSON.parse(JSON.stringify(mine));
@@ -678,7 +660,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
       if (typeof mine.group === "string" && mine.group) out.group = mine.group;
       if (typeof mine.bypassed === "boolean") out.bypassed = mine.bypassed;
       return out;
-    }).concat(extras ? [...saved.filter((s) => sound(s) && !have.has(s.id)), ...grown.filter((s) => !have.has(s.id))] : []);
+    }).concat(extras ? saved.filter((s) => sound(s) && !have.has(s.id)) : []);
     // Replaces whatever pipeline was live: nothing queued for the old one may land on the new.
     const mine = ++epoch;
     pendingValues = {};                                 // the new project's values win, not an edit made to the old one
@@ -726,7 +708,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   }
 
   return {
-    growth: () => growth, ensureLoaded, save, edit, restore, snapshot, setGroup, setBypass, adopt, settled, readyToRun, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
+    ensureLoaded, save, edit, restore, snapshot, setGroup, setBypass, adopt, settled, readyToRun, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
     setEditGuard: (fn) => { editGuard = fn; }, adoptedOk: () => adoptedOk, unreachable: () => slots === null || unreachableLast, refusal: () => refusalLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
