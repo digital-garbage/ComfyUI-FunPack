@@ -121,9 +121,11 @@
   min-block-size: 0; min-inline-size: 0;
   background: var(--void);
 }
+/* Fills the stage and lets object-fit do the fitting: with `auto` sizes and only a
+   max, a picture smaller than the stage stayed at its own size inside a field of
+   black instead of scaling up to it. */
 .cx-viewer-media {
-  max-inline-size: 100%; max-block-size: 100%;
-  inline-size: auto; block-size: auto;
+  inline-size: 100%; block-size: 100%;
   object-fit: contain;
 }
 
