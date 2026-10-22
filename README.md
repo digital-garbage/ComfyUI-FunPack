@@ -14,8 +14,6 @@
 
 <p align="center"><img src="docs/images/studio.jpg" alt="FunPack studio: preview, scene settings and a six-clip timeline" width="900"></p>
 
-<p align="center"><img src="docs/images/studio.jpg" alt="FunPack studio: preview, scene settings and a six-clip timeline" width="900"></p>
-
 ## What v5 is
 
 A rewrite from scratch, not an update of 4.x. Every feature is a module that announces itself, so nothing can be forgotten in the UI, no wire can be missed, and a module that fails to load is simply left out while the run carries on. Open it at `/funpack/` in your browser.
