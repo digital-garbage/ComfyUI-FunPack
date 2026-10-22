@@ -27,7 +27,7 @@ export const engine = (app) => function mount() {
     ].filter(Boolean));
   }
   draw();
-  ps.ensureLoaded().then(draw);
+  ps.ensureLoaded().then(() => ps.reloadModules()).then(draw);
   const typing = () => app.dom.typingIn(page.node);
   page.node.addEventListener("focusout", () => setTimeout(() => { if (!typing()) draw(); }));
   const off = ps.subscribe(() => { if (!typing()) draw(); });

@@ -316,3 +316,17 @@ def test_step_aware_modules_are_given_the_hop_schedule(ptd, folder):
     _install(ptd, model, "a.safetensors")
     _sample(model)                                  # twenty steps asked for
     assert seen and all(len(s) == 5 for s in seen)
+
+
+def test_the_file_list_is_read_again_when_settings_open(ptd, folder, monkeypatch):
+    pytest.importorskip("aiohttp")
+    from core import registry, routes
+    spec = registry.current().specs["ptd"]
+    monkeypatch.setitem(spec.settings["adapter"], "options", [{"value": "", "label": "No file in models/ptd"}])
+    monkeypatch.setitem(spec.settings["adapter"], "default", "")
+    base = _tiny.native_model()
+    _tiny.epfl_file(folder / "new.safetensors", base.get_model_object("diffusion_model"))
+    listed = {m["id"]: m for m in routes.manifest()["modules"]}
+    adapter = listed["ptd"]["settings"]["adapter"]
+    assert "new.safetensors" in [o["value"] for o in adapter["options"]]
+    assert adapter["default"] in [o["value"] for o in adapter["options"]]

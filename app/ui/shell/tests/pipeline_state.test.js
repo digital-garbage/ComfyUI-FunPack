@@ -770,3 +770,17 @@ test("the same holds when the saved copy is not marked whole", async () => {
   await PS.adopt(old, ["model"], {}, false);
   assert.ok(PS.slots().some((s) => s.id === "ref_video_source_1"));
 });
+
+test("reloading the modules picks up a setting's new choices without touching the pipeline", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  lastApi.modules = async () => ({ modules: [{ id: "ptd", settings: { adapter: { options: [{ value: "a" }] } } }], control: {} });
+  assert.strictEqual(await PS.reloadModules(), true);
+  assert.deepStrictEqual(PS.activeModules().find((m) => m.id === "ptd").settings.adapter.options, [{ value: "a" }]);
+  lastApi.modules = async () => ({ modules: [{ id: "ptd", settings: { adapter: { options: [{ value: "a" }, { value: "b" }] } } }], control: {} });
+  await PS.reloadModules();
+  assert.strictEqual(PS.activeModules().find((m) => m.id === "ptd").settings.adapter.options.length, 2);
+  lastApi.modules = async () => { throw new Error("down"); };
+  assert.strictEqual(await PS.reloadModules(), false);
+  assert.strictEqual(PS.activeModules().find((m) => m.id === "ptd").settings.adapter.options.length, 2);
+});

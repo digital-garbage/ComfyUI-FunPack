@@ -66,11 +66,24 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   // keystroke-driven save for no reason.
   let lastProbedFile;         // undefined = never probed (a pipeline with no model file is null, and still needs its first probe)
 
+  let lastTraits;             // the traits the module list was last asked for
+  // Ask again for the modules, for the choices a setting reads from disk (a folder of files) that may have changed.
+  async function reloadModules() {
+    try {
+      const manifest = await API.modules(lastTraits ? lastTraits.join(",") : undefined);
+      if (!Array.isArray(manifest.modules)) return false;
+      modulesById = {};
+      manifest.modules.forEach((m) => { modulesById[m.id] = m; });
+      return true;
+    } catch (_) { return false; }       // keeps the list it has
+  }
+
   async function refreshManifest() {
     const file = currentModelFile(slots);
     if (file === lastProbedFile) return false;
     const traits = await probeModelTraits(slots);
     const manifest = await API.modules(traits ? traits.join(",") : undefined);
+    lastTraits = traits;
     modulesById = {};
     (manifest.modules || []).forEach((m) => { modulesById[m.id] = m; });
     controlState = manifest.control || controlState;
@@ -716,7 +729,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   }
 
   return {
-    ensureLoaded, save, edit, restore, snapshot, setGroup, setBypass, adopt, settled, readyToRun, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
+    ensureLoaded, reloadModules, save, edit, restore, snapshot, setGroup, setBypass, adopt, settled, readyToRun, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
     setEditGuard: (fn) => { editGuard = fn; }, adoptedOk: () => adoptedOk, unreachable: () => slots === null || unreachableLast, refusal: () => refusalLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],

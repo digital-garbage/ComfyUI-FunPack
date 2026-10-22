@@ -147,6 +147,22 @@ def settings_sinks():
     return found
 
 
+def refresh_options():
+    """Let a module re-read the choices of a setting whose list lives outside the code (a folder of files).
+    `setting_options()` answers {setting: [{"value", "label"}]}; the default follows when it fell out of the list."""
+    for spec, make in modules().providers("setting_options"):
+        try:
+            for key, options in (make() or {}).items():
+                declared = spec.settings.get(key)
+                if declared is None or declared.get("type") != "enum" or not options:
+                    continue
+                declared["options"] = list(options)
+                if declared.get("default") not in [o["value"] for o in options]:
+                    declared["default"] = options[0]["value"]
+        except Exception as exc:  # noqa: BLE001
+            _provider_failed("setting_options", exc, spec)
+
+
 def manifest(traits=None):
     """What the browser is told: only modules that loaded and validated.
 
@@ -154,6 +170,7 @@ def manifest(traits=None):
     what announced itself, so absence here is what makes it absent on screen.
     `failed` is carried alongside for the modules dump, never for rendering.
     """
+    refresh_options()
     reg = modules()
     specs = list(reg.specs.values())
 

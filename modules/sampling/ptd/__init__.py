@@ -43,6 +43,10 @@ def _files():
         return []
 
 
+def _options():
+    return [{"value": f, "label": f} for f in _files()] or [{"value": "", "label": "No file in models/ptd"}]
+
+
 _FOUND = _files()
 
 SETTINGS = {
@@ -54,9 +58,9 @@ SETTINGS = {
     },
     "adapter": {
         "type": "enum", "default": _FOUND[0] if _FOUND else "",
-        "options": [{"value": f, "label": f} for f in _FOUND] or [{"value": "", "label": "No file in models/ptd"}],
+        "options": _options(),
         "label": "PTD adapter file",
-        "hint": "A PTD file from ComfyUI/models/ptd. Restart ComfyUI after adding one.",
+        "hint": "A PTD file from ComfyUI/models/ptd. The list is read again each time Settings opens.",
         "when": {"enabled": True},
     },
     "kernels": {
@@ -138,4 +142,4 @@ def patcher_has_ptd(patcher):
     from .controller import CONTROLLER_KEY
     return CONTROLLER_KEY in patcher.model_options
 
-PROVIDES = {"modifier": install}
+PROVIDES = {"modifier": install, "setting_options": lambda: {"adapter": _options()}}
