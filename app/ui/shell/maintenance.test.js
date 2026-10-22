@@ -18,4 +18,5 @@ test("Restart ComfyUI says it is restarting once, not twice", async () => {
   teardownDom();
   assert.equal(said, 1, "the working card repeats the restarting line");
 });
+// The restart card polls the stopped server forever by design, so the process is ended when the test is done.
 test.after(() => setTimeout(() => process.exit(0), 10));

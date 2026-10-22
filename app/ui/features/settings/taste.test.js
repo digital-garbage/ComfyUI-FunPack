@@ -43,7 +43,7 @@ test("nothing recorded yet is said, not shown as a comparison", async () => {
   assert.match(page.node.textContent, /nothing recorded yet/);
 });
 
-test("a failed report still shows the switch, so recording can be turned off", async () => {
+test("a failed report still shows the switch, so recording can be turned on", async () => {
   const sets = [];
   const app = { api: {
     tasteKeys: async () => ({ keys: [] }),
@@ -79,7 +79,7 @@ test("the block influence readout shows flatness, and Clear asks before it clear
   assert.match(page.node.textContent, /Clear/);
 });
 
-test("a failed status request still shows the switch, so recording can be turned off", async () => {
+test("a failed status request still shows the switch, so recording can be turned on", async () => {
   const sets = [];
   const app = { api: {
     tasteKeys: async () => ({ keys: [] }),
@@ -93,5 +93,5 @@ test("a failed status request still shows the switch, so recording can be turned
   const toggle = page.node.querySelector('input[type="checkbox"]');
   assert.ok(toggle, "the switch is still there");
   toggle.click(); await tick(); await tick();
-  assert.deepEqual(sets, [false], "the unknown state shows on, so one click turns it off");
+  assert.deepEqual(sets, [true], "recording is opt in: the unknown state shows off, so one click turns it on");
 });
