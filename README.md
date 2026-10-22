@@ -9,8 +9,8 @@
 </p>
 
 > [!IMPORTANT]
-> FunPack is a hobby project maintained by a single person. It's crafted for my personal needs mostly, and I can't test every single possible variant of usage to confirm it's bug-free and working as intended.
-> If you had found a bug or you want to request a new feature, feel free to add an entry to Issues - that would be the most appreciated.
+> FunPack is an open-source hobby project maintained by single person, available to you for zero cost. It means resources such as time and money are limited, and there is no "QA team" to review every single feature and report every bug.
+> If you discover a bug or wish to suggest a new feature, feel free to open a new issue in this repo's Issues.
 
 <p align="center"><img src="docs/images/studio.jpg" alt="FunPack studio: preview, scene settings and a six-clip timeline" width="900"></p>
 
