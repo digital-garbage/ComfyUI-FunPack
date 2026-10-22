@@ -86,7 +86,7 @@
 .cx-segmented-sm { padding: var(--sp-1); gap: var(--sp-1); }
 .cx-segmented-sm .cx-segment { height: var(--ctl-h-sm); padding: 0 var(--ctl-pad-x-md); font-size: var(--fs-6); border-left: 0; border-radius: var(--r-2); }
 .cx-segment:hover { background: var(--hover); color: var(--text); }
-.cx-segment.cx-on { background: var(--accent-soft); color: var(--accent-hi); }
+.cx-segment.cx-on { background: var(--accent-soft); color: var(--accent-text); }
 
 
 .cx-toggle-track {

@@ -65,7 +65,7 @@
    aria-pressed and looked identical either way: a control that reports its state
    to a screen reader and not to the eye. */
 .cx-btn.cx-on {
-  background: var(--accent-soft); border-color: var(--accent); color: var(--accent-hi);
+  background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text);
 }
 .cx-btn-group .cx-btn.cx-on {
   position: relative; z-index: 1;              /* its border wins over its neighbours' */
@@ -81,6 +81,6 @@
 /* Render: the teal one, as v4 had it -- the output side of Generate. */
 .cx-btn-render {
   background: linear-gradient(var(--teal), color-mix(in srgb, var(--teal) 78%, black));
-  color: var(--on-accent); border-color: var(--teal); font-weight: var(--fw-semibold);
+  color: var(--on-teal); border-color: var(--teal); font-weight: var(--fw-semibold);
 }
 .cx-btn-render:hover:not(:disabled) { filter: brightness(1.08); }

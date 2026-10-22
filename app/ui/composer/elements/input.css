@@ -54,13 +54,13 @@
 }
 .cx-filter-row {
   display: flex; align-items: center; gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4); border: 0; border-radius: var(--r-2);
+  padding: var(--sp-4) var(--sp-5); border: 0; border-radius: var(--r-2);
   background: transparent; color: var(--text);
   font-size: var(--fs-5); text-align: left; cursor: pointer; width: 100%;
 }
 .cx-filter-gap { block-size: var(--sp-5); }
 .cx-filter-row:hover { background: var(--hover); }
-.cx-filter-row.cx-on { background: var(--accent-soft); color: var(--accent-hi); }
+.cx-filter-row.cx-on { background: var(--accent-soft); color: var(--accent-text); }
 .cx-filter-row.cx-on .cx-filter-label { font-weight: var(--fw-semibold); }
 /* A column so a wrapping hint sits directly under its own label, both flush
    to the same left edge, instead of floating as a baseline-aligned sibling
@@ -84,10 +84,10 @@
   margin-block-start: 1px;
 }
 .cx-filter-icon-accent  { background: var(--grad-accent); color: var(--on-accent); }
-.cx-filter-icon-danger  { background: linear-gradient(180deg, var(--danger), color-mix(in srgb, var(--danger) 65%, black)); color: #fff; }
-.cx-filter-icon-warn    { background: linear-gradient(180deg, var(--warn), color-mix(in srgb, var(--warn) 65%, black)); color: #fff; }
-.cx-filter-icon-good    { background: linear-gradient(180deg, var(--good), color-mix(in srgb, var(--good) 65%, black)); color: #fff; }
-.cx-filter-icon-neutral { background: linear-gradient(180deg, var(--muted), color-mix(in srgb, var(--muted) 65%, black)); color: #fff; }
+.cx-filter-icon-danger  { background: linear-gradient(180deg, var(--danger), color-mix(in srgb, var(--danger) 82%, black)); color: var(--on-status); }
+.cx-filter-icon-warn    { background: linear-gradient(180deg, var(--warn), color-mix(in srgb, var(--warn) 82%, black)); color: var(--on-status); }
+.cx-filter-icon-good    { background: linear-gradient(180deg, var(--good), color-mix(in srgb, var(--good) 82%, black)); color: var(--on-status); }
+.cx-filter-icon-neutral { background: linear-gradient(180deg, var(--muted), color-mix(in srgb, var(--muted) 82%, black)); color: var(--elev-0); }
 .cx-filter-row.cx-on .cx-filter-icon { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-hi) 50%, transparent); }
 
 /* The Settings sidebar and window body: see settings.css. */
