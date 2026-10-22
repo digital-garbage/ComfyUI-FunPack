@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added (experimental)
+
+- **PTD few-step** (Settings > Engine > Sampling, MiniMax H3 only): renders in the 4 to 8 hops of a PTD adapter file from `ComfyUI/models/ptd` instead of a long schedule, with no CFG. Reads the EPFL fl2va and taobao-content-ai Ref2VA releases, as bf16 or int8, on the full or pruned base; ordinary LoRAs stack with it. The chosen sampler, steps and scheduler are replaced while it is on. Ported from ComfyUI-PTD-Compact (Nynxz). Not yet run on a real H3.
+
 ## [5.0.1] - 2026-10-21
 
 Fixes from real H3 runs on rentals, plus the first usable LoRA training.

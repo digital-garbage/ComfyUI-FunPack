@@ -1,0 +1,14 @@
+PTD few-step support for MiniMax-H3 (modules/sampling/ptd)
+
+This folder is a port of existing Apache-2.0 work; the licence text is in LICENSE-Apache-2.0.txt.
+
+* ComfyUI-PTD-Compact by Nynxz (https://github.com/Nynxz/ComfyUI-PTD-Compact): the compact int8 / reduced-rank
+  adapter controller, the in-place residual, the DynamicVRAM handling, the Ref2VA support and the tests.
+* ComfyUI-PTD (https://github.com/vita-epfl/PTD-inference), Copyright (c) 2026 EPFL VITA Lab: the hop
+  controller, forward hooks, block arithmetic, audio clock, checkpoint format and fixed-hop sampler, from the
+  paper "Parametric Trajectory Distillation for Few-Step Video Generation" (arXiv:2610.11498).
+* ComfyUI-MiniMaxH3-PTD by taobao-content-ai
+  (https://huggingface.co/taobao-content-ai/MiniMax-H3-PTD-LoRAs): the Ref2VA hop grid, output-head bank
+  fusion, audio chord correction and stacked-hop key mapping.
+
+The adapter weights and MiniMax-H3 have their own licences; see their model repositories.

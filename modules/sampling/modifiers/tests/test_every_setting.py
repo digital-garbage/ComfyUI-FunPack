@@ -67,8 +67,9 @@ def _finite(out):
 
 
 #: Failures that come from the stand-in model, not from the module: a four-block model has no blocks 31-40, and the
-#: LTX stand-in is not a model_base class with the windowing hook (the module's own tests patch that in).
-TINY_MODEL = ("no usable blocks", "map_context_window_to_modalities")
+#: LTX stand-in is not a model_base class with the windowing hook (the module's own tests patch that in). Likewise
+#: PTD has no adapter file on a test machine (its own tests build one).
+TINY_MODEL = ("no usable blocks", "map_context_window_to_modalities", "no PTD adapter file")
 
 
 def _install_failures(status):
