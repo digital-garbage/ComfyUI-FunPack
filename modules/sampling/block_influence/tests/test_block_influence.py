@@ -387,3 +387,19 @@ def test_the_measurement_stays_out_of_comfys_memory_recorder_but_the_block_does_
     tally.measure(0, {"img": torch.zeros(8, 4)}, block)
     assert paused["block_ran_paused"] is False, "the block must run inside the recorder, as it always did"
     assert paused["entered"] >= 1, "the measurement's own allocations must be paused"
+
+
+def test_recording_is_off_until_the_user_turns_it_on(tiny_h3, tmp_path):
+    from modules.sampling.block_influence import measure
+    assert not (tmp_path / "switch").exists()        # a fresh install: no switch file yet
+    assert measure.enabled() is False
+    base = tiny_h3.run()
+    patched, _ = _load(tiny_h3)
+    out = tiny_h3.sample(patched)
+    assert torch.equal(out[0], base[0]) and torch.equal(out[1], base[1])
+    from modules.system.taste import store
+    assert not (store.ROOT / "fox" / "block_influence.pending.pt").exists()
+    measure.set_enabled(True)                        # the setting still works
+    assert measure.enabled() is True
+    (tmp_path / "switch").write_text("junk")         # anything but "1" is off
+    assert measure.enabled() is False

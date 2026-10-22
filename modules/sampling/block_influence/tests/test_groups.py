@@ -9,13 +9,16 @@ def _row(reward, axis, profile):
     return {"reward": reward, "axis": axis, "rows": {"ratio": torch.tensor(profile, dtype=torch.float32)}}
 
 
-def test_recording_is_on_when_no_switch_file_exists(tmp_path, monkeypatch):
+def test_recording_is_off_when_no_switch_file_exists(tmp_path, monkeypatch):
     monkeypatch.setattr(measure, "SWITCH", tmp_path / "switch")
-    assert measure.enabled() is True
-    measure.set_enabled(False)
+    assert not (tmp_path / "switch").exists()
     assert measure.enabled() is False
     measure.set_enabled(True)
     assert measure.enabled() is True
+    measure.set_enabled(False)
+    assert measure.enabled() is False
+    (tmp_path / "switch").write_text("junk")
+    assert measure.enabled() is False
 
 
 def test_groups_sort_dislikes_by_axis():

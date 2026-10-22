@@ -74,7 +74,7 @@ export const taste = (app) => function mount() {
     if (influence && influence.error) rows.push(c.banner.warn({ text: `Could not read the recording: ${influence.error}` }));
     // The switch is always here, even when the report could not be read: a failed read must not take away the way to turn recording off.
     rows.push(c.toggle.default({ label: "Record block influence", hint: "On: each run on a Taste key is measured, and kept once you rate it. Off: nothing is recorded.",
-      checked: influence && influence.state ? !!influence.state.enabled : true,
+      checked: influence && influence.state ? !!influence.state.enabled : false,
       onChange: async (on) => { try { await app.api.setBlockInfluence(on); } catch (err) { tell(err.message); } refreshResearch(); } }));
     if (influence && influence.state) {
       const { state, four } = influence;
