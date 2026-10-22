@@ -132,3 +132,5 @@
   inline-size: 10ch;
   font-family: var(--font-mono);
 }
+
+.cx-segment.cx-on { font-weight: var(--fw-semibold); }

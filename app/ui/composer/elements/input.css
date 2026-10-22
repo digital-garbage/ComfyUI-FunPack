@@ -102,3 +102,8 @@
   border: 0; background: transparent; padding: 0;
 }
 .cx-filter-full .cx-filter-row { padding: var(--sp-3) var(--sp-3); }
+
+/* Selected is never colour alone (Apple HIG, Color): a picker row also carries a
+   check mark, and the label is bolder. Navigation lists (the full-pane variant)
+   keep the highlight only, as a sidebar does. */
+.cx-filter-row.cx-on:not(.cx-filter-full *)::after { content: "✓"; margin-inline-start: auto; font-weight: var(--fw-bold); }

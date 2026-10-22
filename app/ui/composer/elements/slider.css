@@ -36,9 +36,12 @@
 
 .cx-readout {
   font-family: var(--font-mono); font-variant-numeric: tabular-nums;
-  font-size: var(--fs-6); color: var(--muted);
-  min-width: 4ch; text-align: right;
+  font-size: var(--fs-5); color: var(--text);
+  flex: none; width: 8ch; min-width: 8ch; height: var(--ctl-h-md); padding: 0 var(--sp-3);
+  text-align: right; background: var(--elev-2);
+  border: var(--bw) solid var(--line); border-radius: var(--ctl-r);
 }
+.cx-readout:hover:not(:disabled) { border-color: var(--line-hover); }
 
 .cx-macro { display: flex; flex-direction: column; gap: var(--sp-3); width: 100%; }
 .cx-macro-presets { display: flex; gap: var(--sp-2); flex-wrap: wrap; }

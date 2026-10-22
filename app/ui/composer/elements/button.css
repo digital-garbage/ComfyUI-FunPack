@@ -84,3 +84,5 @@
   color: var(--on-teal); border-color: var(--teal); font-weight: var(--fw-semibold);
 }
 .cx-btn-render:hover:not(:disabled) { filter: brightness(1.08); }
+
+.cx-btn.cx-on, .cx-rail-item.cx-on { font-weight: var(--fw-semibold); }
