@@ -281,7 +281,7 @@ export default {
     function open() {
       if (win) return;
       body = c.region.stack({ gap: "lg" });
-      win = c.modal.generic({ title: "Make a LoRA", subtitle: "teach the model your style, in four steps", size: "xl", closeOnOutside: false, body,
+      win = c.modal.generic({ title: "Make a LoRA", subtitle: "teach the model your style, in four steps", size: "xl", closeOnOutside: false, body, origin: () => button.node,
         onClose: () => { win = null; session.flush(); clearTimeout(tagPoll); clearTimeout(syncPoll); } });
       syncPoll = setTimeout(reconcile, POLL * 5);
       offSession = session.on(draw);

@@ -72,10 +72,11 @@ export default {
       const body = c.region.stack({ gap: "sm", fill: true });
       const show = (tab) => { cleanup(); body.set([c.tabs.underline({ label: "Composer", tabs: TABS.filter((t) => !TAB_MODULE[t.value] || !app.hasModule || app.hasModule(TAB_MODULE[t.value])), value: tab, onChange: show }), sheets[tab](app, (off) => owned.push(off))]); };
       show("story");
-      win = c.floating.window({ id: "composer", title: "Composer", subtitle: "prompt craft", body, width: 420, height: 520, x: 320, y: 90,
+      win = c.floating.window({ id: "composer", title: "Composer", subtitle: "prompt craft", body, width: 420, height: 520, x: 320, y: 90, origin: () => button.node,
         onClose: () => { cleanup(); win = null; } });
     };
-    host.append(c.button.sm({ label: "◆ Composer", tone: "neutral", onClick: () => (win ? win.close() : open()) }).node);       // the button toggles it, as v4
+    const button = c.button.sm({ label: "◆ Composer", tone: "neutral", onClick: () => (win ? win.close() : open()) });
+    host.append(button.node);       // the button toggles it, as v4
     app.inputHooks.push(chatHook);          // last, so a setup that failed above leaves nothing behind
     return () => { cleanup(); app.inputHooks.splice(app.inputHooks.indexOf(chatHook) >>> 0, 1); };
   },
