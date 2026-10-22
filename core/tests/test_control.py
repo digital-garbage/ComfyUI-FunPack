@@ -151,3 +151,11 @@ def test_a_turned_off_module_that_is_loaded_but_not_in_the_filtered_list_is_not_
     control.partition([spec("other")], {"_off": {"modules": ["sharpen"]}})
     control.partition([spec("other")], {"_off": {"all": True}})
     assert not [r for r in log.history() if "no module with that id" in r["message"]]
+
+
+def test_camera_switch_is_its_own_flag_and_leaves_all_enhancements_alone():
+    assert control.camera_off({"_off": {"camera": True}}) and not control.camera_off({"_off": {"camera": "yes"}}) and not control.camera_off({})
+    assert not control.all_off({"_off": {"camera": True}})
+    assert control.bad_off({"camera": True}) is None and control.bad_off({"camera": "yes"})
+    kept, _ = control.partition([spec("a")], {"_off": {"camera": True}})
+    assert [s.id for s in kept] == ["a"]

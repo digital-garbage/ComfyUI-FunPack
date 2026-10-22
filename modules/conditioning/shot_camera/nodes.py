@@ -8,6 +8,9 @@ from ..._core import control as control_mod, log, registry as registry_mod, sche
 from . import engine, memory
 
 ID = "conditioning_shot_camera"
+#: What "disable automatic camera prompt enhancement" turns off. Liked details (detail_notes) is not camera work.
+CAMERA_SWITCHES = ("camera_moves", "shot_cuts", "cut_same_shot", "reframe_same_shot", "shot_views")
+CAMERA_CHANCES = ("cut_difference_chance", "uneven_shots_chance", "focus_infusion_chance")
 
 
 def _values(settings):
@@ -18,6 +21,8 @@ def _values(settings):
     clean, problems = schema_mod.check_values(spec, (settings or {}).get(ID))
     for problem in problems or ():
         log.once(f"shot_camera:{problem}", log.ALERT, "FunPack Shot Camera", f"setting ignored, default used: {problem}")
+    if control_mod.camera_off(settings):                       # the camera switch: the camera's rewrites sit out, liked details stay
+        clean = {**clean, **dict.fromkeys(CAMERA_SWITCHES, False), **dict.fromkeys(CAMERA_CHANCES, 0.0)}
     return clean
 
 

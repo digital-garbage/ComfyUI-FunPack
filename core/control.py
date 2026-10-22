@@ -44,6 +44,13 @@ def all_off(settings) -> bool:
     return isinstance(raw, dict) and raw.get("all") is True
 
 
+def camera_off(settings) -> bool:
+    """The project's "disable automatic camera prompt enhancement" switch: Shot camera stops writing cuts, views,
+    reframes and camera moves into the prompt. Nothing else is touched."""
+    raw = settings.get("_off") if isinstance(settings, dict) else None
+    return isinstance(raw, dict) and raw.get("camera") is True
+
+
 def off_by_project(settings) -> set:
     """Module ids the project turned off, read from the settings payload."""
     raw = settings.get("_off") if isinstance(settings, dict) else None
@@ -60,8 +67,8 @@ def bad_off(raw) -> str | None:
     if raw is None:
         return None
     ids = raw.get("modules", []) if isinstance(raw, dict) else None          # either half may stand alone
-    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) or not isinstance(raw.get("all", False), bool):
-        return '"_off" must be {"modules": ["module_id", ...], "all": true|false}'
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) or not all(isinstance(raw.get(k, False), bool) for k in ("all", "camera")):
+        return '"_off" must be {"modules": ["module_id", ...], "all": true|false, "camera": true|false}'
     return None
 
 

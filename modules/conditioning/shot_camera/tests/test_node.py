@@ -172,3 +172,27 @@ def test_a_node_that_will_not_rewrite_does_not_invalidate_what_comes_after_it(mo
     assert nodes.FunPackShotCamera.fingerprint_inputs(text=shots, settings={}) == ""
     assert nodes.FunPackShotCamera.fingerprint_inputs(text="no shots here", settings={"camera_moves": True}) == ""
     assert math.isnan(nodes.FunPackShotCamera.fingerprint_inputs(text=shots, settings={"camera_moves": True}))
+
+
+def test_camera_switch_turns_off_the_camera_rewrites_and_only_those(tmp_path, monkeypatch):
+    """_off.camera: moves, cuts, views, reframes (and their chances) sit out; liked details and the plain pipeline stay."""
+    import types
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    m = _mod()
+    spec = types.SimpleNamespace(id=nodes.ID, settings=m.SETTINGS, defaults=lambda: {k: v.get("default") for k, v in m.SETTINGS.items()})
+    monkeypatch.setattr(nodes.registry_mod, "current", lambda *a, **k: types.SimpleNamespace(specs={nodes.ID: spec}))
+    every = {k: True for k in nodes.CAMERA_SWITCHES} | {"detail_notes": True, "detail_notes_chance": 1.0}
+    every |= {k: 1.0 for k in nodes.CAMERA_CHANCES}
+    on = {nodes.ID: every}
+    text = "[Shot 1] A woman walks.\n[Shot 2] She sits down."
+    assert nodes._rewrites(nodes._values(on), text)
+    off = nodes._values({**on, "_off": {"camera": True}})
+    assert all(off[k] is False for k in nodes.CAMERA_SWITCHES) and all(off[k] == 0.0 for k in nodes.CAMERA_CHANCES)
+    assert off["detail_notes"] is True and off["detail_notes_chance"] == 1.0          # not camera work: kept
+    assert nodes.FunPackShotCamera.execute(text, 124, 24.0, settings={nodes.ID: {k: True for k in nodes.CAMERA_SWITCHES}, "_off": {"camera": True}}).args[0] == text
+    # Flag off, or only "camera": false: the camera works as before.
+    assert nodes._values({**on, "_off": {"camera": False}}) == nodes._values(on)
+    # Every camera key is a real setting, and nothing outside the list is touched.
+    assert set(nodes.CAMERA_SWITCHES + nodes.CAMERA_CHANCES) <= set(m.SETTINGS)
+    untouched = {k for k in m.SETTINGS} - set(nodes.CAMERA_SWITCHES + nodes.CAMERA_CHANCES)
+    assert all(off[k] == nodes._values(on)[k] for k in untouched)

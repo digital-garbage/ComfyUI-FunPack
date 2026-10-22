@@ -784,3 +784,18 @@ test("reloading the modules picks up a setting's new choices without touching th
   assert.strictEqual(await PS.reloadModules(), false);
   assert.strictEqual(PS.activeModules().find((m) => m.id === "ptd").settings.adapter.options.length, 2);
 });
+
+test("Disable camera prompt enhancement is its own flag: it leaves 'all' and the module choices alone", async () => {
+  const posts = [];
+  const PS = load(posts);
+  await PS.ensureLoaded();
+  await PS.setOff("alg", true);
+  await PS.setCameraOff(true);
+  assert.strictEqual(PS.cameraOff(), true);
+  assert.strictEqual(PS.allOff(), false);
+  assert.strictEqual(PS.isOff("alg"), true);
+  assert.deepStrictEqual(posts.at(-1).values._off, { modules: ["alg"], camera: true });
+  await PS.setCameraOff(false);
+  assert.strictEqual(PS.cameraOff(), false);
+  assert.strictEqual(PS.isOff("alg"), true);
+});

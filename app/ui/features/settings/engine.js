@@ -22,6 +22,9 @@ export const engine = (app) => function mount() {
     page.set([
       c.segmented.sm({ label: "Category", value: category, options: cats.map(([value, label]) => ({ value, label })), onChange: (v) => { category = v; draw(); } }),
       notes.length ? c.banner.info({ text: notes.join(" ") }) : null,
+      category === "conditioning" && ps.modulesById()["conditioning_shot_camera"] ? c.toggle.default({ label: "Disable all automated camera prompt enhancement",
+        hint: "Shot camera stops adding cut times, views, reframes and camera moves to your prompt. Everything else stays as you set it. Your choices are kept.",
+        checked: ps.cameraOff(), onChange: (on) => ps.setCameraOff(on).then(draw) }) : null,
       ...withSettings.filter((m) => (m.category || "") === category).flatMap((m) => [c.label.section({ text: m.title || m.id }),
         ...Object.entries(m.settings).filter(([, spec]) => whenSatisfied(values, m.id, spec.when)).map(([name, spec]) => settingRow(m.id, name, spec, values, change))]),
     ].filter(Boolean));
