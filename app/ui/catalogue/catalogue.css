@@ -72,7 +72,7 @@
 .cat-launch {
   height: var(--ctl-h-lg); padding: 0 var(--ctl-pad-x-lg);
   border: var(--bw) dashed var(--accent); border-radius: var(--ctl-r);
-  background: var(--accent-soft); color: var(--accent-hi);
+  background: var(--accent-soft); color: var(--accent-text);
   font-family: var(--font-mono); font-size: var(--fs-6); cursor: pointer;
 }
 

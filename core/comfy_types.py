@@ -167,7 +167,7 @@ def autogrow_instances(options: Optional[dict]) -> List[Tuple[str, Any, Dict[str
     `template` allows -- "ref_images" carrying `{"template": {"input":
     {"required": {"ref_image": ("IMAGE", {...})}}, "prefix": "ref_image_",
     "min": 0, "max": 9}}` becomes ("ref_image_0", "IMAGE", {...}) through
-    ("ref_image_9", "IMAGE", {...}).
+    ("ref_image_8", "IMAGE", {...}): nine sockets, as the node itself builds them.
 
     Every instance is wireable regardless of `min`: an autogrow's own `min` is
     how many the ORIGINAL node would insist on before it runs, which is not
@@ -186,17 +186,24 @@ def autogrow_instances(options: Optional[dict]) -> List[Tuple[str, Any, Dict[str
     template = (options or {}).get("template")
     if not isinstance(template, dict):
         return []
-    wrapped = (template.get("input") or {}).get("required") or {}
+    inner = template.get("input") or {}
+    wrapped = inner.get("required") or inner.get("optional") or {}          # the wrapped input may be an optional one
     if len(wrapped) != 1:
         return []
     (inner_name, inner_decl), = wrapped.items()
-    prefix = template.get("prefix")
-    lo, hi = template.get("min"), template.get("max")
-    if (not isinstance(prefix, str) or not isinstance(lo, int) or not isinstance(hi, int)
-            or isinstance(lo, bool) or isinstance(hi, bool) or lo > hi):
+    # ComfyUI's own naming (comfy_api _io.Autogrow): a prefix template has `max` instances numbered from 0
+    # (prefix0 .. prefix{max-1}); a names template has exactly the names it lists. `min` is only how many a run
+    # insists on, so it never changes which names exist.
+    prefix, names = template.get("prefix"), template.get("names")
+    hi = template.get("max")
+    if isinstance(names, list) and names and all(isinstance(n, str) and n for n in names):
+        found = list(names)
+    elif isinstance(prefix, str) and isinstance(hi, int) and not isinstance(hi, bool) and hi >= 1:
+        found = [f"{prefix}{i}" for i in range(hi)]
+    else:
         return []
     kind, inner_options = declared(inner_decl)
-    return [(f"{prefix}{i}", kind, inner_options) for i in range(lo, hi + 1)]
+    return [(name, kind, inner_options) for name in found]
 
 
 def match_type_union(allowed: Any) -> Optional[str]:

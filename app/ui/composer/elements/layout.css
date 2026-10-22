@@ -1,10 +1,10 @@
-.cx-field { display: flex; flex-direction: column; gap: var(--sp-2); }
-.cx-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-5); }
+.cx-field { display: flex; flex-direction: column; gap: var(--sp-3); }
+.cx-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-7); }
 .cx-field-error { font-size: var(--fs-6); color: var(--danger); }
 
 .cx-settings-row {
   display: flex; align-items: center; justify-content: space-between; gap: var(--sp-7);
-  padding: var(--sp-4) 0; border-bottom: var(--bw) solid var(--line-2);
+  padding: var(--sp-6) 0; border-bottom: var(--bw) solid var(--line-2);
 }
 .cx-settings-row:last-child { border-bottom: 0; }
 .cx-settings-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -124,12 +124,12 @@
    which is how a prompt box ended up 8px under one label and 3px under the
    next. The body decides the rhythm; what goes in it brings nothing. */
 .cx-panel-body {
-  padding: var(--sp-6); flex: 1 1 auto; min-block-size: 0; overflow: auto;
+  padding: var(--sp-7); flex: 1 1 auto; min-block-size: 0; overflow: auto;
   /* Both axes. A body is a scroller, and a scroller that cannot shrink below
      its content is not one -- it hands the width up to the zone, the column and
      the window, which then scrolls sideways as a page. */
   min-inline-size: 0;
-  display: flex; flex-direction: column; gap: var(--sp-5);
+  display: flex; flex-direction: column; gap: var(--sp-6);
 }
 /* One child fills the body -- a viewer, a bin. Several are each their own
    height and the body scrolls, which is what a panel of controls does. */
@@ -143,8 +143,8 @@
 }
 
 .cx-action-bar {
-  display: flex; align-items: center; gap: var(--sp-6);
-  padding: var(--sp-5) var(--gutter);
+  display: flex; align-items: center; gap: var(--sp-7);
+  padding: var(--sp-6) var(--gutter);
   border-top: var(--bw) solid var(--line); background: var(--grad-band);
   position: sticky; bottom: 0;
 }
@@ -152,7 +152,7 @@
    the end. Everything shared one right-aligned group before, so "Ready" sat
    against the Generate button with 1300px of empty bar to its left. */
 .cx-action-bar-lead { display: flex; align-items: center; gap: var(--sp-5); min-inline-size: 0; }
-.cx-action-bar-buttons { display: flex; align-items: center; gap: var(--sp-3); margin-inline-start: auto; }
+.cx-action-bar-buttons { display: flex; align-items: center; gap: var(--sp-4); margin-inline-start: auto; }
 
 .cx-list-wrap { display: flex; flex-direction: column; gap: var(--sp-3); align-items: flex-start; }
 .cx-list {
@@ -161,7 +161,7 @@
 }
 .cx-list-row {
   display: flex; align-items: center; gap: var(--sp-4);
-  padding: var(--sp-3) var(--sp-5); border-bottom: var(--bw) solid var(--line-2);
+  padding: var(--sp-4) var(--sp-6); border-bottom: var(--bw) solid var(--line-2);
 }
 .cx-list-row:last-child { border-bottom: 0; }
 .cx-list-label { font-size: var(--fs-4); flex: 1; min-width: 0; }
@@ -255,7 +255,7 @@
    read as the label belonging to the divider rather than to what is under it.
    Narrower at the sides than at the top: this is the third box a setting's text
    is nested inside, and each level of padding comes out of the words. */
-.cx-collapsible-body { padding: var(--sp-6) var(--sp-4) var(--sp-5); }
+.cx-collapsible-body { padding: var(--sp-7) var(--sp-6) var(--sp-6); }
 
 .cx-rail { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-2); }
 .cx-rail-item {
@@ -265,7 +265,7 @@
   color: var(--muted); font-size: var(--fs-5); cursor: pointer; text-align: left;
 }
 .cx-rail-item:hover { background: var(--hover); color: var(--text); }
-.cx-rail-item.cx-on { background: var(--accent-soft); color: var(--accent-hi); }
+.cx-rail-item.cx-on { background: var(--accent-soft); color: var(--accent-text); }
 .cx-rail-icon { width: 18px; text-align: center; }
 
 /* Workspace: a centre that shrinks, panels docked either side.
@@ -406,9 +406,9 @@
 .cx-stack { display: flex; flex-direction: column; min-inline-size: 0; }
 .cx-stack > * { min-inline-size: 0; }
 .cx-stack-none { gap: 0; }
-.cx-stack-sm { gap: var(--sp-4); --cx-gap: var(--sp-4); }
-.cx-stack-md { gap: var(--sp-6); --cx-gap: var(--sp-6); }
-.cx-stack-lg { gap: var(--sp-9); }
+.cx-stack-sm { gap: var(--sp-5); --cx-gap: var(--sp-5); }
+.cx-stack-md { gap: var(--sp-8); --cx-gap: var(--sp-8); }
+.cx-stack-lg { gap: var(--sp-10); }
 
 /* Filling the room it was given, rather than sizing to its content. Without a
    definite height nothing inside can scroll: the whole page scrolls instead,

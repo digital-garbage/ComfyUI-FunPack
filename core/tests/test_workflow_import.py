@@ -190,3 +190,94 @@ def test_a_set_inside_one_subgraph_copy_is_not_read_by_the_other_copy():
          "links": [link(70, "sg1_1", 0, "sg1_2", 0), link(71, "sg1_3", 0, "sg1_4", 0), link(72, "sg2_1", 0, "sg2_2", 0), link(73, "sg2_3", 0, "sg2_4", 0)]}
     got = {s["id"]: s for s in wi.convert(w, S)["slots"]}
     assert got["wsg2_4"]["inputs"]["latent_image"] == ["wsg2_1", 0] and got["wsg1_4"]["inputs"]["latent_image"] == ["wsg1_1", 0]
+
+
+# ── what the official ComfyUI workflow templates showed (audit, 2026-10-21) ──────────────────────────────
+
+NODES["Resize"] = {"inputs": {"image": "IMAGE", "kind": "COMBO", "kind.width": "INT", "kind.mult": "FLOAT", "method": "COMBO"}, "outputs": ["IMAGE"],
+                   "shown_by": {"kind.width": ("kind", ["exact"]), "kind.mult": ("kind", ["scale"])}}
+NODES["Sampler2"] = {"inputs": {"seed": "INT", "steps": "INT", "denoise": "FLOAT", "model": "MODEL"}, "outputs": ["LATENT"]}
+NODES["Guider"] = {"inputs": {"model": "MODEL", "conditioning": "CONDITIONING"}, "outputs": ["GUIDER"]}
+NODES["Save"] = {"inputs": {"samples": "LATENT", "quality": "INT"}, "outputs": [], "required": ["samples", "quality"], "output": True,
+                 "defaults": {"quality": 90}}
+NODES["Viewer"] = {"inputs": {"images": "IMAGE", "view": "IMAGECOMPARE"}, "outputs": [], "required": ["view"], "output": True, "frontend": {"view"}}
+
+
+def test_a_widget_value_that_is_a_list_does_not_crash_the_reading_of_the_next_one():
+    # a bounding-box editor stores a list where a number's control word would be
+    n = {"id": 1, "type": "Sampler2", "inputs": [], "widgets_values": [1, [1, 2], 5]}
+    assert wi.convert({"nodes": [n], "links": []}, S)["slots"][0]["inputs"]["seed"] == 1
+
+
+def test_a_dynamic_combo_reads_its_chosen_widgets_right_after_it_and_leaves_the_next_widget_alone():
+    for values, want in ((["exact", 1536, "lanczos"], {"kind": "exact", "kind.width": 1536, "method": "lanczos"}),
+                         (["scale", 2.0, "area"], {"kind": "scale", "kind.mult": 2.0, "method": "area"})):
+        n = {"id": 1, "type": "Resize", "inputs": [{"name": "image", "link": None}], "widgets_values": values}
+        assert wi.convert({"nodes": [n], "links": []}, S)["slots"][0]["inputs"] == want
+
+
+def test_named_values_win_over_counting_and_control_words_are_not_inputs():
+    n = {"id": 1, "type": "Sampler2", "inputs": [], "widgets_values": [9, "fixed", 4, 1.0],
+         "widgets_values_named": {"seed": 9, "control_after_generate": "fixed", "steps": 4, "denoise": 1.0}}
+    assert wi.convert({"nodes": [n], "links": []}, S)["slots"][0]["inputs"] == {"seed": 9, "steps": 4, "denoise": 1.0}
+
+
+def test_a_node_inside_a_subgraph_keeps_every_widget_though_its_sockets_list_only_some():
+    # the top-level rule (only sockets marked as widgets are widgets) must not apply to widgets the definition never lists as sockets
+    n = {"id": 1, "type": "Sampler2", "inputs": [{"name": "steps", "link": None, "widget": {"name": "steps"}}], "widgets_values": [7, "fixed", 4, 0.5]}
+    assert wi.convert({"nodes": [n], "links": []}, S)["slots"][0]["inputs"] == {"seed": 7, "steps": 4, "denoise": 0.5}
+
+
+def test_an_instance_of_a_subgraph_gets_one_value_per_typed_in_input_in_the_definitions_order():
+    sub = {"id": "sg-9", "name": "Run", "nodes": [node(7, "Sampler2", [("steps", None), ("seed", None)], [0, "fixed", 1, 1.0])],
+           "inputs": [{"name": "model", "type": "MODEL"}, {"name": "seed", "type": "INT"}, {"name": "steps", "type": "INT"}],
+           "outputs": [{"name": "out", "type": "LATENT"}],
+           "links": [{"id": 1, "origin_id": wi.SG_IN, "origin_slot": 1, "target_id": 7, "target_slot": 1, "type": "INT"},
+                     {"id": 2, "origin_id": wi.SG_IN, "origin_slot": 2, "target_id": 7, "target_slot": 0, "type": "INT"},
+                     {"id": 3, "origin_id": 7, "origin_slot": 0, "target_id": wi.SG_OUT, "target_slot": 0, "type": "LATENT"}]}
+    sub["nodes"][0]["inputs"][0]["widget"] = {"name": "steps"}
+    w = {"definitions": {"subgraphs": [sub]}, "nodes": [{"id": 2, "type": "sg-9", "inputs": [{"name": "model", "link": None}], "widgets_values": [123, 30]},
+                                                          node(3, "VAEDecode", [("samples", 41)])],
+         "links": [link(41, 2, 0, 3, 0)]}
+    got = {s["id"]: s for s in wi.convert(w, S)["slots"]}["wsg2_7"]["inputs"]
+    assert got["seed"] == 123 and got["steps"] == 30
+
+
+def test_the_prompt_is_found_through_a_guiders_conditioning_input():
+    w = {"nodes": [node(1, "CLIPTextEncode", [("clip", None)], ["a fox"]), node(2, "Guider", [("conditioning", 10)]),
+                   node(3, "Save", [("samples", 11)], [80])],
+         "links": [link(10, 1, 0, 2, 0)]}
+    out = wi.convert(w, S)
+    assert out["bound"]["prompt"] == ["CLIPTextEncode #1.text"]
+
+
+def test_a_widget_an_older_export_never_had_gets_the_nodes_default_and_a_dangling_node_is_left_out():
+    w = {"nodes": [node(1, "Sampler2", [], [1, "fixed", 4, 1.0]), node(2, "Save", [("samples", 10)], []),
+                   node(3, "Resize", [("image", None)], ["exact", 64, "area"])],      # feeds nothing, takes nothing
+         "links": [link(10, 1, 0, 2, 0)]}
+    out = wi.convert(w, S)
+    assert {s["id"] for s in out["slots"]} == {"w1", "w2"}
+    assert {s["id"]: s for s in out["slots"]}["w2"]["inputs"]["quality"] == 90
+    assert any("Left out" in n and "Resize #3" in n for n in out["notes"])
+
+
+def test_a_viewer_only_the_comfyui_page_can_draw_is_not_an_end_and_does_not_block_the_run():
+    w = {"nodes": [node(1, "Sampler2", [], [1, "fixed", 4, 1.0]), node(2, "Save", [("samples", 10)], [80]), node(3, "Viewer", [("images", 11)])],
+         "links": [link(10, 1, 0, 2, 0)]}
+    out = wi.convert(w, S)
+    assert {s["id"] for s in out["slots"]} == {"w1", "w2"}
+
+
+def test_an_end_that_lost_its_feed_stops_the_pruning_instead_of_hiding_the_whole_graph():
+    w = {"nodes": [node(1, "Sampler2", [], [1, "fixed", 4, 1.0]), node(2, "Save", [], [80])], "links": []}
+    assert {s["id"] for s in wi.convert(w, S)["slots"]} == {"w1", "w2"}
+
+
+def test_a_bypassed_node_with_an_any_socket_passes_that_input_through():
+    NODES["Peek"] = {"inputs": {"source": "*"}, "outputs": ["STRING"]}
+    w = {"nodes": [node(1, "CLIPTextEncode", [("clip", None)], ["fox"]),
+                   node(2, "Peek", [("source", 20, "*")], mode=4, outputs=[{"type": "STRING"}]),
+                   node(3, "CLIPTextEncode", [("text", 21, "STRING")], [""])],
+         "links": [link(20, 3, 0, 2, 0, "*"), link(21, 2, 0, 1, 0, "STRING")]}
+    got = {s["id"]: s for s in wi.convert(w, S)["slots"]}
+    assert "w2" not in got

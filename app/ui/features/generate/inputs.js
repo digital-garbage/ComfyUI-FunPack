@@ -48,6 +48,9 @@ export async function buildInputs({ project, scene, slots, expand, nodeInfo, fra
   };
   const { overrides, unwired, left } = wireReferences(plan.ids, slots, source ? [source.slot.id] : [], plan.pins, (id) => kinds.get(id), routeOf, (id) => sounds.has(id));
   for (const [id, fields] of Object.entries(overrides)) raw[id] = { ...raw[id], ...fields };
+  // A picked start picture that no slot takes would otherwise be ignored without a word.
+  const ignored = !source && scene.source_image && project.generation_mode !== "t2v";
+  if (ignored) left.push({ id: scene.source_image, at: "assets.source_image", why: "this pipeline starts from no picture" });
 
   const prompt = rolesAt(slots, "generation.prompt")[0];
   let failedExpand = false;
@@ -70,5 +73,5 @@ export async function buildInputs({ project, scene, slots, expand, nodeInfo, fra
   // Judged on what is SENT (a carried frame counts; a picture t2v blanks, or one this pipeline has no input for, does not).
   const picture = (source && (raw[source.slot.id] || {}).media_id) || Object.keys(overrides).length;
   if (prompt && !String((raw[prompt.slot.id] || {})[prompt.role.input] ?? "").trim() && !picture) notes.push("This shot has no text and no start picture, so the model makes whatever it likes.");
-  return { inputs: raw, unwired, left, noPrompt: !prompt, notes };
+  return { inputs: raw, unwired: unwired + (ignored ? 1 : 0), left, noPrompt: !prompt, notes };
 }

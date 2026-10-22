@@ -5,6 +5,7 @@ import { el } from "../internals/el.js";
 import { setText } from "../internals/text.js";
 import { uid } from "../internals/ids.js";
 import { mount, unmount } from "../internals/portal.js";
+import { genieIn, genieOut } from "../internals/genie.js";
 import { claimFor } from "../internals/zlayer.js";
 import { push } from "../internals/dismiss.js";
 import { trap } from "../internals/focus.js";
@@ -26,7 +27,7 @@ const recall = (id) => { try { return JSON.parse(localStorage.getItem(`cx.win.${
 define("floating", "window", ({
   id = uid("win"), title, subtitle, body,
   width = 420, height = 320, x = 80, y = 80,
-  resizable = true, rollup = true, onClose,
+  resizable = true, rollup = true, onClose, origin,
 } = {}) => {
   const saved = recall(id) || {};
   const box = { x: saved.x ?? x, y: saved.y ?? y, width: saved.width ?? width, height: saved.height ?? height };
@@ -134,6 +135,7 @@ define("floating", "window", ({
 
   apply();
   mount(node);
+  if (origin) genieIn(node, origin);
 
   // Click anywhere in the window brings it to the front of its rung.
   const toFront = () => { layer.raise(); };
@@ -194,7 +196,7 @@ define("floating", "window", ({
       stopDrag(); stopResize();
       window.removeEventListener("resize", onViewportResize);
       layer.release();
-      unmount(node);
+      if (origin) genieOut(node, origin, () => unmount(node)); else unmount(node);
       if (onClose) onClose(reason);
     },
     destroy() { handle.close("destroy"); },

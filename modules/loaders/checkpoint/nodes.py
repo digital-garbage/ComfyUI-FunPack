@@ -44,7 +44,9 @@ class FunPackCheckpointLoader(io.ComfyNode):
 
         # Each part is reported, because a checkpoint missing its VAE or its
         # encoder loads happily and then fails somewhere else entirely.
-        missing = [name for name, part in (("clip", clip), ("vae", vae)) if part is None]
+        # ComfyUI hands back an empty VAE placeholder (it raises when used) for a file with no VAE in it.
+        no_vae = vae is None or getattr(vae, "first_stage_model", True) is None
+        missing = [name for name, gone in (("clip", clip is None), ("vae", no_vae)) if gone]
         if missing:
             log.warning("FunPack Checkpoint Loader",
                         f"{ckpt_name} has no {' or '.join(missing)}; those outputs are empty "

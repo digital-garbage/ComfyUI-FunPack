@@ -17,7 +17,7 @@
 body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
 
 /* panels: a card, not a bordered strip */
-.cx-panel-head { background: transparent; border-bottom: var(--bw) solid var(--line); padding: var(--sp-3) var(--sp-7); }
+.cx-panel-head { background: transparent; border-bottom: var(--bw) solid var(--line); padding: var(--sp-5) var(--sp-7); }
 .cx-panel-title { font-size: var(--fs-4); font-weight: var(--fw-semibold); color: var(--text); letter-spacing: -.01em; }
 .cx-panel-title::before { display: none; }
 .cx-panel-status { color: var(--muted); }
@@ -27,12 +27,12 @@ body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
 .cx-btn { background: var(--elev-2); border-color: transparent; font-weight: var(--fw-medium); }
 .cx-btn:hover:not(:disabled) { background: var(--hover); border-color: transparent; }
 .cx-btn-primary { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: var(--fw-semibold); box-shadow: none; }
-.cx-btn-primary:hover:not(:disabled) { background: var(--accent-hi); border-color: transparent; }
+.cx-btn-primary:hover:not(:disabled) { background: var(--accent-solid-hover); border-color: transparent; }
 .cx-btn-ghost { background: transparent; }
 .cx-btn-ghost:hover:not(:disabled) { background: var(--hover); }
-.cx-btn.cx-on { background: var(--accent-soft); border-color: transparent; color: var(--accent-hi); }
+.cx-btn.cx-on { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); }
 .cx-btn-danger { border-color: transparent; background: color-mix(in srgb, var(--danger) 12%, var(--elev-2)); }
-.cx-btn-render { background: linear-gradient(var(--teal), color-mix(in srgb, var(--teal) 78%, black)); color: var(--on-accent); border-color: transparent; font-weight: var(--fw-semibold); }
+.cx-btn-render { background: linear-gradient(var(--teal), color-mix(in srgb, var(--teal) 88%, black)); color: var(--on-teal); border-color: transparent; font-weight: var(--fw-semibold); }
 .cx-btn-render:hover:not(:disabled) { background: linear-gradient(var(--teal), color-mix(in srgb, var(--teal) 78%, black)); filter: brightness(1.08); }
 .cx-btn-menu { background: transparent; }
 .cx-btn-menu:hover:not(:disabled) { background: var(--hover); }
@@ -71,22 +71,22 @@ body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
 .cx-chip-neutral { background: var(--elev-2); }
 
 /* inside a settings card the buttons are quiet: a tinted fill with accent text, never a row of solid amber */
-.cx-settings-row .cx-btn-primary { background: var(--accent-soft); color: var(--accent-hi); }
+.cx-settings-row .cx-btn-primary { background: var(--accent-soft); color: var(--accent-text); }
 .cx-settings-row .cx-btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 24%, transparent); }
 .cx-settings-row .cx-btn { background: var(--elev-3); }
 
 /* windows and dialogs: the same rounded card, a deeper shadow, a calmer title bar */
 .cx-window, .cx-modal { border-radius: var(--card-r); border-color: var(--line); }
-.cx-window-bar, .cx-modal-head { background: transparent; border-bottom-color: var(--line); padding: var(--sp-5) var(--sp-7); }
+.cx-window-bar, .cx-modal-head { background: transparent; border-bottom-color: var(--line); padding: var(--sp-8) var(--sp-9) var(--sp-7); }
 .cx-window-title, .cx-modal-title { font-weight: var(--fw-semibold); letter-spacing: -.01em; }
 .cx-modal-title { font-size: var(--fs-3); }
-.cx-modal-body { padding: var(--sp-8); }
-.cx-modal-foot { background: transparent; border-top-color: var(--line); padding: var(--sp-5) var(--sp-7); }
+.cx-modal-body { padding: var(--sp-9); }
+.cx-modal-foot { background: transparent; border-top-color: var(--line); padding: var(--sp-7) var(--sp-9); }
 .cx-tabs-underline .cx-tab { font-weight: var(--fw-medium); }
 
 /* menus and popovers: floating cards with pill-shaped rows, like a macOS menu */
 .cx-popover { border-radius: var(--r-5); padding: var(--sp-3); background: var(--elev-3); }
-.cx-menu-item { padding: var(--sp-3) var(--sp-5); border-radius: var(--r-3); font-size: var(--fs-4); }
+.cx-menu-item { padding: var(--sp-4) var(--sp-6); border-radius: var(--r-3); font-size: var(--fs-4); }
 .cx-menu-item:hover:not(:disabled), .cx-menu-item.cx-on { background: var(--accent); color: var(--on-accent); }
 .cx-menu-item:hover:not(:disabled) .cx-menu-icon, .cx-menu-item:hover:not(:disabled) .cx-menu-hint { color: inherit; }
 .cx-menu-sep { margin: var(--sp-3) var(--sp-3); }
@@ -100,7 +100,7 @@ body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
 .cx-viewer-media { border-radius: var(--r-3); }
 
 /* inspector: related fields share one rounded card */
-.cx-fieldcard { background: var(--elev-2); border-radius: var(--r-5); padding: var(--sp-6); gap: var(--sp-5); }
+.cx-fieldcard { background: var(--elev-2); border-radius: var(--r-5); padding: var(--sp-7); gap: var(--sp-6); }
 .cx-fieldcard .cx-input, .cx-fieldcard .cx-textarea, .cx-fieldcard .cx-select { background: var(--elev-3); }
 .cx-fieldcard .cx-segmented { background: var(--elev-3); }
 .cx-panel-body > .cx-eyebrow, .cx-stack > .cx-eyebrow { margin-block-start: var(--sp-4); }

@@ -72,10 +72,20 @@ def flatten_subgraphs(wf: dict, schemas) -> dict:
     counter = [max([int(r[0]) for r in _rows(wf)] or [0]) + 1]
 
     def promoted(defn):
-        """Which of the definition's inputs stand for an inner widget (what an instance's widgets_values lists)."""
+        """Which of the definition's inputs stand for an inner widget. An instance's widgets_values lists one value
+        for each input that is a typed-in kind (a number, text, a switch, a dropdown), in the definition's order.
+        A definition that does not type its inputs is read off the inner nodes' widget sockets instead."""
+        entries = defn.get("inputs") or []
+        if any(isinstance(e, dict) and e.get("type") for e in entries):
+            found = []
+            for i, entry in enumerate(entries):
+                parts = comfy_types.members(entry.get("type")) if isinstance(entry, dict) else []
+                if parts and all(part in comfy_types.PRIMITIVE for part in parts):
+                    found.append(i)
+            return found
         by_id = {n.get("id"): n for n in defn.get("nodes") or []}
         found = []
-        for i in range(len(defn.get("inputs") or [])):
+        for i in range(len(entries)):
             for link in defn.get("links") or []:
                 if link.get("origin_id") == SG_IN and link.get("origin_slot") == i:
                     sockets = (by_id.get(link.get("target_id")) or {}).get("inputs") or []
@@ -111,7 +121,7 @@ def flatten_subgraphs(wf: dict, schemas) -> dict:
                             tgt = by_old.get(link.get("target_id"))
                             sockets = (tgt or {}).get("inputs") or []
                             ts = link.get("target_slot")
-                            name = ((sockets[ts].get("widget") or {}).get("name")) if tgt and ts is not None and ts < len(sockets) else None
+                            name = ((sockets[ts].get("widget") or {}).get("name") or sockets[ts].get("name")) if tgt and ts is not None and ts < len(sockets) else None
                             if name:
                                 tgt.setdefault("_values", {})[name] = val
             feeds = {i.get("name"): i.get("link") for i in inst.get("inputs") or []}
@@ -162,24 +172,55 @@ def _widgets(schemas, node):
     which inputs are widgets (they carry a "widget" key); the node's schema is the fallback for older exports."""
     types = schemas.inputs(node.get("type"))
     own = [i.get("name") for i in node.get("inputs") or [] if isinstance(i, dict) and i.get("widget")]
-    if own:
+    declared = [(n, t) for n, t in types.items() if t in comfy_types.PRIMITIVE]
+    # An export lists a widget's socket (with a "widget" key) when the node sits at the top level, but a node inside a
+    # subgraph definition keeps most of its widgets out of its sockets, and widgets_values still holds every widget in
+    # the node's declared order. So: a declared widget is read unless the export shows it as a plain socket (listed
+    # without a "widget" key); a node with dynamic inputs the schema cannot name keeps the export's own list.
+    sockets = {i.get("name") for i in node.get("inputs") or [] if isinstance(i, dict)}
+    if own and (not declared or any(n not in types for n in own)):
         return [(n, types.get(n)) for n in own]
-    return [(n, t) for n, t in types.items() if t in comfy_types.PRIMITIVE]
+    return [(n, t) for n, t in declared if n in own or n not in sockets]
 
 
 def _values(schemas, node):
     """The node's typed-in values by input name."""
     raw = node.get("widgets_values")
-    if isinstance(raw, dict):
+    named = node.get("widgets_values_named")
+    if isinstance(named, dict) and named:        # newer exports say which value is whose: no counting needed
+        known, shown = schemas.inputs(node.get("type")), schemas.shown_by(node.get("type"))
+        out = {k: v for k, v in named.items() if k in known} if known else dict(named)        # not control_after_generate and the like
+        # a field a choice brings is named by its short name past the first level ("codec" for "format.codec")
+        for dotted, (parent, keys) in shown.items():
+            short = dotted.rsplit(".", 1)[-1]
+            if dotted not in out and short in named and out.get(parent, named.get(parent)) in keys:
+                out[dotted] = named[short]
+    elif isinstance(raw, dict):
         out = {k: v for k, v in raw.items()}
     elif isinstance(raw, list):
-        out, i = {}, 0
-        for name, kind in _widgets(schemas, node):
+        out, pos = {}, [0]
+        cls = node.get("type")
+        types, shown = schemas.inputs(cls), schemas.shown_by(cls)
+
+        def eat(name, kind):
+            """One widget's value, its control_after_generate if a number has one, and (for a dynamic combo)
+            the widgets of the choice made, which sit right after it and nowhere else."""
+            i = pos[0]
             if i >= len(raw):
-                break
-            out[name] = raw[i]; i += 1
-            if i < len(raw) and kind in ("INT", "FLOAT") and raw[i] in CONTROL:
+                return
+            out[name] = value = raw[i]
+            i += 1
+            if i < len(raw) and kind in ("INT", "FLOAT") and isinstance(raw[i], str) and raw[i] in CONTROL:
                 i += 1                                       # control_after_generate rides after a number
+            pos[0] = i
+            if kind == comfy_types.COMBO:
+                for sub, (parent, keys) in shown.items():
+                    if parent == name and value in keys and types.get(sub) in comfy_types.PRIMITIVE:
+                        eat(sub, types[sub])
+
+        for name, kind in _widgets(schemas, node):
+            if name not in shown:                            # a revealed field is read with the combo that reveals it
+                eat(name, kind)
     else:
         out = {}
     out.update(node.get("_values") or {})
@@ -214,6 +255,8 @@ def _from_ui(wf, schemas, notes):
                     outs = n.get("outputs") or []
                     want = (outs[slot] or {}).get("type") if slot < len(outs) else None
                     pick = next((i for i, s in enumerate(socks) if s.get("type") == want and s.get("link") is not None), None)
+                    if pick is None:                         # an "any" socket takes whatever type the output has
+                        pick = next((i for i, s in enumerate(socks) if s.get("type") == "*" and s.get("link") is not None), None)
                     if pick is None:
                         return None
                 row = next((r for r in rows if r[3] == nid and r[4] == pick), None)
@@ -319,11 +362,12 @@ def bind(slots: List[dict], schemas, notes: List[str] = None) -> Tuple[List[dict
                     return s, name
         return None
 
-    for want, key, role in (("positive", "prompt", {"at": "generation.prompt", "label": "Prompt"}),
-                            ("negative", "negative", {"at": "project.negative", "label": "Negative prompt"})):
-        for s in slots:
+    # A guider takes its one prompt as `conditioning` (BasicGuider); a sampler takes `positive` and `negative`.
+    for wants, prefer, key, role in ((("positive", "conditioning"), "positive", "prompt", {"at": "generation.prompt", "label": "Prompt"}),
+                                     (("negative",), "negative", "negative", {"at": "project.negative", "label": "Negative prompt"})):
+        for s, want in ((s, w) for s in slots for w in wants):
             link = (s["inputs"] or {}).get(want)
-            found = text_home(link[0], want) if is_link(link) and link[0] in by_id else None
+            found = text_home(link[0], prefer) if is_link(link) and link[0] in by_id else None
             if found:
                 give(key, found[0], found[1], role)
 
@@ -369,5 +413,43 @@ def convert(workflow: Any, schemas) -> dict:
     missing = sorted({s["node"] for s in slots if not schemas.of(s["node"])})
     if missing:
         notes.append("Not installed here: " + ", ".join(missing) + ". Those nodes are kept but cannot run until their pack is installed" + ("" if api else "; their typed-in values could not be read from this export") + ".")
+    stuck = _fill_unset(slots, schemas) if not api else set()
+    slots = _prune_unused(slots, schemas, notes, stuck)
     slots, bound = bind(slots, schemas, notes)
     return {"slots": slots, "bound": bound, "notes": notes}
+
+
+def _fill_unset(slots, schemas):
+    """A saved workflow has no value for a widget its node gained since (an older export): ComfyUI's frontend
+    shows the node's default there, so the run uses it too. Returns the slots left with a required widget that
+    only the ComfyUI page can fill (a viewer, a bounding-box editor): those cannot run from here."""
+    stuck = set()
+    for s in slots:
+        for name in schemas.required(s["node"], s["inputs"]):
+            if name not in s["inputs"]:
+                has, value = schemas.default(s["node"], name)
+                if has:
+                    s["inputs"][name] = value
+                elif schemas.frontend_only(s["node"], name):
+                    stuck.add(s["id"])
+    return stuck
+
+
+def _prune_unused(slots, schemas, notes, stuck=()):
+    """Only what a save or preview needs, as ComfyUI itself runs: a node nothing downstream uses is left out, so
+    a dangling half-wired node cannot refuse the whole run."""
+    by_id = {s["id"]: s for s in slots}
+    ends = [s["id"] for s in slots if schemas.is_output(s["node"]) and s["id"] not in stuck]      # a viewer only the page can draw is no end
+    if not ends:
+        return slots
+    if any(n not in by_id[e]["inputs"] for e in ends for n in schemas.required(by_id[e]["node"], by_id[e]["inputs"])):
+        return slots         # an end with nothing feeding it means a link was lost: pruning would only hide what is wrong
+    live, queue = set(ends), list(ends)
+    while queue:
+        for v in by_id[queue.pop()]["inputs"].values():
+            if is_link(v) and v[0] in by_id and v[0] not in live:
+                live.add(v[0]); queue.append(v[0])
+    dropped = [s for s in slots if s["id"] not in live]
+    if dropped:
+        notes.append("Left out because nothing that saves or shows a result uses them: " + ", ".join(sorted({f"{s['node']} #{s['id'][1:]}" for s in dropped})) + ".")
+    return [s for s in slots if s["id"] in live]

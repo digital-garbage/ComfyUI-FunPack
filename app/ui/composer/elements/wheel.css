@@ -32,7 +32,7 @@
 }
 .cx-wheel-item .cx-wheel-icon { font-size: var(--fs-2); line-height: 1; }
 .cx-wheel-item.cx-on {
-  color: var(--accent-hi);
+  color: var(--accent-text);
   transform: translate(-50%, -50%) scale(1.06);
 }
 

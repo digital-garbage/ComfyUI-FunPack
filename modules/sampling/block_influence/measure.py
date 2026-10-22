@@ -8,7 +8,7 @@ from ..._core import config, dit_hooks, registry
 
 KIND = "block_influence"
 MIN_PER_GROUP = 2           # liked AND disliked before a difference is one
-SWITCH = config.ROOT / "block_influence.enabled"   # on disk: a fresh rental resumes recording
+SWITCH = config.ROOT / "block_influence.enabled"   # on disk: the choice survives a restart
 
 
 # Why recording cannot or did not store anything, for the panel (shown only while recording is on).
@@ -16,11 +16,11 @@ problem = None
 
 
 def enabled() -> bool:
-    # On until someone turns it off: with no switch file yet (a fresh rental) recording runs.
+    # Off until someone turns it on: with no switch file yet nothing is recorded.
     try:
-        return SWITCH.read_text().strip() != "0"
+        return SWITCH.read_text().strip() == "1"
     except OSError:
-        return True
+        return False
 
 
 def set_enabled(on: bool) -> bool:

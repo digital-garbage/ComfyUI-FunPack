@@ -38,6 +38,32 @@ function sliderBase(cls, { value = 0, min = 0, max = 1, step = 0.01, onChange, o
   };
 }
 
+/**
+ * The number beside a slider. Apple: a wide range wants its exact value shown and
+ * typeable. Typing sets the slider (clamped to its range) and reports like a drag.
+ */
+function valueField(base, props, format) {
+  const out = el("input", {
+    cls: ["cx-readout", "cx-focusable"],
+    attrs: { type: "text", inputmode: "decimal", "aria-label": props.label ? `${props.label} value` : "Value",
+             disabled: props.disabled },
+  });
+  out.value = format(base.value);
+  const apply = () => {
+    const typed = parseFloat(String(out.value).replace(",", "."));
+    if (!Number.isFinite(typed)) { out.value = format(base.value); return; }
+    const lo = Number(base.input.min), hi = Number(base.input.max);
+    const v = Math.min(hi, Math.max(lo, typed));
+    base.setValue(v);
+    out.value = format(v);
+    base.input.dispatchEvent(new Event("input", { bubbles: true }));
+    base.input.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  out.addEventListener("change", apply);
+  out.addEventListener("keydown", (e) => { if (e.key === "Enter") apply(); });
+  return out;
+}
+
 for (const size of ["md", "sm"]) {
   define("slider", size, (props = {}) => sliderBase(`cx-slider cx-slider-${size}`, props));
 }
@@ -45,13 +71,14 @@ for (const size of ["md", "sm"]) {
 define("slider", "readout", ({ unit = "", precision = 2, ...props } = {}) => {
   const base = sliderBase("cx-slider cx-slider-md cx-slider-readout", props);
   const format = (v) => `${Number(v).toFixed(precision)}${unit}`;
-  const out = el("output", { cls: "cx-readout", text: format(base.value) });
-  base.input.addEventListener("input", () => { out.textContent = format(base.input.value); });
+  const out = valueField(base, props, format);
+  base.input.addEventListener("input", () => { out.value = format(base.input.value); });
   base.node.append(out);
   const setValue = base.setValue;
   return {
     ...base,
-    setValue(v) { setValue(v); out.textContent = format(v); },
+    get value() { return base.value; },       // a spread would freeze the value at creation
+    setValue(v) { setValue(v); out.value = format(v); },
     node: base.node,
   };
 });
@@ -63,7 +90,7 @@ define("slider", "readout", ({ unit = "", precision = 2, ...props } = {}) => {
 define("slider", "macro", ({ presets = [], unit = "", precision = 2, ...props } = {}) => {
   const base = sliderBase("cx-slider cx-slider-md cx-slider-macro", props);
   const format = (v) => `${Number(v).toFixed(precision)}${unit}`;
-  const out = el("output", { cls: "cx-readout", text: format(base.value) });
+  const out = valueField(base, props, format);
   base.node.append(out);
 
   const row = el("div", { cls: "cx-macro-presets" });
@@ -74,7 +101,7 @@ define("slider", "macro", ({ presets = [], unit = "", precision = 2, ...props } 
       attrs: { type: "button" },
       on: { click: () => {
         base.setValue(preset.value);
-        out.textContent = format(preset.value);
+        out.value = format(preset.value);
         sync();
         if (props.onChange) props.onChange(preset.value);
         if (props.onCommit) props.onCommit(preset.value);
@@ -87,14 +114,14 @@ define("slider", "macro", ({ presets = [], unit = "", precision = 2, ...props } 
   function sync() {
     for (const { preset, b } of buttons) b.classList.toggle("cx-on", Number(base.value) === preset.value);
   }
-  base.input.addEventListener("input", () => { out.textContent = format(base.input.value); sync(); });
+  base.input.addEventListener("input", () => { out.value = format(base.input.value); sync(); });
   sync();
 
   const node = el("div", { cls: "cx-macro", children: [base.node, row] });
   return {
     node,
     get value() { return base.value; },
-    setValue(v) { base.setValue(v); out.textContent = format(v); sync(); },
+    setValue(v) { base.setValue(v); out.value = format(v); sync(); },
     destroy: () => node.remove(),
   };
 });

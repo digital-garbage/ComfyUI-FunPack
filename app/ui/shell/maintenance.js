@@ -39,7 +39,8 @@ export function createMaintenance({ api, flush }) {
       }
       const bad = res && res.requirements && res.requirements.ran && !res.requirements.ok;
       if (bad) { await c.modal.dialogue({ title: "Dependencies failed", message: `${res.requirements.detail || ""}\n\nFunPack was updated, but installing its dependencies failed: it may not load until they are installed by hand. ComfyUI will restart now.`, confirmLabel: "Restart", cancelLabel: "Restart" }).result; }
-      card.setText(`${said ? said(res) : message}\nRestarting ComfyUI…`);
+      const line = said ? said(res) : message;
+      card.setText(/Restarting ComfyUI/.test(line) ? line : `${line}\nRestarting ComfyUI…`);
     } catch (err) {
       if (action.dropsConnection) { /* the server went down as it restarted: expected */ } else { card.close(); return tell(err.message); }
     }

@@ -17,8 +17,8 @@ activity differed in the 4th decimal). That version averaged over steps before
 looking. Each block's push is averaged over the steps of a run, so a per-step
 signal that cancels within a run is lost (a known limit, not yet fixed).
 
-Switched on from Settings > Refinement & Taste (on by default; it is research
-data). The hooks sit on the model whenever a taste key is set and read the
+Switched on from Settings > Refinement & Taste (off by default; it is optional
+research data). The hooks sit on the model whenever a taste key is set and read the
 switch at the start of each run, because ComfyUI caches the node that installs
 them and a toggle must reach the next generation.
 """

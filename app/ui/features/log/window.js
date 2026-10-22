@@ -20,6 +20,7 @@ export function mount({ dom, poll = EVERY, setFooter = () => {}, close = () => {
   let timer = null;
   let follow = true;                 // stick to the end until the user scrolls off it
   let last = "";
+  let copyText = "";                 // what Copy gives: the lines, never the colour bookkeeping
 
   const view = composer.code.block({ text: "Reading…" });
   const body = composer.region.stack({ gap: "sm", fill: true, children: [view] });
@@ -38,12 +39,14 @@ export function mount({ dom, poll = EVERY, setFooter = () => {}, close = () => {
     try {
       const res = await fetch("/funpack/api/log?limit=600", { cache: "no-store" });
       const payload = await res.json().catch(() => ({}));
-      const text = (payload.lines || []).join("\n")
-        || payload.detail
-        || "Nothing in the log yet.";
-      if (text !== last) {
-        last = text;
-        view.setText(text);
+      const lines = payload.lines || [];
+      const text = lines.join("\n") || payload.detail || "Nothing in the log yet.";
+      const key = text + "\u0000" + (payload.tones || []).join(",");
+      if (key !== last) {
+        last = key;
+        copyText = text;
+        if (lines.length) view.setLines(lines, payload.tones || []);
+        else view.setText(text);
         if (follow) view.node.scrollTop = view.node.scrollHeight;
       }
       setFooter({ note: payload.path || "", actions: footer() });
@@ -60,7 +63,7 @@ export function mount({ dom, poll = EVERY, setFooter = () => {}, close = () => {
       label: "Copy", onClick: () => {
         // Selecting a thousand lines by hand is the other reason this is hard to
         // get out of a log panel.
-        if (navigator.clipboard) navigator.clipboard.writeText(last).catch(() => {});
+        if (navigator.clipboard) navigator.clipboard.writeText(copyText).catch(() => {});
       },
     }),
     composer.button.md({ label: "Close", tone: "primary", onClick: () => close() }),

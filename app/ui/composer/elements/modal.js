@@ -16,6 +16,7 @@ import { mount, unmount } from "../internals/portal.js";
 import { claimFor } from "../internals/zlayer.js";
 import { push } from "../internals/dismiss.js";
 import { trap } from "../internals/focus.js";
+import { genieIn, genieOut } from "../internals/genie.js";
 
 const SIZES = { sm: "360px", md: "520px", lg: "720px", xl: "960px" };
 
@@ -31,7 +32,7 @@ function nodeOf(control, where) {
  */
 function open({
   title, subtitle, size = "md", body, actions = [], onClose,
-  closeOnOutside = true, closeOnEsc = true, stacked = false, describedBy, centered = false,
+  closeOnOutside = true, closeOnEsc = true, stacked = false, describedBy, centered = false, origin,
 } = {}) {
   const titleId = uid("modal-title");
 
@@ -87,6 +88,7 @@ function open({
 
   // Trap after mounting: focusables() must be able to see the card.
   const release = trap(card, { modal: true });
+  if (origin) genieIn(card, origin);
   const dismissal = push({
     nodes: card,
     closeOnOutside,
@@ -105,7 +107,9 @@ function open({
       dismissal.release();
       release();
       layer.release();
-      unmount(root);
+      // With an origin the card flows back into its button before it is removed;
+      // everything above (focus, dismissal, the z rung) is already let go.
+      if (origin) { backdrop.style.opacity = "0"; genieOut(card, origin, () => unmount(root)); } else unmount(root);
       if (onClose) onClose(reason);
     },
     destroy() { handle.close("destroy"); },

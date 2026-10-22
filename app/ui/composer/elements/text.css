@@ -21,7 +21,7 @@
   color: var(--faint);
 }
 
-.cx-code { font-family: var(--font-mono); font-size: 0.92em; color: var(--accent-hi); }
+.cx-code { font-family: var(--font-mono); font-size: 0.92em; color: var(--accent-text); }
 .cx-code-block {
   font-family: var(--font-mono); font-size: var(--fs-6); line-height: var(--lh-snug);
   color: var(--text); background: var(--elev-2);
@@ -29,6 +29,10 @@
   padding: var(--sp-4) var(--sp-5); margin: 0;
   overflow-x: auto;                      /* wide code scrolls itself, never the page */
 }
+
+/* Log lines are plain until something needs attention. */
+.cx-code-warn { color: var(--warn); }
+.cx-code-error { color: var(--danger); }
 
 /* The one place the app names itself. The mark carries a little of its own
    light, which is what stops a 5px dot reading as a bullet point. */

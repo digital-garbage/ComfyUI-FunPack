@@ -26,8 +26,8 @@
   --fs-4: 13px;   --lh-4: 16px;
   --fs-5: 12px;   --lh-5: 15px;
   --fs-6: 11px;   --lh-6: 14px;
-  --fs-7: 10px;   --lh-7: 13px;
-  --fs-8: 9px;    --lh-8: 12px;   /* v4 used 9px 26 times without naming it */
+  --fs-7: 11px;   --lh-7: 14px;   /* Apple's floor on macOS is 10pt; nothing sits under 11 */
+  --fs-8: 11px;   --lh-8: 14px;
 
   --lh-tight: 1;  --lh-snug: 1.35;  --lh-loose: 1.5;
 
@@ -48,7 +48,7 @@
   --ctl-pad-x-sm: 8px;  --ctl-pad-x-md: 8px;
   --ctl-pad-x-lg: 10px; --ctl-pad-x-xl: 12px;
   --ctl-r: var(--r-3);
-  --ctl-gap: var(--sp-3);
+  --ctl-gap: var(--sp-4);
 
   /* ── borders & states ───────────────────────────────────────────────── */
   --bw: 1px;
@@ -69,7 +69,7 @@
      regions, between two panels stacked in a column, and between a band's
      content and the window. Three different numbers for those three things is
      what makes a layout read as accidental. */
-  --gutter: var(--sp-5);
+  --gutter: var(--sp-7);
 
   /* Settings rows put their control in a column of this width, so every
      control in a list of them has the same two edges. A <select> is sized by
@@ -97,11 +97,15 @@
   --line-2: #37322833;
 
   --text:  #ece7db;
-  --muted: #918a7a;
-  --faint: #645e51;
+  --muted: #b3ac9c;
+  --faint: #948d7e;
 
   --accent:      #f3a93c;
   --accent-hi:   #ffc36b;
+  --accent-text: #ffc36b;   /* accent used AS text on a surface */
+  --on-status:   #1a1206;   /* label on a filled status chip */
+  --on-teal:     #1a1206;
+  --accent-solid-hover: #ffc36b;
   --accent-lo:   #e0972a;
   --accent-soft: rgba(243, 169, 60, .14);
   --on-accent:   #1a1206;
@@ -147,20 +151,24 @@
   --line-2: #8a97a833;
 
   --text:  #16202c;
-  --muted: #59677a;
-  --faint: #8d9aab;
+  --muted: #46536a;
+  --faint: #5d6a80;
 
-  --accent:      #2f7fd4;
-  --accent-hi:   #5aa4ec;
-  --accent-lo:   #2668b0;
+  --accent:      #2a6dbb;
+  --accent-hi:   #4a8fd9;
+  --accent-text: #1f57a0;
+  --on-status:   #ffffff;
+  --on-teal:     #05231f;
+  --accent-solid-hover: #1f57a0;
+  --accent-lo:   #1f57a0;
   --accent-soft: rgba(47, 127, 212, .13);
   --on-accent:   #ffffff;
 
   --teal:   #12857c;
   --violet: #7c3aed;
   --danger: #c62a48;
-  --warn:   #b26a00;
-  --good:   #2f8f4e;
+  --warn:   #8f5400;
+  --good:   #23743b;
   --pink:   rgb(197, 45, 116);
 
   --void: #0a0c0f;
@@ -197,7 +205,7 @@
 [data-theme] {
   --line-hover:  color-mix(in srgb, var(--accent) 30%, var(--line));
   --line-active: color-mix(in srgb, var(--accent) 60%, var(--line));
-  --focus-ring:  0 0 0 3px var(--accent-soft);
+  --focus-ring:  0 0 0 2px var(--elev-1), 0 0 0 4px var(--accent);
 
   --shadow-1: 0 1px 2px color-mix(in srgb, var(--shadow-ink) 45%, transparent);
   --shadow-2: 0 4px 12px color-mix(in srgb, var(--shadow-ink) 60%, transparent);

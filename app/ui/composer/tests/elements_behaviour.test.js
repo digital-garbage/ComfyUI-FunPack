@@ -277,9 +277,21 @@ test("the slider paints its fill from the value", () => {
 
 test("slider.readout shows the value and its unit", () => {
   const s = mount(composer.slider.readout({ value: 0.65, min: 0, max: 1, step: 0.05, unit: "x", precision: 2 }));
-  assert.equal(s.node.querySelector("output").textContent, "0.65x");
+  assert.equal(s.node.querySelector(".cx-readout").value, "0.65x");
   s.setValue(0.3);
-  assert.equal(s.node.querySelector("output").textContent, "0.30x");
+  assert.equal(s.node.querySelector(".cx-readout").value, "0.30x");
+});
+
+test("slider.readout value can be typed, clamped, and commits", () => {
+  const commits = [];
+  const s = mount(composer.slider.readout({ value: 0.5, min: 0, max: 1, step: 0.05, onCommit: (v) => commits.push(v) }));
+  const field = s.node.querySelector(".cx-readout");
+  field.value = "7"; fire(field, "change");
+  assert.equal(s.value, 1);
+  assert.equal(field.value, "1.00");
+  assert.deepEqual(commits, [1]);
+  field.value = "abc"; fire(field, "change");
+  assert.equal(s.value, 1);
 });
 
 test("slider.macro jumps to a preset", () => {
