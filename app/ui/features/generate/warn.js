@@ -29,7 +29,11 @@ export default {
     const rough = c.button.sm({ label: "Camera targets rougher", tone: "ghost", title: "Shot camera is on, but spaCy is not: camera moves aim with simple word rules and pick worse targets. Switch on Automatic camera and focus in Settings ▸ Modules.",
       onClick: () => app.openSettings?.("modules") }).node;
     rough.hidden = true;
-    host.append(chip, plain, keyless, twice, slow, rough);
+    // PTD runs its own four to eight hops and was trained without these: SLA, and any other enhancement that is on.
+    const ptd = c.button.sm({ label: "⚠ PTD with other features", tone: "ghost", title: "",
+      onClick: () => app.openSettings?.("engine") }).node;
+    ptd.hidden = true;
+    host.append(chip, plain, keyless, twice, slow, rough, ptd);
     Promise.resolve().then(() => app.api?.torchBuild?.()).then((r) => {
       if (r && r.slow_int8) { slow.title = r.slow_int8; slow.hidden = false; }
     }).catch(() => {});      // unknown build: the loader still says it in the log when an int8 model loads
@@ -44,6 +48,14 @@ export default {
       plain.hidden = !ps.allOff?.();
       keyless.hidden = !(taste && ps.activeModules().includes(taste) && ps.useful(taste) && !String((ps.currentValues().taste || {}).key || "").trim());
     };
+    const drawPtd = () => {
+      const ps = app.pipeline, values = ps.currentValues(), mod = ps.modulesById?.().ptd;
+      if (!mod || ps.allOff?.() || !ps.activeModules().includes(mod) || (values.ptd || {}).enabled !== true) { ptd.hidden = true; return; }
+      const others = ps.activeModules().filter((m) => m.id !== "ptd" && (values[m.id] || {}).enabled === true && ps.useful(m)).map((m) => m.title || m.id);
+      if ((ps.slots() || []).some((s) => (s.inputs || {}).sla === true)) others.unshift("SLA attention");
+      ptd.hidden = !others.length;
+      ptd.title = `PTD was trained without these, and they can spoil its pictures: ${others.join(", ")}. Switch them off if the result looks wrong.`;
+    };
     let asking = 0;
     const drawRough = () => {
       const ps = app.pipeline, cam = ps.modulesById?.().conditioning_shot_camera, ask = ++asking;
@@ -53,9 +65,10 @@ export default {
       }).catch(() => {});                                   // no add-on list: say nothing
     };
     drawPlain();
+    drawPtd();
     drawRough();
     draw(app.pipeline.slots());
     drawTwice(app.pipeline.slots());
-    return app.pipeline.subscribe ? app.pipeline.subscribe(() => { draw(app.pipeline.slots()); drawTwice(app.pipeline.slots()); drawPlain(); drawRough(); }) : undefined;
+    return app.pipeline.subscribe ? app.pipeline.subscribe(() => { draw(app.pipeline.slots()); drawTwice(app.pipeline.slots()); drawPlain(); drawPtd(); drawRough(); }) : undefined;
   },
 };

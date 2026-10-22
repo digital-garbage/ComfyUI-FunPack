@@ -84,3 +84,19 @@ test("the rougher-camera chip shows only while shot camera is active and the cam
   active = []; listener(); await tick();
   assert.equal(rough(host).hidden, true, "shot camera not in use: nothing to say");
 });
+
+test("the PTD chip names what else is on, and only while PTD itself is on", () => {
+  const ptd = { id: "ptd", title: "PTD few-step" }, sharp = { id: "sharpness", title: "Sharpness" };
+  let values = { ptd: { enabled: true }, sharpness: { enabled: true } }, slots = [{ id: "m", node: "L", inputs: { sla: true } }], listener;
+  const pipeline = { slots: () => slots, allOff: () => false, modulesById: () => ({ ptd }), activeModules: () => [ptd, sharp],
+    useful: () => true, currentValues: () => values, subscribe: (fn) => { listener = fn; return () => {}; } };
+  const host = document.createElement("div");
+  warn.setup({ host, app: { pipeline } });
+  const chipOf = () => [...host.querySelectorAll("button")].find((b) => /PTD with other/.test(b.textContent));
+  assert.equal(chipOf().hidden, false);
+  assert.match(chipOf().title, /SLA attention, Sharpness/);
+  values = { ptd: { enabled: true }, sharpness: { enabled: false } }; slots = []; listener();
+  assert.equal(chipOf().hidden, true, "nothing else on");
+  values = { ptd: { enabled: false }, sharpness: { enabled: true } }; listener();
+  assert.equal(chipOf().hidden, true, "PTD off: no clash to name");
+});

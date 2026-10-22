@@ -54,7 +54,8 @@ SETTINGS = {
         "type": "bool", "default": False,
         "label": "Few-step PTD",
         "hint": "Renders in the adapter file's own 4 to 8 steps with no CFG. The sampler, steps and scheduler "
-                "are replaced; PTD cannot start from a picture or a mask.",
+                "are replaced; PTD cannot start from a picture or a mask. Use the base the file was trained on, "
+                "and switch off SLA, turbo LoRAs and other enhancements, which it was not trained with.",
     },
     "adapter": {
         "type": "enum", "default": _FOUND[0] if _FOUND else "",
