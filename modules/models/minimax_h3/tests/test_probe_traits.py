@@ -55,10 +55,8 @@ def test_traits_match_the_real_latent_format_class():
         assert "temporal_compression" in found
 
 
-def test_does_not_claim_adaln_modalities_without_a_real_load():
-    """The one trait probe_traits deliberately does not answer -- full-form
-    vs. curve-form checkpoints only differ in which blocks are actually
-    present, which the header's key NAMES alone (as read here) do not
-    distinguish reliably enough to assert either way."""
+def test_claims_adaln_modalities_so_h3_settings_are_not_hidden():
+    """Shadow negative and Video detail need it. The header cannot prove it, so the
+    probe is optimistic and the real load (traits()) has the last word at run time."""
     m = _module()
-    assert "adaln_modalities" not in m.probe_traits(_h3_keys())
+    assert "adaln_modalities" in m.probe_traits(_h3_keys())

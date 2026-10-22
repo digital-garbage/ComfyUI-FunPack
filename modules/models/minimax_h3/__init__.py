@@ -108,16 +108,17 @@ def probe_traits(keys) -> list:
     every H3 file. Lets the UI hide LTX-only settings the moment a file is
     picked in the pipeline window, not only once something is generated.
 
-    Deliberately narrower than `traits()`: `adaln_modalities` depends on
-    which blocks an actual loaded module tree contains (full-form vs.
-    curve-form checkpoints), which the header alone cannot answer, so it is
-    left for the real load.
+    `adaln_modalities` is claimed here although the header cannot prove it
+    (full-form vs. curve-form checkpoints differ in which blocks exist). Left
+    out, the UI hid Shadow negative and Video detail for every picked H3 file.
+    A claim that turns out wrong is caught at run time: the loaded model's own
+    `traits()` is checked, and the feature is skipped with a note in the Log.
     """
     if not detect(keys):
         return []
     from comfy.latent_formats import MiniMaxH3AV
 
-    found = ["audio_stream", "dit_block_hooks"]
+    found = ["audio_stream", "dit_block_hooks", "adaln_modalities"]
     rank = _traits.LATENT_RANK.get(MiniMaxH3AV.latent_dimensions)
     if rank:
         found.append(rank)
