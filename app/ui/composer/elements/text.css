@@ -30,6 +30,10 @@
   overflow-x: auto;                      /* wide code scrolls itself, never the page */
 }
 
+/* Log lines are plain until something needs attention. */
+.cx-code-warn { color: var(--warn); }
+.cx-code-error { color: var(--danger); }
+
 /* The one place the app names itself. The mark carries a little of its own
    light, which is what stops a 5px dot reading as a bullet point. */
 .cx-brand { display: inline-flex; align-items: center; gap: var(--sp-4); }

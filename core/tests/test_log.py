@@ -156,3 +156,74 @@ def test_the_log_survives_the_process_dying(tmp_path, monkeypatch):
     monkeypatch.setattr(log, "_file", None)
     log._load()
     assert [r["message"] for r in log.history()] == ["step 3: backward", "step 4: forward"]
+
+
+# --- colour only where attention is needed ----------------------
+
+from core import backend_log  # noqa: E402
+
+_SESSION = [
+    "got prompt",
+    "[Log] Info: FunPack Sampler | 4 steps, sage attention",
+    "[Log] Alert: FunPack Sampler | no image is connected, starting from noise",
+    "[Log] Warning: FunPack LoRA Loader | style.safetensors is empty",
+    "[Log] Critical: torch | cannot allocate 14 GB",
+    "Traceback (most recent call last):",
+    '  File "x.py", line 3, in run',
+    "    boom()",
+    "ValueError: nope",
+    "back to normal after the error text",   # prose that mentions "error" is not an alarm
+    "model failed to be loved, said nobody",  # nor is "failed" in prose
+    "[VideoHelperSuite] - WARNING - bad frame rate",
+    "UserWarning: something deprecated",
+    "Prompt executed in 12.3 seconds",
+]
+
+
+def test_only_lines_that_need_a_look_are_coloured():
+    tones = backend_log.tones(_SESSION)
+    assert tones == ["plain", "plain", "warn", "warn", "error",
+                     "error", "error", "error", "error",
+                     "plain", "plain", "warn", "warn", "plain"]
+
+
+def test_a_healthy_run_has_no_colour_at_all():
+    healthy = ["got prompt", "[Log] Info: FunPack Sampler | loaded", "Prompt executed in 3 seconds",
+               "100%|##########| 4/4 [00:08<00:00]"]
+    assert set(backend_log.tones(healthy)) == {"plain"}
+
+
+def test_the_log_answer_carries_one_tone_per_line(monkeypatch):
+    from collections import deque
+    writes = deque([{"m": "\n".join(_SESSION) + "\n"}])
+    monkeypatch.setattr(backend_log, "_memory", lambda: writes)
+    answer = backend_log.recent()
+    assert len(answer["tones"]) == len(answer["lines"]) == len(_SESSION)
+    assert answer["tones"][2] == "warn" and answer["tones"][4] == "error"
+
+
+@pytest.mark.parametrize("level,painted", [
+    (log.INFO, False), (log.ALERT, True), (log.WARNING, True), (log.CRITICAL, True)])
+def test_the_terminal_paints_only_alert_and_up(monkeypatch, level, painted):
+    monkeypatch.setenv("FUNPACK_LOG_COLOR", "1")
+    out = log._paint(level, "text")
+    assert (out != "text") is painted
+    if painted:
+        assert out.startswith("\x1b[") and out.endswith("\x1b[0m")
+
+
+def test_no_colour_when_the_terminal_is_not_one_or_the_user_says_no(monkeypatch):
+    monkeypatch.delenv("FUNPACK_LOG_COLOR", raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert log._paint(log.CRITICAL, "t") == "t"
+    monkeypatch.delenv("NO_COLOR")
+    monkeypatch.setenv("FUNPACK_LOG_COLOR", "0")
+    assert log._paint(log.CRITICAL, "t") == "t"
+
+
+def test_colour_codes_never_reach_the_panel(monkeypatch):
+    from collections import deque
+    painted = "\x1b[38;5;208m[Log] Warning: x | y\x1b[0m"
+    monkeypatch.setattr(backend_log, "_memory", lambda: deque([{"m": painted + "\n"}]))
+    answer = backend_log.recent()
+    assert answer["lines"] == ["[Log] Warning: x | y"] and answer["tones"] == ["warn"]

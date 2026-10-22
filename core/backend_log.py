@@ -55,6 +55,46 @@ def log_file() -> Path | None:
     return max(found, default=(0, None))[1]
 
 
+# Colour means "look here": a line is plain unless somebody should look at it. Two tones only
+# (v4 also had a green "ok", which made a healthy run look busy). The patterns
+# are strict on purpose -- a line that merely contains the word "failed" in
+# prose is not an alarm, and an alarm that cries wolf is switched off by eye.
+_CRITICAL = re.compile(r"^\[Log\] Critical:|^\s*Traceback \(most recent call last\)|"
+                       r"^\s*!!! Exception|\bout of memory\b|^\s*[\w.]*(Error|Exception)\b(:|$)|"
+                       r"^\s*(ERROR|CRITICAL|FATAL)\b|\[(ERROR|CRITICAL)\]|\b(ERROR|CRITICAL) -", 0)
+_ATTENTION = re.compile(r"^\[Log\] (Alert|Warning):|^\s*(WARNING|WARN)\b|\[WARNING\]|\bWARNING -|"
+                        r"\b\w*Warning:")
+
+
+def tones(lines: list) -> list:
+    """"error" | "warn" | "plain" for each line.
+
+    A traceback's indented body takes its head's tone, so a stack trace is one
+    red block rather than one red line and thirty white ones.
+    """
+    out, in_trace = [], False
+    for line in lines:
+        indented = line[:1] in (" ", "\t")
+        if "Traceback (most recent call last)" in line:
+            in_trace, tone = True, "error"
+        elif in_trace and indented:
+            tone = "error"
+        elif in_trace:
+            in_trace, tone = False, "error"      # the exception line closes the trace
+        elif _CRITICAL.search(line):
+            tone = "error"
+        elif _ATTENTION.search(line):
+            tone = "warn"
+        else:
+            tone = "plain"
+        out.append(tone)
+    return out
+
+
+def _answer(lines: list, path, detail: str = "") -> dict:
+    return {"lines": lines, "tones": tones(lines), "path": path, "detail": detail}
+
+
 def recent(limit: int = 600) -> dict:
     """`{lines, path, detail}`. `detail` is set only when there is nothing to show.
 
@@ -69,12 +109,11 @@ def recent(limit: int = 600) -> dict:
         lines = [ln.rsplit("\r", 1)[-1] for ln in text.split("\n")]   # a progress bar keeps its last state
         if lines and not lines[-1]:
             lines.pop()
-        return {"lines": lines[-limit:], "path": None, "detail": ""}
+        return _answer(lines[-limit:], None)
     path = log_file()
     if path is None:
-        return {"lines": [], "path": None,
-                "detail": "ComfyUI is not writing a log file here, so there is nothing "
-                          "to show. Its output is in the terminal it was started from."}
+        return _answer([], None, "ComfyUI is not writing a log file here, so there is nothing "
+                                 "to show. Its output is in the terminal it was started from.")
     try:
         size = path.stat().st_size
         with path.open("rb") as fh:
@@ -83,6 +122,6 @@ def recent(limit: int = 600) -> dict:
                 fh.readline()               # drop the partial first line
             text = fh.read().decode("utf-8", errors="replace")
     except OSError as exc:
-        return {"lines": [], "path": str(path),
-                "detail": f"Could not read {path.name}: {exc.strerror or exc}."}
-    return {"lines": text.splitlines()[-limit:], "path": str(path), "detail": ""}
+        return _answer([], str(path), f"Could not read {path.name}: {exc.strerror or exc}.")
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    return _answer(text.splitlines()[-limit:], str(path))

@@ -18,6 +18,7 @@ Fixes from real H3 runs on rentals, plus the first usable LoRA training.
 
 ### Added
 
+- **Log colours**: a healthy log is all plain text. Only lines that need a look are coloured: warnings and alerts in amber, errors and tracebacks in red, in the Log window and in the terminal.
 - **LoRA training** now runs on H3 with FunPack's own loop (ComfyUI stays the backend): block swap, previews at chosen steps, Pause and Resume, Restore and continue, copies saved every N steps, live loss and time graphs, downloads, encoded data reused between runs. Training window is a step-by-step wizard (Data, Tags, Train, Results). Verified on H3; other models still use ComfyUI's trainer and are untested.
 - **Gallery**: saved videos and pictures next to Temp files, with preview, Select mode and a confirmed delete.
 - **15 reference slots for H3** (9 pictures, 3 videos, 3 sounds); FunPack Load Media takes a picture, video or sound.

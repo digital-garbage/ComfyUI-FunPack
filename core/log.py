@@ -96,6 +96,30 @@ def line(level: str, source: str, message: str) -> str:
     return f"{LABEL} {level}: {where}{message}"
 
 
+# Terminal colour: Info stays the terminal's own colour, and only
+# the levels that want a look are painted. The Log panel strips these codes and
+# colours by level itself, so the two agree.
+_PAINT = {ALERT: "\x1b[38;5;208m", WARNING: "\x1b[38;5;208m", CRITICAL: "\x1b[91m"}
+
+
+def _colour_wanted() -> bool:
+    import os
+    forced = os.environ.get("FUNPACK_LOG_COLOR", "").strip().lower()
+    if forced in ("1", "on", "true", "yes"):
+        return True
+    if forced in ("0", "off", "false", "no") or "NO_COLOR" in os.environ:
+        return False
+    try:
+        return bool(sys.__stderr__.isatty())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _paint(level: str, text: str) -> str:
+    code = _PAINT.get(level)
+    return f"{code}{text}\x1b[0m" if code and _colour_wanted() else text
+
+
 def record(level: str, source: str, message: str) -> dict:
     # Imported here rather than at module level: `run` starts a run by clearing
     # what this module holds, so a top-level import would be circular.
@@ -104,7 +128,7 @@ def record(level: str, source: str, message: str) -> dict:
              "message": message, "run": run_mod.current()}
     _records.append(entry)
     _keep(entry)
-    print(line(level, source, message), file=sys.stderr, flush=True)
+    print(_paint(level, line(level, source, message)), file=sys.stderr, flush=True)
     return entry
 
 

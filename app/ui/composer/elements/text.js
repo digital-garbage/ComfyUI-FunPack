@@ -47,8 +47,21 @@ define("brand", "default", ({ name = "FunPack" } = {}) =>
 define("code", "inline", ({ text } = {}) =>
   handle(el("code", { cls: "cx-code", text })));
 
+const LINE_TONES = new Set(["warn", "error"]);
+
 define("code", "block", ({ text, label } = {}) => {
   const id = uid("code");
   const pre = el("pre", { cls: "cx-code-block", text, attrs: { id, "aria-label": label } });
-  return handle(pre);
+  return {
+    ...handle(pre),
+    /** A log: plain lines, with colour only on the ones that ask for a look.
+     *  `tones[i]` is "warn" or "error"; anything else is plain, so an unknown
+     *  tone can never paint a line. */
+    setLines(lines, tones = []) {
+      pre.replaceChildren(...lines.map((line, i) => {
+        const tone = LINE_TONES.has(tones[i]) ? tones[i] : null;
+        return el("span", { cls: ["cx-code-line", tone ? `cx-code-${tone}` : null], text: `${line}\n` });
+      }));
+    },
+  };
 });
