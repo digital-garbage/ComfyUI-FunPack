@@ -6,6 +6,17 @@
 
 - **PTD few-step** (Settings > Engine > Sampling, MiniMax H3 only): renders in the 4 to 8 hops of a PTD adapter file from `ComfyUI/models/ptd` instead of a long schedule, with no CFG. Reads the EPFL fl2va and taobao-content-ai Ref2VA releases, as bf16 or int8, on the full or pruned base; ordinary LoRAs stack with it. The chosen sampler, steps and scheduler are replaced while it is on. Ported from ComfyUI-PTD-Compact (Nynxz). Not yet run on a real H3.
 
+## [5.0.2] - 2026-10-22
+
+### Changed
+
+- **Interface** follows Apple's Human Interface Guidelines more closely: roomier windows and gaps, text contrast of at least 4.5:1, nothing under 11px, a solid focus ring, a check mark and bolder label on selected choices, and a slider value you can type. Composer and Training open and close with a Genie motion; the preview picture scales to fit its stage.
+- README: new screenshots of the redesign and a clearer note on how the project is maintained.
+
+### Fixed
+
+- **Restart ComfyUI** no longer shows "Restarting ComfyUI…" twice while it waits.
+
 ## [5.0.1] - 2026-10-21
 
 Fixes from real H3 runs on rentals, plus the first usable LoRA training.
