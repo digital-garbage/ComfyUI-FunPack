@@ -300,3 +300,19 @@ def test_an_ordinary_lora_stacks_with_ptd_in_either_order(ptd, folder):
                 torch.testing.assert_close(layer(inp), want, rtol=1e-4, atol=1e-5)
         finally:
             comfy.model_management.unload_all_models()
+
+
+def test_step_aware_modules_are_given_the_hop_schedule(ptd, folder):
+    base = _tiny.native_model()
+    _tiny.epfl_file(folder / "a.safetensors", base.get_model_object("diffusion_model"))
+    model = _clone(base)
+    seen = []
+
+    def probe(apply_fn, args):
+        seen.append(args["c"]["transformer_options"]["sample_sigmas"].tolist())
+        return apply_fn(args["input"], args["timestep"], **args["c"])
+
+    model.set_model_unet_function_wrapper(probe)
+    _install(ptd, model, "a.safetensors")
+    _sample(model)                                  # twenty steps asked for
+    assert seen and all(len(s) == 5 for s in seen)

@@ -96,6 +96,10 @@ def _swap(controller):
             callback = latent_preview.prepare_callback(guider.model_patcher, controller.hops)
         except Exception:      # noqa: BLE001 -- only the progress bar and previews are lost
             pass
+        # Step-aware modules (SLA, momentum, velocity bias) read the schedule from here: give them the real one.
+        options = extra_args.get("model_options", {}).get("transformer_options")
+        if options is not None:
+            options["sample_sigmas"] = controller.grid.float()
         log.once("ptd:swap", log.INFO, "FunPack PTD",
                  f"sampling {controller.hops} hops from {controller.adapter.label}; the chosen sampler and steps "
                  f"({len(sigmas) - 1}) are not used")
