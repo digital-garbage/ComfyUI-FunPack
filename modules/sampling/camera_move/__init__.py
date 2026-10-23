@@ -44,8 +44,8 @@ REQUIRES = ["temporal_latent"]
 SETTINGS = {
     "enabled": {
         "type": "bool", "default": False,
-        "label": "Camera move",
-        "hint": "Pans or zooms the picture while it is being drawn.",
+        "label": "Camera move (Experimental)",
+        "hint": "Deforum-like motion. Please do not use if you don't need this effect.",
     },
     "pan_x": {
         "type": "float", "default": 0.0, "min": -1.0, "max": 1.0, "step": 0.05,
