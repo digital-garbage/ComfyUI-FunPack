@@ -102,13 +102,16 @@ def _swap(controller):
         except Exception:      # noqa: BLE001 -- only the progress bar and previews are lost
             pass
         # Step-aware modules (SLA, momentum, velocity bias) read the schedule from here: give them the real one.
+        # On the device and dtype the sampler was given: ComfyUI's own schedule sits on the GPU, and a model that
+        # compares it with its call's sigma (H3's head bank, SLA) fails on a CPU copy.
+        grid = controller.grid.to(device=sigmas.device, dtype=sigmas.dtype)
         options = extra_args.get("model_options", {}).get("transformer_options")
         if options is not None:
-            options["sample_sigmas"] = controller.grid.float()
+            options["sample_sigmas"] = grid
         log.once("ptd:swap", log.INFO, "FunPack PTD",
                  f"sampling {controller.hops} hops from {controller.adapter.label}; the chosen sampler and steps "
                  f"({len(sigmas) - 1}) are not used")
-        return ptd.sample(guider, controller.grid.float(), extra_args, callback, noise, latent_image,
+        return ptd.sample(guider, grid, extra_args, callback, noise, latent_image,
                           denoise_mask, disable_pbar)
 
     return run

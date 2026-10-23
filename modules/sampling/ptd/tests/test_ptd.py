@@ -330,3 +330,30 @@ def test_the_file_list_is_read_again_when_settings_open(ptd, folder, monkeypatch
     adapter = listed["ptd"]["settings"]["adapter"]
     assert "new.safetensors" in [o["value"] for o in adapter["options"]]
     assert adapter["default"] in [o["value"] for o in adapter["options"]]
+
+
+def test_the_hop_schedule_sits_where_the_sampler_was_given_its_own(ptd, folder, monkeypatch):
+    """On a GPU ComfyUI hands the sampler a CUDA schedule; the one PTD swaps in must be on the same device
+    (a CPU copy met the call's CUDA sigma: "Expected all tensors to be on the same device"). The meta device
+    stands in for CUDA here."""
+    import comfy.samplers
+    from comfy.patcher_extension import WrappersMP
+    base = _tiny.native_model()
+    _tiny.epfl_file(folder / "a.safetensors", base.get_model_object("diffusion_model"))
+    model = _clone(base)
+    _install(ptd, model, "a.safetensors")
+    given = {}
+    monkeypatch.setattr(comfy.samplers.KSAMPLER, "sample",
+                        lambda self, wrap, sigmas, extra_args, *a, **k: given.update(sigmas=sigmas) or "done")
+
+    class Guider:
+        cfg = 1.0
+        model_patcher = None
+
+    extra = {"model_options": {"transformer_options": {}}}
+    run = model.wrappers[WrappersMP.SAMPLER_SAMPLE]["funpack.ptd"][0]
+    sigmas = torch.linspace(1.0, 0.0, 21, device="meta")
+    assert run(None, Guider(), sigmas, extra, None, None, None, None, True) == "done"
+    assert given["sigmas"].device == sigmas.device and given["sigmas"].dtype == sigmas.dtype
+    seen = extra["model_options"]["transformer_options"]["sample_sigmas"]
+    assert seen.device == sigmas.device and len(seen) == 5
