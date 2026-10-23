@@ -52,7 +52,7 @@ SETTINGS = {
         "when": {"enabled": True},
     },
     "k": {
-        "type": "float", "default": 1.0, "min": 0.5, "max": 1.6, "step": 0.05,
+        "type": "float", "default": 1.0, "min": 0.25, "max": 4.0, "step": 0.05,
         "label": "Commitment (k)", "ui": "slider",
         "hint": "Above 1 commits harder, below 1 loosens. 1 is off.",
         "when": {"enabled": True, "mode": "manual"},
@@ -62,8 +62,8 @@ SETTINGS = {
 KIND = "decisiveness"
 # The paper's image setting (SD3). ponytail: fixed; learn it too if k alone plateaus.
 S = 3.0
-LOGK_MAX = 0.3          # k within ~0.74..1.35
-EXPLORE = 0.05
+LOGK_MAX = 0.7          # k within ~0.5..2.0
+EXPLORE = 0.1
 LR = 0.5
 # Below this share of a step's input noise, a push cannot be felt (simple@4, k 0.9 is ~2%).
 # ponytail: judged by eye on one schedule, not measured; tune if a rental says otherwise.
