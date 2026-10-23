@@ -342,7 +342,10 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     });
     const already = valuesAlreadyPlaced(from || slots);
     Object.entries(already).forEach(([moduleId, own]) => {
-      merged[moduleId] = { ...(merged[moduleId] || {}), ...own };
+      // A saved key its module no longer declares (removed or renamed) is dropped here, so it leaves the project at the next save.
+      const declared = modulesById[moduleId] && modulesById[moduleId].settings;
+      const kept = declared ? Object.fromEntries(Object.entries(own).filter(([name]) => name in declared)) : own;
+      merged[moduleId] = { ...(merged[moduleId] || {}), ...kept };
     });
     Object.entries(from ? {} : pendingValues).forEach(([moduleId, own]) => {
       merged[moduleId] = { ...(merged[moduleId] || {}), ...own };
