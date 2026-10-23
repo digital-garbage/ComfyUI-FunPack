@@ -72,8 +72,8 @@ INERT_SHARE = 0.03
 
 def _k_of(level):
     """Slider -10..+10 to k. Not mirrored: a loosening k bites far harder than a committing one,
-    so -10 is 0.95 and +10 is 1.05, which push a 4-step run about equally (~4% of a step's input). Tested by eye on a rental: k 1.01 is stable, 1.06 is overkill, 1.11 is mostly noise."""
-    return 1.05 ** (level / 10.0) if level >= 0 else 0.95 ** (-level / 10.0)
+    so -10 is 0.96 and +10 is 1.04, which push a 4-step run about equally (~4% of a step's input). Tested by eye on a rental: k 1.04 is stable, 1.06 is overkill, 1.11 is mostly noise."""
+    return 1.04 ** (level / 10.0) if level >= 0 else 0.96 ** (-level / 10.0)
 
 
 def _say(message, level=log.ALERT):
