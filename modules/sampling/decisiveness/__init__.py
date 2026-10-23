@@ -72,8 +72,8 @@ INERT_SHARE = 0.03
 
 def _k_of(level):
     """Slider -10..+10 to k. Not mirrored: a loosening k bites far harder than a committing one,
-    so -10 is 0.5 and +10 is 3, which push a 4-step run about equally (~0.5 of a step's input)."""
-    return 3.0 ** (level / 10.0) if level >= 0 else 0.5 ** (-level / 10.0)
+    so -10 is 0.85 and +10 is 1.2, which push a 4-step run about equally (~12% of a step's input). Dex found 21% already overkill and 39% mostly noise."""
+    return 1.2 ** (level / 10.0) if level >= 0 else 0.85 ** (-level / 10.0)
 
 
 def _say(message, level=log.ALERT):
