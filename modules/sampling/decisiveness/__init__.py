@@ -51,10 +51,10 @@ SETTINGS = {
         "hint": "Learn from ratings: each rating nudges how much it commits toward what you liked. My value: you set it below.",
         "when": {"enabled": True},
     },
-    "k": {
-        "type": "float", "default": 1.0, "min": 0.25, "max": 4.0, "step": 0.05,
-        "label": "Commitment (k)", "ui": "slider",
-        "hint": "Above 1 commits harder, below 1 loosens. 1 is off.",
+    "level": {
+        "type": "float", "default": 0.0, "min": -10.0, "max": 10.0, "step": 0.5,
+        "label": "Commitment", "ui": "slider",
+        "hint": "Above 0 commits harder, below 0 loosens. 0 is off. +10 is four times, -10 a quarter.",
         "when": {"enabled": True, "mode": "manual"},
     },
 }
@@ -129,7 +129,7 @@ def install(patcher, values, key):
 
     def fresh():
         live.update(checked=False, acts=False, steps=0, rows=None if manual else taste.rows(KIND, blind_to="image"))
-        live["k"] = float(values.get("k", 1.0)) if manual else 1.0
+        live["k"] = 4.0 ** (float(values.get("level", 0.0)) / 10.0) if manual else 1.0
         if manual:
             log.once(f"{ID}:state", log.INFO, "FunPack Decisiveness", f"manual k {live['k']:.3f}")
 
