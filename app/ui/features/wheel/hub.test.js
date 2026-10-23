@@ -6,6 +6,7 @@ import { setupDom, teardownDom } from "../../composer/tests/_dom.js";
 let hub, readPrefs, createProject;
 test.before(async () => {
   setupDom();
+  globalThis.localStorage = window.localStorage;
   ({ createProject } = await import("../../shell/project.js"));
   ({ default: hub, readPrefs } = await import("./index.js"));
 });
@@ -18,7 +19,7 @@ function server() {
     bbbbbbbbbbbb: { id: "bbbbbbbbbbbb", name: "B", scenes: [], updated_at: 1 },
   };
   globalThis.fetch = async (path, opts = {}) => {
-    if (path === "/funpack/api/projects" && !opts.method) return { ok: true, status: 200, json: async () => ({ projects: Object.values(store).map((p) => ({ id: p.id })) }) };
+    if (path === "/funpack/api/projects" && (!opts.method || opts.method === "GET")) return { ok: true, status: 200, json: async () => ({ projects: Object.values(store).map((p) => ({ id: p.id })) }) };
     const id = decodeURIComponent(String(path).split("/").pop());
     if (opts.method === "PUT") { const body = JSON.parse(opts.body); store[id] = { ...body, updated_at: 2 }; return { ok: true, status: 200, json: async () => store[id] }; }
     return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(store[id])) };
@@ -30,12 +31,12 @@ test("the wheel's settings are saved with the project and come back on a fresh b
   localStorage.clear();
   const project = createProject({});
   await project.start();                                   // project A
-  const app = { dom: createDom(), project, actions: [], editorSettings: [] };
+  const app = { dom: createDom(), project, pipeline: { allOff: () => false }, actions: [], editorSettings: [] };
   const off = hub.setup({ host: document.createElement("div"), app });
   try {
     // change it through the real settings panel
-    const panel = app.editorSettings[0]();
-    document.body.append(panel);
+    const handle = app.editorSettings[0]();
+    document.body.appendChild(handle.node); const panel = handle.node;
     const half = [...panel.querySelectorAll("button,[role=radio]")].find((b) => b.textContent.trim() === "Half wheel");
     const left = [...panel.querySelectorAll("button,[role=radio]")].find((b) => b.textContent.trim() === "Left");
     half.click(); left.click();
