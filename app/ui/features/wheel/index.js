@@ -2,13 +2,18 @@
 import { composer as c } from "../../composer/composer.js";
 import { offer } from "../../shell/actions.js";
 
-// Per browser, not per project: the wheel is a habit of the hand. enabled null = everything offered except the opt-in actions.
+// Saved with the project (a new rental has an empty browser); the browser copy is only the starting point for a project that has no choice yet. enabled null = everything offered except the opt-in actions.
 const KEY = "funpack_wheel";
-export function readPrefs() {
-  try { const p = JSON.parse(localStorage.getItem(KEY)) || {}; return { shape: p.shape === "half" ? "half" : "full", side: p.side === "left" ? "left" : "right", enabled: Array.isArray(p.enabled) ? p.enabled : null }; }
-  catch { return { shape: "full", side: "right", enabled: null }; }
+const clean = (p) => ({ shape: p.shape === "half" ? "half" : "full", side: p.side === "left" ? "left" : "right", enabled: Array.isArray(p.enabled) ? p.enabled : null });
+const fromBrowser = () => { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } };
+export function readPrefs(app) {
+  const saved = app && app.project && app.project.pref ? app.project.pref("wheel", null) : null;
+  return clean(saved && typeof saved === "object" ? saved : fromBrowser());
 }
-const writePrefs = (p) => { try { localStorage.setItem(KEY, JSON.stringify(p)); } catch { /* private window: lasts until reload */ } };
+function writePrefs(app, p) {
+  if (app.project && app.project.setPref) app.project.setPref("wheel", p);
+  try { localStorage.setItem(KEY, JSON.stringify(p)); } catch { /* private window: lasts until reload */ }
+}
 
 export default {
   id: "wheel",
@@ -35,7 +40,7 @@ export default {
     const onDown = (e) => {
       if (e.button !== 1 || wheel || app.dom.dialogOpen()) return;       // nothing behind a dialog
       e.preventDefault();
-      const prefs = readPrefs(), on = (a) => prefs.enabled ? prefs.enabled.includes(a.id) : !a.optIn;
+      const prefs = readPrefs(app), on = (a) => prefs.enabled ? prefs.enabled.includes(a.id) : !a.optIn;
       const items = (app.actions || []).filter((a) => on(a) && (!a.when || a.when())).slice(0, 12).map((a) => ({ id: a.id, label: a.label, icon: a.icon }));
       if (!items.length) return;
       const shared = { items, onClose: () => { wheel = null; },
@@ -43,7 +48,7 @@ export default {
       wheel = prefs.shape === "half" ? c.wheel.half({ ...shared, edge: prefs.side, at: e.clientY }) : c.wheel.picker({ ...shared, x: e.clientX, y: e.clientY });
     };
     app.editorSettings.push(() => {
-      const prefs = readPrefs(), set = (patch) => writePrefs({ ...readPrefs(), ...patch });
+      const prefs = readPrefs(app), set = (patch) => writePrefs(app, { ...readPrefs(app), ...patch });
       const offered = (app.actions || []).map((a) => ({ value: a.id, label: `${a.icon || ""} ${a.label}`.trim() }));
       return c.region.stack({ gap: "sm", children: [c.label.section({ text: "Picker wheel" }),
         c.hint.default({ text: "Hold the middle mouse button anywhere, flick toward an action and let go." }),
