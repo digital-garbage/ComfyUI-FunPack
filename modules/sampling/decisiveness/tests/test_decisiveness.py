@@ -49,7 +49,7 @@ def test_the_learner_moves_toward_liked_and_away_from_disliked_and_is_bounded():
 def test_simple_at_four_steps_is_inert_and_longer_schedules_are_not():
     from modules.sampling.decisiveness import INERT_SHARE, reach
     simple4 = [1.0, 0.95, 0.89, 0.80, 0.0]            # a few-step schedule whose last step starts near 0.8
-    assert reach(simple4, 0.9) < INERT_SHARE < reach(simple4, 1.3)
+    assert reach(simple4, 0.97) < INERT_SHARE < reach(simple4, 1.3)
     assert reach(_sched(12).tolist(), 1.3) > INERT_SHARE
     assert reach(_sched(4).tolist(), 1.0) == 0.0
 

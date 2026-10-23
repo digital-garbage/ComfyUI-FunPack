@@ -54,20 +54,26 @@ SETTINGS = {
     "level": {
         "type": "float", "default": 0.0, "min": -10.0, "max": 10.0, "step": 0.5,
         "label": "Commitment", "ui": "slider",
-        "hint": "Above 0 commits harder, below 0 loosens. 0 is off. +10 is four times, -10 a quarter.",
+        "hint": "Above 0 commits harder, below 0 loosens. 0 is off. -10 and +10 push about equally hard.",
         "when": {"enabled": True, "mode": "manual"},
     },
 }
 
 KIND = "decisiveness"
-# The paper's image setting (SD3). ponytail: fixed; learn it too if k alone plateaus.
-S = 3.0
+# The paper's image setting is 3 (SD3); 6 makes it take hold earlier, so a few-step run feels a positive k. ponytail: fixed; learn it too if k alone plateaus.
+S = 6.0
 LOGK_MAX = 0.7          # k within ~0.5..2.0
 EXPLORE = 0.1
 LR = 0.5
 # Below this share of a step's input noise, a push cannot be felt (simple@4, k 0.9 is ~2%).
 # ponytail: judged by eye on one schedule, not measured; tune if a rental says otherwise.
 INERT_SHARE = 0.03
+
+
+def _k_of(level):
+    """Slider -10..+10 to k. Not mirrored: a loosening k bites far harder than a committing one,
+    so -10 is 0.5 and +10 is 3, which push a 4-step run about equally (~0.5 of a step's input)."""
+    return 3.0 ** (level / 10.0) if level >= 0 else 0.5 ** (-level / 10.0)
 
 
 def _say(message, level=log.ALERT):
@@ -129,7 +135,7 @@ def install(patcher, values, key):
 
     def fresh():
         live.update(checked=False, acts=False, steps=0, rows=None if manual else taste.rows(KIND, blind_to="image"))
-        live["k"] = 4.0 ** (float(values.get("level", 0.0)) / 10.0) if manual else 1.0
+        live["k"] = _k_of(float(values.get("level", 0.0))) if manual else 1.0
         if manual:
             log.once(f"{ID}:state", log.INFO, "FunPack Decisiveness", f"manual k {live['k']:.3f}")
 
